@@ -33,6 +33,7 @@ const state = {
   meta: { atk: 0, hp: 0, heal: 0, gold: 0, revive: 0 },  // 영구 강화 (로그라이트 메타 진행)
   run: null,                                              // 현재 던전 런 (버프/기록)
   paused: false,
+  best: 0,                                                // 최고 도달 층 (영구 기록)
   auto: false,
   world: null,          // 현재 맵
   cam: { x: 0, y: 0 },
@@ -60,6 +61,7 @@ const leader = party[0];
 let trail = [];   // 리더가 지나온 칸 (팔로워용)
 
 function runBuff(k) { return state.run ? state.run.buffs[k] : 0; }
+function relicCount(k) { return (state.run && state.run.relics[k]) || 0; }
 function maxHp(m) {
   const base = { knight: 60, mage: 40, priest: 42, porter: 50 }[m.role];
   const per  = { knight: 12, mage: 8,  priest: 8,  porter: 10 }[m.role];
@@ -71,7 +73,7 @@ function atkPow(m) {
   return (base + per * (state.lv - 1)) * (1 + 0.08 * state.meta.atk) * (1 + 0.15 * runBuff('atk'));
 }
 function healPow() { return (10 + 3 * (state.lv - 1)) * (1 + 0.10 * state.meta.heal) * (1 + 0.20 * runBuff('heal')); }
-function goldMult() { return 1.3 * (1 + 0.10 * state.meta.gold) * (1 + 0.20 * runBuff('gold')); }
+function goldMult() { return 1.3 * (1 + 0.10 * state.meta.gold) * (1 + 0.20 * runBuff('gold')) * (1 + 0.30 * relicCount('charm')); }
 party.forEach(m => { m.hp = maxHp(m); });
 
 /* ---------------- 이펙트 ---------------- */
@@ -203,7 +205,7 @@ function genDungeon(floor) {
   const mid = rooms[Math.floor(rooms.length / 2)];
   wld.props.push({ type: 'shrine', gx: mid.cx, gy: mid.cy, solid: false });
 
-  // 몬스터
+  // 몬스터 (2층부터 일부는 엘리트로 강화)
   const types = floor >= 3 ? ['slime', 'bat', 'skeleton'] : floor >= 2 ? ['slime', 'bat'] : ['slime', 'slime', 'bat'];
   rooms.slice(1).forEach(r => {
     const n = irand(1, 2 + Math.min(2, floor));
@@ -211,21 +213,49 @@ function genDungeon(floor) {
       const x = irand(r.x, r.x + r.w - 1), y = irand(r.y, r.y + r.h - 1);
       if (!walkable(wld, x, y)) continue;
       if (wld.monsters.some(m => m.gx === x && m.gy === y)) continue;
-      wld.monsters.push(makeMonster(pick(types), floor, x, y));
+      const mon = makeMonster(pick(types), floor, x, y);
+      if (floor >= 2 && Math.random() < 0.12) {
+        mon.elite = true;
+        mon.scale = 1.25;
+        mon.hp = mon.maxHp = Math.floor(mon.hp * 2.2);
+        mon.atk *= 1.5;
+        mon.xp = Math.floor(mon.xp * 2.5);
+      }
+      wld.monsters.push(mon);
     }
   });
-  // 아이템
+  // 아이템 (골드 / 상자 / 포션)
   let items = 0; guard = 0;
-  while (items < 10 && guard++ < 500) {
+  while (items < 11 && guard++ < 500) {
     const r = pick(rooms.slice(1));
     const x = irand(r.x, r.x + r.w - 1), y = irand(r.y, r.y + r.h - 1);
     if (!walkable(wld, x, y)) continue;
     if (wld.items.some(it => it.gx === x && it.gy === y)) continue;
-    wld.items.push({ type: Math.random() < 0.25 ? 'chest' : 'gold', gx: x, gy: y });
+    const roll = Math.random();
+    wld.items.push({ type: roll < 0.2 ? 'chest' : roll < 0.4 ? 'potion' : 'gold', gx: x, gy: y });
     items++;
   }
+  // 가시 함정
+  let traps = 0; guard = 0;
+  while (traps < 3 + Math.min(4, floor) && guard++ < 400) {
+    const x = irand(2, w - 3), y = irand(2, h - 3);
+    if (!walkable(wld, x, y)) continue;
+    if (cheb(x, y, wld.spawn.x, wld.spawn.y) < 4) continue;
+    if (wld.props.some(p => p.gx === x && p.gy === y)) continue;
+    if (wld.items.some(it => it.gx === x && it.gy === y)) continue;
+    wld.props.push({ type: 'trap', gx: x, gy: y, solid: false, armed: true });
+    traps++;
+  }
+  wld.theme = dungeonTheme(floor);
   countWalkable(wld);
   return wld;
+}
+
+function dungeonTheme(floor) {
+  if (floor >= 9) return { name: '심연',        f1: '#3a2c4a', f2: '#352844', wt: '#2b2140', wl: '#171028', wr: '#120c20' };
+  if (floor >= 6) return { name: '작열의 심층', f1: '#4a3132', f2: '#452c2d', wt: '#3a2224', wl: '#1f1012', wr: '#170c0e' };
+  if (floor >= 3) return { name: '이끼 낀 수로', f1: '#2f4a41', f2: '#2b453c', wt: '#1e3a30', wl: '#0e1f18', wr: '#0a1712' };
+  return              { name: '낡은 지하묘지', f1: '#3d4763', f2: '#39425c', wt: '#232a3f', wl: '#12151f', wr: '#0d101a' };
 }
 
 function countWalkable(wld) {
@@ -287,13 +317,17 @@ function updateEntityMove(e, dt, stepTime) {
   e.px = isoX(fx, fy); e.py = isoY(fx, fy);
 }
 
+function leaderStepTime() { return STEP_TIME / (1 + 0.12 * relicCount('boots')); }
+
 function tryLeaderStep(dx, dy) {
   if (leader.moving || state.transitioning) return false;
   const wld = state.world;
   const tx = leader.gx + dx, ty = leader.gy + dy;
-  if (dx > 0 || dy < 0) leader.face = 1;
-  if (dx < 0 || dy > 0) leader.face = -1;
+  const sxd = dx - dy;  // 화면상 가로 이동량
+  if (sxd > 0) leader.face = 1; else if (sxd < 0) leader.face = -1;
   if (!walkable(wld, tx, ty)) return false;
+  // 그리드 대각 이동: 양 옆이 모두 막혀 있으면 모서리 통과 금지
+  if (dx && dy && !walkable(wld, tx, leader.gy) && !walkable(wld, leader.gx, ty)) return false;
   if (monsterAt(wld, tx, ty)) return false;  // 몸통박치기 → 인접 자동공격이 처리
   trail.unshift({ x: leader.gx, y: leader.gy });
   if (trail.length > 12) trail.pop();
@@ -308,16 +342,34 @@ function onLeaderArrive() {
   for (let i = wld.items.length - 1; i >= 0; i--) {
     const it = wld.items[i];
     if (cheb(it.gx, it.gy, leader.gx, leader.gy) <= 1) {
-      let g = it.type === 'chest' ? irand(30, 80) : irand(5, 15);
-      g = Math.floor(g * goldMult());
-      state.gold += g;
-      if (state.run) state.run.goldGained += g;
-      addFloater(isoX(it.gx, it.gy), isoY(it.gx, it.gy) - 18, `+${g}`, '#ffd75e', 14);
-      addSparkle(isoX(it.gx, it.gy), isoY(it.gx, it.gy), '#ffd75e');
-      if (it.type === 'chest' && Math.random() < .5) say(party[3], '오늘 벌이가 쏠쏠한데요?');
+      if (it.type === 'potion') {
+        party.forEach(m => {
+          if (!m.down) {
+            m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * 0.25);
+            addSparkle(m.px, m.py, '#ff9eae');
+          }
+        });
+        addFloater(isoX(it.gx, it.gy), isoY(it.gx, it.gy) - 18, '💗 회복!', '#ff9eae', 13);
+      } else {
+        let g = it.type === 'chest' ? irand(30, 80) : irand(5, 15);
+        g = Math.floor(g * goldMult());
+        state.gold += g;
+        if (state.run) state.run.goldGained += g;
+        addFloater(isoX(it.gx, it.gy), isoY(it.gx, it.gy) - 18, `+${g}`, '#ffd75e', 14);
+        addSparkle(isoX(it.gx, it.gy), isoY(it.gx, it.gy), '#ffd75e');
+        if (it.type === 'chest' && Math.random() < .5) say(party[3], '오늘 벌이가 쏠쏠한데요?');
+      }
       wld.items.splice(i, 1);
       saveDirty = true;
     }
+  }
+  // 가시 함정
+  const trap = wld.props.find(p => p.type === 'trap' && p.armed && p.gx === leader.gx && p.gy === leader.gy);
+  if (trap) {
+    trap.armed = false;
+    damageMember(leader, 6 + 4 * (wld.floor || 1));
+    addFloater(leader.px, leader.py - 44, '🗡️ 함정!', '#ff7a7a', 14);
+    if (Math.random() < .5) say(leader, '앗, 함정이야!');
   }
   // 트리거들
   if (wld.mode === 'overworld' && wld.entrance &&
@@ -346,14 +398,15 @@ function onLeaderArrive() {
 }
 
 function updateFollowers(dt) {
+  const st = leaderStepTime();
   for (let i = 1; i < party.length; i++) {
     const m = party[i];
-    if (m.down) { updateEntityMove(m, dt, STEP_TIME); continue; }
+    if (m.down) { updateEntityMove(m, dt, st); continue; }
     const target = trail[i - 1];
     if (target && !m.moving && (m.gx !== target.x || m.gy !== target.y)) {
       beginStep(m, target.x, target.y);
     }
-    updateEntityMove(m, dt, STEP_TIME);
+    updateEntityMove(m, dt, st);
   }
 }
 
@@ -371,6 +424,11 @@ function damageMonster(mon, dmg, color) {
     addFloater(mon.px, mon.py - 40, `+${mon.xp} XP`, '#9be8ff', 12);
     addSparkle(mon.px, mon.py, '#ffb0c0');
     if (Math.random() < .3) state.world.items.push({ type: 'gold', gx: mon.gx, gy: mon.gy });
+    if (mon.elite) {
+      state.world.items.push({ type: 'gold', gx: mon.gx, gy: mon.gy });
+      if (Math.random() < .4) state.world.items.push({ type: 'potion', gx: mon.gx, gy: mon.gy });
+      addFloater(mon.px, mon.py - 54, '엘리트 처치!', '#d8a4ff', 13);
+    }
     if (mon.boss) onBossDefeated(mon);
     checkLevelUp();
     saveDirty = true;
@@ -387,6 +445,7 @@ function onBossDefeated(mon) {
   }
   addSparkle(mon.px, mon.py, '#ffd75e');
   say(leader, '해냈어! 더 깊이 가보자!');
+  setTimeout(openRelicChoice, 700);
 }
 function checkLevelUp() {
   let need = xpNeed(state.lv);
@@ -400,11 +459,15 @@ function checkLevelUp() {
     need = xpNeed(state.lv);
   }
 }
-function damageMember(m, dmg) {
+function damageMember(m, dmg, attacker) {
   if (m.down) return;
   dmg *= Math.max(0.4, 1 - 0.08 * runBuff('def'));
   m.hp -= dmg;
   addFloater(m.px, m.py - 30, String(Math.floor(dmg)), '#ff7a7a', 12);
+  // 가시 갑옷: 받은 피해 일부 반사
+  if (attacker && attacker.hp > 0 && relicCount('thorn')) {
+    damageMonster(attacker, dmg * 0.2 * relicCount('thorn'), '#8fd0ca');
+  }
   if (m.hp <= 0) {
     m.hp = 0; m.down = true; m.reviveT = 0;
     say(m, '으윽… 미안해요…');
@@ -448,8 +511,12 @@ function updateCombat(dt) {
       const dmg = atkPow(m) * rand(0.85, 1.2);
       damageMonster(best, dmg, m.role === 'mage' ? '#c9a4ff' : '#fff');
       if (m.role === 'mage') addSparkle(best.px, best.py, '#c9a4ff');
+      // 흡혈 송곳니: 가한 피해의 일부 회복
+      if (relicCount('fang')) {
+        m.hp = Math.min(maxHp(m), m.hp + dmg * 0.08 * relicCount('fang'));
+      }
       m.face = (best.gx > m.gx || best.gy < m.gy) ? 1 : -1;
-      m.atkCd = { knight: 0.55, mage: 1.1, porter: 0.9 }[m.role];
+      m.atkCd = { knight: 0.55, mage: 1.1 / (1 + 0.2 * relicCount('crystal')), porter: 0.9 }[m.role];
     }
   });
 
@@ -462,7 +529,7 @@ function updateCombat(dt) {
     // 인접 파티원 공격
     const targets = aliveMembers().filter(a => cheb(a.gx, a.gy, mon.gx, mon.gy) <= 1);
     if (targets.length && mon.atkCd <= 0) {
-      damageMember(pick(targets), mon.atk * rand(0.8, 1.15));
+      damageMember(pick(targets), mon.atk * rand(0.8, 1.15), mon);
       mon.atkCd = 0.95;
       continue;
     }
@@ -505,7 +572,17 @@ function updateCombat(dt) {
   });
 }
 
-function partyWipe() { showRunSummary(false); }
+function partyWipe() {
+  // 불사조 깃털: 전멸을 1회 무효화
+  if (relicCount('feather') > 0) {
+    state.run.relics.feather--;
+    party.forEach(m => { m.down = false; m.hp = maxHp(m) * 0.6; });
+    party.forEach(m => addSparkle(m.px, m.py, '#ffb347'));
+    toast('🪶 불사조 깃털이 파티를 되살렸다!');
+    return;
+  }
+  showRunSummary(false);
+}
 
 /* ---------------- 맵 전환 ---------------- */
 const fadeEl = document.getElementById('fade');
@@ -544,10 +621,11 @@ function gotoOverworld() {
 }
 function enterDungeon() {
   transition(() => {
-    state.run = { floor: 1, buffs: { atk: 0, hp: 0, heal: 0, gold: 0, crit: 0, def: 0 }, kills: 0, goldGained: 0 };
+    state.run = { floor: 1, buffs: { atk: 0, hp: 0, heal: 0, gold: 0, crit: 0, def: 0 }, relics: {}, kills: 0, goldGained: 0 };
     state.world = genDungeon(1);
     placeParty(state.world, state.world.spawn.x, state.world.spawn.y);
-    toast('🗝️ 던전 지하 1층');
+    if (state.best < 1) { state.best = 1; saveDirty = true; }
+    toast(`🗝️ 지하 1층 — ${state.world.theme.name}`);
     if (Math.random() < .7) say(pick(party.slice(1)), pick(['으스스해요…', '조심해서 가요!', '몬스터 냄새가 나요…']));
     updateHudMode();
     setTimeout(openBuffChoice, 500);
@@ -559,7 +637,12 @@ function descend() {
     if (state.run) state.run.floor = next;
     state.world = genDungeon(next);
     placeParty(state.world, state.world.spawn.x, state.world.spawn.y);
-    toast(`⬇️ 던전 지하 ${next}층`);
+    if (next > state.best) {
+      state.best = next;
+      saveDirty = true;
+      addFloater(leader.px, leader.py - 60, '🏆 최고 기록!', '#ffe88a', 15);
+    }
+    toast(`⬇️ 지하 ${next}층 — ${state.world.theme.name}`);
     if (state.world.stairsPending) say(leader, '보스가 있는 층이야… 조심하자!');
     updateHudMode();
     setTimeout(openBuffChoice, 500);
@@ -576,6 +659,7 @@ function showRunSummary(escaped) {
   openModal(escaped ? '🏃 던전 탈출!' : '💀 파티 전멸…', body => {
     body.innerHTML = `
       <div class="sumRow"><span>도달 층</span><b>지하 ${run.floor}층</b></div>
+      <div class="sumRow"><span>최고 기록</span><b>지하 ${state.best}층</b></div>
       <div class="sumRow"><span>처치한 몬스터</span><b>${run.kills}</b></div>
       <div class="sumRow"><span>획득 골드</span><b>+${fmt(run.goldGained)}</b></div>
       ${escaped ? '' : `<div class="sumRow bad"><span>잃은 골드</span><b>-${fmt(lost)}</b></div>`}
@@ -706,6 +790,36 @@ function openBuffChoice() {
   });
 }
 
+const RELICS = [
+  { k: 'fang',    icon: '🗡️', name: '흡혈 송곳니', desc: '가한 피해의 8% 회복' },
+  { k: 'thorn',   icon: '🌵', name: '가시 갑옷',   desc: '받은 피해 20% 반사' },
+  { k: 'boots',   icon: '👢', name: '신속의 장화', desc: '이동 속도 +12%' },
+  { k: 'charm',   icon: '🧿', name: '황금 부적',   desc: '골드 획득 +30%' },
+  { k: 'crystal', icon: '🔮', name: '마나 수정',   desc: '마법사 공격 속도 +20%' },
+  { k: 'feather', icon: '🪶', name: '불사조 깃털', desc: '전멸 시 1회 부활' },
+];
+function openRelicChoice() {
+  if (!state.run) return;
+  const opts = [...RELICS].sort(() => Math.random() - .5).slice(0, 3);
+  openModal('👑 보스 전리품 — 유물을 선택하세요', body => {
+    const grid = document.createElement('div');
+    grid.className = 'buffGrid';
+    opts.forEach(o => {
+      const btn = document.createElement('button');
+      btn.className = 'buffCard relic';
+      btn.innerHTML = `<span class="bIcon">${o.icon}</span><b>${o.name}</b><small>${o.desc}</small><em>보유 ${state.run.relics[o.k] || 0}</em>`;
+      btn.addEventListener('click', () => {
+        state.run.relics[o.k] = (state.run.relics[o.k] || 0) + 1;
+        addSparkle(leader.px, leader.py, '#ffb347');
+        toast(`${o.icon} ${o.name} 획득!`);
+        closeModal();
+      });
+      grid.appendChild(btn);
+    });
+    body.appendChild(grid);
+  });
+}
+
 const META_DEFS = [
   { k: 'atk',    icon: '⚔️', name: '공격 단련',    desc: '공격력 +8%',        base: 60 },
   { k: 'hp',     icon: '❤️', name: '체력 단련',    desc: '최대 체력 +8%',     base: 60 },
@@ -779,9 +893,10 @@ addEventListener('keyup', e => {
   if (d) held[d] = false;
 });
 document.querySelectorAll('#dpad button').forEach(btn => {
-  const d = btn.dataset.dir;
-  const on = e => { e.preventDefault(); held[d] = true; };
-  const off = e => { e.preventDefault(); held[d] = false; };
+  const dirs = (btn.dataset.dirs || btn.dataset.dir || '').split(',').filter(Boolean);
+  if (!dirs.length) return;
+  const on = e => { e.preventDefault(); dirs.forEach(d => { held[d] = true; }); };
+  const off = e => { e.preventDefault(); dirs.forEach(d => { held[d] = false; }); };
   btn.addEventListener('pointerdown', on);
   btn.addEventListener('pointerup', off);
   btn.addEventListener('pointerleave', off);
@@ -789,19 +904,24 @@ document.querySelectorAll('#dpad button').forEach(btn => {
 });
 function updateInput() {
   if (leader.moving || state.transitioning) return;
-  // 화면 방향 → 그리드 방향 (쿼터뷰: ↑ = 북서(-x,-y 아님)… 직관적으로 화면 기준 매핑)
-  let dx = 0, dy = 0;
-  if (held.up) { dx = -1; dy = -1; }
-  else if (held.down) { dx = 1; dy = 1; }
-  else if (held.left) { dx = -1; dy = 1; }
-  else if (held.right) { dx = 1; dy = -1; }
-  if (!dx && !dy) return;
-  // 대각(그리드 기준) 이동은 두 축 중 가능한 쪽으로
-  if (dx && dy) {
-    if (tryLeaderStep(dx, 0)) return;
-    if (tryLeaderStep(0, dy)) return;
+  // 화면 기준 입력 → 그리드 방향 변환
+  // 화면 이동 (vx, vy)는 그리드로 dgx=(vx+vy)/2, dgy=(vy-vx)/2 에 대응하므로
+  // ↑ 는 그리드 대각 (-1,-1) 한 스텝 = 화면에서 정확히 위로 이동한다.
+  let vx = 0, vy = 0;
+  if (held.up) vy -= 1;
+  if (held.down) vy += 1;
+  if (held.left) vx -= 1;
+  if (held.right) vx += 1;
+  if (!vx && !vy) return;
+  const dgx = Math.sign(vx + vy), dgy = Math.sign(vy - vx);
+  if (!dgx && !dgy) return;
+  if (dgx && dgy) {
+    // 대각이 막히면 벽을 따라 미끄러지기
+    if (tryLeaderStep(dgx, dgy)) return;
+    if (tryLeaderStep(dgx, 0)) return;
+    tryLeaderStep(0, dgy);
   } else {
-    tryLeaderStep(dx, dy);
+    tryLeaderStep(dgx, dgy);
   }
 }
 
@@ -839,6 +959,27 @@ function updateHud() {
     cheb(leader.gx, leader.gy, wld.entrance.x, wld.entrance.y) <= 3;
   el('dungeonBanner').classList.toggle('hidden', !nearEntrance);
   el('recLv').textContent = 3;
+  updateBuffBar();
+}
+let buffBarCache = '';
+function updateBuffBar() {
+  let html = '';
+  if (state.run) {
+    BUFF_POOL.forEach(o => {
+      const n = state.run.buffs[o.k];
+      if (n > 0) html += `<span class="chip">${o.icon}<b>${n}</b></span>`;
+    });
+    RELICS.forEach(o => {
+      const n = state.run.relics[o.k] || 0;
+      if (n > 0) html += `<span class="chip relic">${o.icon}<b>${n}</b></span>`;
+    });
+  } else if (state.best > 0) {
+    html = `<span class="chip best">🏆 최고 지하 ${state.best}층</span>`;
+  }
+  if (html !== buffBarCache) {
+    buffBarCache = html;
+    el('buffBar').innerHTML = html;
+  }
 }
 el('escapeBtn').addEventListener('click', escapeDungeon);
 el('upgradeBtn').addEventListener('click', openShop);
@@ -968,7 +1109,8 @@ function drawTiles(offX, offY) {
     }
     if (t === T.FLOOR) {
       const alt = (x + y) % 2 === 0;
-      const base = alt ? '#3d4763' : '#39425c';
+      const th = wld.theme || dungeonTheme(1);
+      const base = alt ? th.f1 : th.f2;
       drawDiamond(sx, sy, shade(base, br));
       ctx.strokeStyle = `rgba(0,0,0,${0.12 * br})`;
       ctx.beginPath();
@@ -978,19 +1120,20 @@ function drawTiles(offX, offY) {
     }
     if (t === T.WALL) {
       const WH = 40;
+      const th = wld.theme || dungeonTheme(1);
       // 옆면
-      ctx.fillStyle = shade('#12151f', br);
+      ctx.fillStyle = shade(th.wl, br);
       ctx.beginPath();
       ctx.moveTo(sx - TILE_W / 2, sy - WH); ctx.lineTo(sx, sy + TILE_H / 2 - WH);
       ctx.lineTo(sx, sy + TILE_H / 2); ctx.lineTo(sx - TILE_W / 2, sy);
       ctx.closePath(); ctx.fill();
-      ctx.fillStyle = shade('#0d101a', br);
+      ctx.fillStyle = shade(th.wr, br);
       ctx.beginPath();
       ctx.moveTo(sx + TILE_W / 2, sy - WH); ctx.lineTo(sx, sy + TILE_H / 2 - WH);
       ctx.lineTo(sx, sy + TILE_H / 2); ctx.lineTo(sx + TILE_W / 2, sy);
       ctx.closePath(); ctx.fill();
       // 윗면
-      drawDiamond(sx, sy - WH, shade('#232a3f', br));
+      drawDiamond(sx, sy - WH, shade(th.wt, br));
     }
   }
 }
@@ -1092,6 +1235,12 @@ function drawMonster(sx, sy, mon) {
   ctx.save();
   ctx.translate(sx, sy);
   ctx.scale(mon.scale, mon.scale);
+  if (mon.elite) {
+    // 엘리트 오라
+    const pulse = .3 + Math.sin(t * 5) * .12;
+    ctx.fillStyle = `rgba(200,120,255,${pulse})`;
+    ctx.beginPath(); ctx.ellipse(0, 1, 15, 6.5, 0, 0, Math.PI * 2); ctx.fill();
+  }
   ctx.fillStyle = 'rgba(0,0,0,0.25)';
   ctx.beginPath(); ctx.ellipse(0, 2, 11, 4.5, 0, 0, Math.PI * 2); ctx.fill();
   ctx.scale(mon.face, 1);
@@ -1144,7 +1293,7 @@ function drawMonster(sx, sy, mon) {
 
   if (mon.hp < mon.maxHp) {
     const w = mon.boss ? 44 : 24, ratio = clamp(mon.hp / mon.maxHp, 0, 1);
-    const by = sy - 34 - (mon.scale > 1 ? 22 : 0);
+    const by = sy - 34 - (mon.scale - 1) * 30;
     ctx.fillStyle = 'rgba(10,25,35,0.8)';
     ctx.fillRect(sx - w / 2, by, w, 4.5);
     ctx.fillStyle = mon.boss ? '#ffb347' : '#f06a6a';
@@ -1258,6 +1407,26 @@ function drawProp(sx, sy, p) {
       ctx.fillText('▼', 0, 4);
       break;
     }
+    case 'trap': {
+      if (p.armed) {
+        ctx.fillStyle = 'rgba(0,0,0,0.2)';
+        ctx.beginPath(); ctx.ellipse(0, 1, 15, 5, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#9aa2ad';
+        for (let i = -1; i <= 1; i++) {
+          ctx.beginPath();
+          ctx.moveTo(i * 9 - 4, 0); ctx.lineTo(i * 9, -9); ctx.lineTo(i * 9 + 4, 0);
+          ctx.closePath(); ctx.fill();
+        }
+      } else {
+        ctx.fillStyle = 'rgba(90,95,105,0.55)';
+        for (let i = -1; i <= 1; i++) {
+          ctx.beginPath();
+          ctx.moveTo(i * 9 - 4, 0); ctx.lineTo(i * 9, -3); ctx.lineTo(i * 9 + 4, 0);
+          ctx.closePath(); ctx.fill();
+        }
+      }
+      break;
+    }
     case 'shrine': {
       const glow = .6 + Math.sin(state.time * 3) * .25;
       ctx.fillStyle = '#8f8f96';
@@ -1280,6 +1449,15 @@ function drawItem(sx, sy, it) {
     ctx.beginPath(); ctx.ellipse(0, -5, 6, 4.5, 0, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = '#a97c12'; ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.ellipse(0, -5, 6, 4.5, 0, 0, Math.PI * 2); ctx.stroke();
+  } else if (it.type === 'potion') {
+    ctx.fillStyle = '#e0526a';
+    rr(-4.5, -10, 9, 9, 3.5);
+    ctx.fillStyle = '#c8dae8';
+    rr(-2, -14, 4, 4, 1);
+    ctx.fillStyle = '#8a5a2b';
+    rr(-2.5, -16, 5, 2.5, 1);
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    rr(-3, -9, 2, 4, 1);
   } else {
     ctx.fillStyle = '#8a5a2b';
     rr(-8, -12, 16, 11, 2.5);
@@ -1406,6 +1584,7 @@ function loadSave() {
       state.xp = s.xp || 0;
       state.gold = s.gold || 0;
       if (s.meta) for (const k of Object.keys(state.meta)) state.meta[k] = clamp(s.meta[k] || 0, 0, 99);
+      state.best = clamp(s.best || 0, 0, 999);
       party.forEach(m => { m.hp = maxHp(m); });
     }
   } catch (e) { /* 무시 */ }
@@ -1414,7 +1593,7 @@ setInterval(() => {
   if (!saveDirty) return;
   saveDirty = false;
   try {
-    localStorage.setItem('dunjeon-save', JSON.stringify({ lv: state.lv, xp: state.xp, gold: state.gold, meta: state.meta }));
+    localStorage.setItem('dunjeon-save', JSON.stringify({ lv: state.lv, xp: state.xp, gold: state.gold, meta: state.meta, best: state.best }));
   } catch (e) { /* 무시 */ }
 }, 3000);
 
@@ -1466,6 +1645,6 @@ requestAnimationFrame(frame);
 window.GAME = {
   state, party, leader,
   enterDungeon: () => { state.cameFromDungeon = false; enterDungeon(); },
-  escapeDungeon, descend, openBuffChoice, openShop, closeModal,
+  escapeDungeon, descend, openBuffChoice, openShop, openRelicChoice, closeModal, tryLeaderStep,
   toggleAuto: () => el('autoBtn').click(),
 };
