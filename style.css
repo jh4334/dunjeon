@@ -44,7 +44,8 @@ html, body {
 #buffBar {
   position: absolute; top: 52px; left: 12px;
   display: flex; flex-wrap: wrap; gap: 5px;
-  max-width: 50vw;
+  /* 우측 탐험 패널(190px + 여백)과 겹치지 않도록 폭을 제한 — 넘치면 줄바꿈 */
+  max-width: min(50vw, calc(100vw - 230px));
 }
 #buffBar .chip {
   background: rgba(8, 32, 40, 0.85);
@@ -63,8 +64,17 @@ html, body {
 #explorePanel {
   position: absolute; top: 12px; right: 12px;
   width: 190px; font-size: 12px;
+  word-break: keep-all;            /* 한글 단어 중간에서 줄바꿈되지 않게 */
+  overflow-wrap: break-word;
 }
-#explorePanel .row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+#explorePanel .row { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; margin-bottom: 3px; }
+#exploreTitle { white-space: nowrap; }
+#explorePct { flex: none; }
+/* 2행: 바이옴 이름 (아이콘 포함) — 작은 글씨 */
+#exploreBiome {
+  font-size: 11px; color: #a9d8d2; margin-bottom: 4px;
+  word-break: keep-all; line-height: 1.25;
+}
 #exploreBarWrap {
   height: 10px; background: #0a1a20;
   border: 1px solid #467e78; border-radius: 3px; overflow: hidden;
@@ -107,6 +117,7 @@ html, body {
   display: flex; flex-direction: column; gap: 10px;
 }
 .deco {
+  position: relative;
   width: 44px; height: 44px;
   background: rgba(8, 32, 40, 0.85);
   border: 2px solid #5ba8a0;
@@ -116,6 +127,21 @@ html, body {
   filter: saturate(.6);
 }
 .deco:active { transform: scale(.94); }
+/* 알림 뱃지 — 미사용 패시브 포인트 + 미장착 새 젬 */
+.deco .badge {
+  position: absolute; top: -6px; right: -6px;
+  min-width: 19px; height: 19px;
+  padding: 0 4px;
+  display: flex; align-items: center; justify-content: center;
+  background: #d8323f;
+  border: 2px solid #ffd7db;
+  border-radius: 10px;
+  color: #fff;
+  font-size: 11px; font-weight: 700; line-height: 1;
+  text-shadow: 0 1px 0 rgba(0,0,0,.5);
+  box-shadow: 0 0 8px rgba(216, 50, 63, .8);
+  pointer-events: none;
+}
 
 #dpad {
   position: absolute; bottom: 24px; left: 50%;
@@ -246,9 +272,124 @@ html, body {
   font-family: inherit;
 }
 .modalBtn:active { transform: translateY(1px); }
+/* ---- Phase 3: 직업 / 젬 / 패시브 ---- */
+.classRow.cur { background: rgba(80, 60, 120, 0.35); border-radius: 6px; }
+
+.tabRow { display: flex; gap: 8px; margin-bottom: 12px; }
+.tabBtn {
+  flex: 1; padding: 8px 4px;
+  background: rgba(20, 50, 60, 0.9);
+  border: 2px solid #5ba8a0; border-radius: 8px;
+  color: #d8f3ef; font-weight: 700; font-size: 13px;
+  cursor: pointer; font-family: inherit;
+}
+.tabBtn.on { background: #1d4a44; border-color: #ffe88a; color: #ffe9c0; }
+
+.partyRow {
+  display: flex; align-items: center; gap: 9px;
+  padding: 8px 4px;
+  border-bottom: 1px solid rgba(143, 208, 202, 0.2);
+}
+.pFace {
+  width: 38px; height: 38px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(20, 50, 60, 0.9);
+  border: 2px solid #5ba8a0; border-radius: 8px;
+  font-size: 20px;
+}
+.pInfo { flex: 1; min-width: 0; }
+.pInfo b { font-size: 13px; display: block; }
+.pInfo small { font-size: 10.5px; color: #a9d8d2; display: block; }
+.pInfo .pHp { color: #7ec8f0; }
+.pSlots { display: flex; gap: 5px; flex: none; }
+.gemSlot {
+  width: 52px; min-height: 44px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  background: rgba(12, 34, 42, 0.9);
+  border: 2px dashed #467e78; border-radius: 8px;
+  color: #a9d8d2; cursor: pointer; font-family: inherit;
+  padding: 3px 2px;
+}
+.gemSlot .gIcon { font-size: 16px; }
+.gemSlot small { font-size: 9px; line-height: 1.1; text-align: center; }
+.gemSlot.filled { border-style: solid; border-color: #8fd0ca; color: #eafffb; background: rgba(24, 66, 78, 0.9); }
+.gemSlot.picking { border-color: #ffe88a; box-shadow: 0 0 8px rgba(255, 232, 138, .5); }
+.gemSlot.locked { opacity: .5; cursor: default; }
+
+.gemPickList {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px; margin-bottom: 8px;
+  background: rgba(6, 24, 30, 0.9);
+  border: 1px solid #467e78; border-radius: 8px;
+}
+.gemPick {
+  display: grid; grid-template-columns: 24px 1fr auto; align-items: center;
+  gap: 4px 8px;
+  padding: 7px 8px;
+  background: rgba(20, 50, 60, 0.9);
+  border: 2px solid #5ba8a0; border-radius: 6px;
+  color: #eafffb; cursor: pointer; text-align: left; font-family: inherit;
+}
+.gemPick .gIcon { font-size: 17px; grid-row: span 2; }
+.gemPick b { font-size: 12px; }
+.gemPick small { font-size: 10px; color: #a9d8d2; grid-column: 2; }
+.gemPick em { font-style: normal; font-size: 11px; color: #7ee8d8; grid-row: span 2; }
+.gemPick.off { display: block; text-align: center; font-weight: 700; font-size: 12px; }
+.gemPick.dim { opacity: .4; cursor: default; }
+.gemEmpty { font-size: 11px; color: #a9d8d2; text-align: center; padding: 6px; }
+
+.treeRow { margin-bottom: 12px; }
+.treeHead { font-size: 13px; margin-bottom: 6px; }
+.treeHead em { font-style: normal; float: right; color: #7ee8d8; font-size: 11px; }
+.treeLine { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+.pNode {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 6px 2px;
+  background: rgba(12, 34, 42, 0.9);
+  border: 2px solid #3c635f; border-radius: 6px;
+  color: #8fb8b2; cursor: pointer; font-family: inherit;
+}
+.pNode b { font-size: 11px; }
+.pNode small { font-size: 8.5px; line-height: 1.15; text-align: center; }
+.pNode em { font-style: normal; font-size: 8px; line-height: 1.1; text-align: center; color: #6f9a95; }
+.pNode.taken { background: rgba(30, 74, 68, 0.95); border-color: #7ee8d8; color: #eafffb; }
+.pNode.taken em { color: #a9d8d2; }
+.pNode.next:not(:disabled) { border-color: #ffe88a; color: #ffe9c0; box-shadow: 0 0 6px rgba(255, 232, 138, .35); }
+.pNode:disabled { cursor: default; opacity: .75; }
+
 .sumRow { display: flex; justify-content: space-between; padding: 6px 2px; font-size: 14px; }
 .sumRow.bad b { color: #ff8a8a; }
 .sumHint { margin-top: 10px; font-size: 12px; color: #a9d8d2; text-align: center; }
+
+/* ---- 리뷰 4차: 런 정보 / 설정 ---- */
+.riHead { font-size: 12px; color: #a9d8d2; margin: 12px 0 4px; }
+.riChips { display: flex; flex-wrap: wrap; gap: 5px; }
+.riChip {
+  background: rgba(20, 50, 60, 0.9);
+  border: 1.5px solid #5ba8a0; border-radius: 12px;
+  color: #d8f3ef; padding: 3px 9px; font-size: 12px;
+}
+.riChip b { font-size: 11px; margin-left: 3px; color: #7ee8d8; }
+.riChip.relic { border-color: #e8b34a; }
+.riChip.relic b { color: #ffd75e; }
+.riNone { font-size: 11px; color: #7fa5a0; padding: 2px; }
+
+.setRow {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 4px;
+  border-bottom: 1px solid rgba(143, 208, 202, 0.2);
+}
+.setRow .sInfo { flex: 1; }
+.toggleBtn {
+  min-width: 66px; padding: 6px 10px;
+  background: #1d4a44;
+  border: 2px solid #5ba8a0; border-radius: 6px;
+  color: #8fb8b2; font-weight: 700; font-size: 12px;
+  cursor: pointer; font-family: inherit;
+}
+.toggleBtn.on { border-color: #7ee8d8; color: #eafffb; box-shadow: 0 0 6px rgba(126, 232, 216, .35); }
+.modalBtn.danger { background: #4a1d22; border-color: #e08a96; color: #ffe3e8; }
+.modalBtn.danger.armed { background: #922632; border-color: #ff6b81; }
 
 #minimap {
   position: absolute; left: 68px; top: 45%;
@@ -280,3 +421,24 @@ html, body {
 }
 
 .hidden { display: none !important; }
+
+/* ---- 좁은 모바일 폭(≈360px): 좌상단 버프 칩과 우측 탐험 패널이 겹치지 않게 축소 ---- */
+@media (max-width: 420px) {
+  #topLeft { gap: 6px; }
+  #lvPanel, #goldPanel { font-size: 12px; padding: 4px 8px; }
+  #buffBar { top: 46px; gap: 4px; }
+  #buffBar .chip { font-size: 10.5px; padding: 1px 6px; border-radius: 10px; }
+  #buffBar .chip b { font-size: 9.5px; }
+  #explorePanel { width: 160px; font-size: 11px; padding: 4px 7px; }
+  #exploreBiome { font-size: 10px; }
+  #exploreCount { font-size: 10px; }
+  #exploreBarWrap { height: 8px; }
+  /* 긴 안내(온보딩 힌트 등)가 화면 밖으로 나가지 않게 줄바꿈 허용 */
+  #toast {
+    max-width: calc(100vw - 24px);
+    white-space: normal;
+    word-break: keep-all;
+    text-align: center;
+    font-size: 13px; padding: 8px 14px;
+  }
+}
