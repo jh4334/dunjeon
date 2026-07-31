@@ -2960,8 +2960,10 @@ function openRunInfo() {
 
 // 데이터 초기화 후 새로고침 — 테스트에서 대체할 수 있도록 간접 참조로 둔다
 const RELOAD = { fn: () => location.reload() };
+const SAVE_KEYS = ['dunjeon-save'];        // 게임이 쓰는 localStorage 키 (초기화 대상)
 function wipeSaveData() {
-  try { localStorage.removeItem('dunjeon-save'); localStorage.clear(); } catch (e) { /* 무시 */ }
+  // 오리진 전체를 비우지 않고 게임이 쓰는 키만 지운다
+  try { SAVE_KEYS.forEach(k => localStorage.removeItem(k)); } catch (e) { /* 무시 */ }
   saveDirty = false;
   RELOAD.fn();
 }
@@ -4453,7 +4455,7 @@ window.GAME = {
   // 리뷰 4차 수정 훅 (뱃지 / 온보딩 힌트 / 런 정보·설정 모달 / 사운드)
   updatePartyBadge, partyBadgeCount, newGemCount, unequippedGemCount,
   hintOnce, checkGoldHint,
-  openRunInfo, openSettings, SETTING_DEFS, wipeSaveData, reloadHook: RELOAD,
+  openRunInfo, openSettings, SETTING_DEFS, wipeSaveData, reloadHook: RELOAD, SAVE_KEYS,
   SFX, SFX_MASTER, sfx, initAudio,
   sfxCount: () => sfxPlayed,
   audioCtx: () => audioCtx,
