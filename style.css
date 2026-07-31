@@ -44,7 +44,8 @@ html, body {
 #buffBar {
   position: absolute; top: 52px; left: 12px;
   display: flex; flex-wrap: wrap; gap: 5px;
-  max-width: 50vw;
+  /* 우측 탐험 패널(190px + 여백)과 겹치지 않도록 폭을 제한 — 넘치면 줄바꿈 */
+  max-width: min(50vw, calc(100vw - 230px));
 }
 #buffBar .chip {
   background: rgba(8, 32, 40, 0.85);
@@ -374,3 +375,16 @@ html, body {
 }
 
 .hidden { display: none !important; }
+
+/* ---- 좁은 모바일 폭(≈360px): 좌상단 버프 칩과 우측 탐험 패널이 겹치지 않게 축소 ---- */
+@media (max-width: 420px) {
+  #topLeft { gap: 6px; }
+  #lvPanel, #goldPanel { font-size: 12px; padding: 4px 8px; }
+  #buffBar { top: 46px; gap: 4px; }
+  #buffBar .chip { font-size: 10.5px; padding: 1px 6px; border-radius: 10px; }
+  #buffBar .chip b { font-size: 9.5px; }
+  #explorePanel { width: 160px; font-size: 11px; padding: 4px 7px; }
+  #exploreBiome { font-size: 10px; }
+  #exploreCount { font-size: 10px; }
+  #exploreBarWrap { height: 8px; }
+}

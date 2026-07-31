@@ -80,8 +80,8 @@ const CLASSES = {
   knight: {
     k: 'knight', name: '기사', icon: '🛡️', cost: 0, melee: 1.0,
     dress: '#2b2f45', hair: '#3d6ff0',
-    desc: '근접 강타 · 방패<br>가장 단단한 기본 직업',
-    long: '검과 방패로 정면에서 맞선다. 근접 공격력 100%.',
+    desc: '근접 강타 + 인접 1체 스플래시<br>가장 단단한 기본 직업',
+    long: '검과 방패로 정면에서 맞선다. 근접 공격력 100%. 때린 적의 바로 옆 적 1마리에게도 50%가 들어간다.',
   },
   necro: {
     k: 'necro', name: '네크로맨서', icon: '💀', cost: 300, melee: 0.4,
@@ -90,15 +90,15 @@ const CLASSES = {
     long: '6초마다 해골을 일으켜 세운다. 해골은 리더를 따라다니며 몬스터의 어그로를 대신 받는다.',
   },
   bomber: {
-    k: 'bomber', name: '폭탄공', icon: '💣', cost: 500, melee: 0.6,
+    k: 'bomber', name: '폭탄공', icon: '💣', cost: 500, melee: 0.8,
     dress: '#7a4a1e', hair: '#e07b2a',
-    desc: '지나온 칸에 지뢰 설치 (최대 6)<br>근접 60% · 폭발 1.8배 광역',
+    desc: '지나온 칸에 지뢰 설치 (최대 8)<br>근접 80% · 폭발 1.8배 광역',
     long: '이동할 때마다 지나온 자리에 지뢰를 남긴다. 몬스터가 밟으면 주변 1칸이 터진다.',
   },
   blade: {
     k: 'blade', name: '블레이드 댄서', icon: '🗡️', cost: 800, melee: 0,
     dress: '#1e6b63', hair: '#2fd0bb',
-    desc: '회전 칼날 오라 (주변 8칸)<br>0.5초마다 공격력 45%',
+    desc: '회전 칼날 오라 (주변 8칸)<br>0.5초마다 공격력 65%',
     long: '근접 공격 대신 몸을 회전시켜 인접한 모든 적을 동시에 벤다. 이동하면서 썰고 다니는 스타일.',
   },
 };
@@ -1091,7 +1091,12 @@ function summonMinion(mon) {
   return null;
 }
 
-/* ---- 텔레그래프 강공격 ---- */
+/* ---- 텔레그래프 강공격 ----
+ * 하드 난이도 배율(1.35)과 텔레그래프 계수가 겹치면 저레벨 파티가 한 방에 쓰러지므로,
+ * 최종 피해(난이도·방어 적용 후)를 대상 최대 HP의 일정 비율로 상한한다.
+ * 일반 공격에는 상한이 없다. */
+const TELEGRAPH_MULT = 2.2;      // 몬스터 공격력 대비 강타 계수
+const TELEGRAPH_CAP = 0.45;      // 강타 1회 최대 피해 = 대상 최대 HP의 45%
 function castTelegraph(mon, force) {
   const wld = state.world;
   if (!wld || wld.mode !== 'dungeon') return null;
@@ -1107,7 +1112,7 @@ function castTelegraph(mon, force) {
     const t = tileAt(wld, x, y);
     if (t === T.FLOOR || t === T.GRASS) cells.push({ x, y });
   });
-  const tg = { cells, t: 0, delay: 1.0, dmg: mon.atk * 2.2 };
+  const tg = { cells, t: 0, delay: 1.0, dmg: mon.atk * TELEGRAPH_MULT };
   wld.telegraphs.push(tg);
   addFloater(mon.px, mon.py - 52, '⚠️ 강타 준비!', '#ff9a5a', 13);
   return tg;
@@ -1126,7 +1131,7 @@ function updateTelegraphs(dt) {
     party.forEach(m => {
       if (m.down) return;
       if (!tg.cells.some(c => c.x === m.gx && c.y === m.gy)) return;
-      damageMember(m, tg.dmg);
+      damageMember(m, tg.dmg, null, { capFrac: TELEGRAPH_CAP });
       hit++;
     });
     const c0 = tg.cells[0];
@@ -1175,7 +1180,7 @@ function onLeaderArrive() {
   // 폭탄공: 지나온 칸에 지뢰를 남긴다 (쿨 1.2초 · 동시 최대 6개)
   if (wld.mode === 'dungeon' && state.classId === 'bomber' && (leader.mineCd || 0) <= 0) {
     const back = trail[0];
-    if (back && placeMine(back.x, back.y)) leader.mineCd = 1.2;
+    if (back && placeMine(back.x, back.y)) leader.mineCd = 0.9;
   }
   // 아이템 획득 (리더 주변 1칸)
   for (let i = wld.items.length - 1; i >= 0; i--) {
@@ -1349,7 +1354,8 @@ function checkLevelUp() {
     need = xpNeed(state.lv);
   }
 }
-function damageMember(m, dmg, attacker) {
+// opt: { capFrac } — 최종 피해를 대상 최대 HP의 capFrac 배로 상한 (텔레그래프 강타 전용)
+function damageMember(m, dmg, attacker, opt) {
   if (m.down) return;
   if (m.invulnT > 0) {                          // 부활 직후 무적
     addFloater(m.px, m.py - 30, '무적', '#8fe0ff', 11);
@@ -1358,6 +1364,7 @@ function damageMember(m, dmg, attacker) {
   dmg *= Math.max(0.4, 1 - 0.08 * runBuff('def'));
   dmg *= (1 - passiveDR());                   // 패시브 '방벽'
   dmg *= diff().dmg;                          // 난이도 보정
+  if (opt && opt.capFrac) dmg = Math.min(dmg, maxHp(m) * opt.capFrac);   // 원샷 방지 상한
   m.hp -= dmg;
   addFloater(m.px, m.py - 30, String(Math.floor(dmg)), '#ff7a7a', 12);
   // 가시 갑옷: 받은 피해 일부 반사
@@ -1408,14 +1415,14 @@ function finishArena() {
  * Phase 3 — 직업 능력 (해골 미니언 / 지뢰 / 회전 칼날 오라)
  * 미니언·지뢰는 층 내 상태이며 저장되지 않는다.
  * =================================================================== */
-const MINION_MAX = 3, MINE_MAX = 6;
+const MINION_MAX = 3, MINE_MAX = 8;
 const DIRS8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
 
 function minionList() { const w = state.world; return (w && w.minions) || []; }
 function mineList() { const w = state.world; return (w && w.mines) || []; }
 function minionAt(wld, x, y) { return (wld.minions || []).find(k => k.hp > 0 && k.gx === x && k.gy === y); }
 
-const MINION_HP_RATIO = 0.5;    // 리더 최대 HP 대비 미니언 HP
+const MINION_HP_RATIO = 0.75;   // 리더 최대 HP 대비 미니언 HP (탱킹 역할이 살도록 상향)
 const MINION_LEASH = 6;         // 리더에게서 이만큼 벗어나면 전투를 포기하고 복귀
 const MINION_STEP = 0.4;        // 기본 이동 간격(초)
 const MINION_RETURN_MUL = 0.5;  // 복귀 중에는 간격 절반 → 리더 곁으로 빠르게 붙는다
@@ -1703,7 +1710,7 @@ function updateClassAbilities(dt) {
   updateMines(dt);
 }
 // 주변 8칸 회전 칼날
-const BLADE_AURA_TICK = 0.32;    // 틱당 공격력 계수 (다수전 과강 완화)
+const BLADE_AURA_TICK = 0.65;    // 틱당 공격력 계수 (근접 공격이 없는 만큼 다수전 정리 속도로 생존)
 function bladeAura(mods) {
   const wld = state.world;
   const dmg = atkPow(leader) * BLADE_AURA_TICK * mods.dmg;
@@ -1718,6 +1725,26 @@ function bladeAura(mods) {
   });
   if (hit) addSparkle(leader.px, leader.py, '#7ee8d8');
   return hit;
+}
+
+/* ---- 기사 근접 스플래시 ----
+ * 단일 대상만 때리던 기사는 팩 물량전에서 약했다. 주 대상을 때릴 때
+ * 주 대상 기준 인접(체비셰프 1)의 다른 몬스터 1마리에게 절반 피해를 나눠준다.
+ * damageMonster 경로를 그대로 타므로 치명타·처형 규칙이 자동 적용된다. (짐꾼은 제외) */
+const KNIGHT_SPLASH = 0.5;
+function knightSplash(best, dmg) {
+  const wld = state.world;
+  let tgt = null, bd = 99;
+  wld.monsters.forEach(mon => {
+    if (mon === best || mon.hp <= 0) return;
+    const d = cheb(mon.gx, mon.gy, best.gx, best.gy);
+    if (d <= 1 && d < bd) { tgt = mon; bd = d; }
+  });
+  if (!tgt) return null;
+  damageMonster(tgt, dmg * KNIGHT_SPLASH * rand(0.85, 1.2), '#ffd7a0');
+  if (!tgt.aggro) aggroPack(wld, tgt);
+  addSparkle(tgt.px, tgt.py, '#ffd7a0');
+  return tgt;
 }
 
 /* ---- 부활 규칙 ---- */
@@ -1750,18 +1777,22 @@ function updateCombat(dt) {
       if (d <= range && d < bd) { best = mon; bd = d; }
     });
     if (best) {
-      let dmg;
+      let dmg, splash = 0;
       if (m.role === 'mage') {
         dmg = atkPow(m) * mods.dmg;
         mageAttack(m, best, mons, mods);
       } else {
         dmg = atkPow(m) * meleeMult * mods.dmg;
         damageMonster(best, dmg * rand(0.85, 1.2), '#fff');
-        if (m === leader) applyLeaderGems(best, dmg, mods);
+        if (m === leader) {
+          applyLeaderGems(best, dmg, mods);
+          // 기사: 주 대상 인접 1마리에게 50% 스플래시
+          if (curClass().k === 'knight' && knightSplash(best, dmg)) splash = dmg * KNIGHT_SPLASH;
+        }
       }
-      // 흡혈 송곳니: 가한 피해의 일부 회복
+      // 흡혈 송곳니: 가한 피해의 일부 회복 (스플래시 포함)
       if (relicCount('fang')) {
-        m.hp = Math.min(maxHp(m), m.hp + dmg * 0.08 * relicCount('fang'));
+        m.hp = Math.min(maxHp(m), m.hp + (dmg + splash) * 0.08 * relicCount('fang'));
       }
       m.face = (best.gx > m.gx || best.gy < m.gy) ? 1 : -1;
       m.atkCd = { knight: 0.55, mage: 1.1 / (1 + 0.2 * relicCount('crystal')), porter: 0.9 }[m.role] * mods.cd;
@@ -4034,6 +4065,9 @@ window.GAME = {
   // 직업 능력
   summonSkeleton, minions: () => minionList(), damageMinion, updateMinions,
   MINION_HP_RATIO, MINION_LEASH, BLADE_AURA_TICK,
+  // 리뷰 3차 수정 훅 (텔레그래프 상한 / 기사 스플래시)
+  TELEGRAPH_MULT, TELEGRAPH_CAP, KNIGHT_SPLASH, knightSplash,
+  updateTelegraphs,
   // 리뷰 1차 수정 훅 (부활 / 자동 탐험 템포 / 회피)
   REVIVE_BLOCK_R, REVIVE_INVULN, AUTO_RUSH_PCT,
   // 리뷰 2차 수정 훅 (모달 큐 / 러시 보상 / 미니언 복귀 / 타격감)
