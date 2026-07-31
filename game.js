@@ -37,7 +37,7 @@ function isoY(x, y) { return (x + y) * (TILE_H / 2); }
 /* ---------------- 게임 상태 ---------------- */
 const state = {
   lv: 1, xp: 0, gold: 0,
-  meta: { atk: 0, hp: 0, heal: 0, gold: 0, revive: 0 },  // 영구 강화 (로그라이트 메타 진행)
+  meta: { atk: 0, hp: 0, heal: 0, gold: 0, revive: 0, classes: ['knight'] },  // 영구 강화 (로그라이트 메타 진행) + 해금 직업
   run: null,                                              // 현재 던전 런 (버프/기록)
   paused: false,
   best: 0,                                                // 최고 도달 층 (영구 기록)
@@ -49,6 +49,12 @@ const state = {
   minimapOn: false,
   difficulty: 'normal',   // 'casual' | 'normal' | 'hard'
   difficultyPicked: false, // 최초 던전 입장 시 1회 선택
+  // Phase 3 — 직업 / 스킬 젬 / 패시브
+  classId: 'knight',                       // 리더(유리)의 직업
+  gems: [],                                // 영구 소장 젬 인벤토리 (젬 키 배열, 중복 허용)
+  gemLoadout: {},                          // { memberId: { skill, support } }
+  passivePts: 0,                           // 미사용 패시브 포인트
+  passives: { atk: 0, def: 0, util: 0 },   // 갈래별 찍은 노드 수 (0~5)
 };
 function xpNeed(lv) { return Math.floor(30 * Math.pow(lv, 1.35)); }
 
@@ -60,6 +66,206 @@ const DIFFS = {
 };
 function diff() { return DIFFS[state.difficulty] || DIFFS.normal; }
 function rewardMult() { return diff().reward; }
+
+/* =====================================================================
+ * Phase 3 — 리더 직업 / 스킬 젬 / 패시브 트리 (PoE식 빌드 다양성)
+ * =================================================================== */
+
+/* ---------------- 리더 직업 ---------------- */
+// melee: 리더 근접 공격력 배율 (0 = 근접 공격 없음)
+const CLASSES = {
+  knight: {
+    k: 'knight', name: '기사', icon: '🛡️', cost: 0, melee: 1.0,
+    dress: '#2b2f45', hair: '#3d6ff0',
+    desc: '근접 강타 · 방패<br>가장 단단한 기본 직업',
+    long: '검과 방패로 정면에서 맞선다. 근접 공격력 100%.',
+  },
+  necro: {
+    k: 'necro', name: '네크로맨서', icon: '💀', cost: 300, melee: 0.4,
+    dress: '#4a2f78', hair: '#6b4aa8',
+    desc: '해골 미니언 소환 (최대 3)<br>근접 40% · 소환수가 탱킹',
+    long: '6초마다 해골을 일으켜 세운다. 해골은 리더를 따라다니며 몬스터의 어그로를 대신 받는다.',
+  },
+  bomber: {
+    k: 'bomber', name: '폭탄공', icon: '💣', cost: 500, melee: 0.6,
+    dress: '#7a4a1e', hair: '#e07b2a',
+    desc: '지나온 칸에 지뢰 설치 (최대 6)<br>근접 60% · 폭발 1.8배 광역',
+    long: '이동할 때마다 지나온 자리에 지뢰를 남긴다. 몬스터가 밟으면 주변 1칸이 터진다.',
+  },
+  blade: {
+    k: 'blade', name: '블레이드 댄서', icon: '🗡️', cost: 800, melee: 0,
+    dress: '#1e6b63', hair: '#2fd0bb',
+    desc: '회전 칼날 오라 (주변 8칸)<br>0.5초마다 공격력 45%',
+    long: '근접 공격 대신 몸을 회전시켜 인접한 모든 적을 동시에 벤다. 이동하면서 썰고 다니는 스타일.',
+  },
+};
+const CLASS_KEYS = Object.keys(CLASSES);
+function curClass() { return CLASSES[state.classId] || CLASSES.knight; }
+function classUnlocked(k) {
+  if (k === 'knight') return true;
+  return Array.isArray(state.meta.classes) && state.meta.classes.indexOf(k) >= 0;
+}
+function unlockClass(k) {
+  if (!CLASSES[k] || classUnlocked(k)) return false;
+  if (!Array.isArray(state.meta.classes)) state.meta.classes = ['knight'];
+  state.meta.classes.push(k);
+  saveDirty = true;
+  return true;
+}
+// 던전 안에서는 직업을 바꿀 수 없다
+function canChangeClass() { return !(state.world && state.world.mode === 'dungeon'); }
+function setClass(k) {
+  if (!CLASSES[k] || !classUnlocked(k) || !canChangeClass()) return false;
+  state.classId = k;
+  // 직업 고유 상태 초기화
+  leader.summonT = 0; leader.mineCd = 0; leader.auraT = 0;
+  if (state.world) { state.world.minions = []; state.world.mines = []; }
+  saveDirty = true;
+  return true;
+}
+
+/* ---------------- 스킬 젬 / 서포트 젬 ---------------- */
+// fit: 장착 가능한 파티원 id ('knight' = 리더 / null = 아무나)
+const GEMS = [
+  { k: 'fireball', kind: 'skill',   fit: 'mage',   icon: '🔥', name: '화염구',     desc: '마법사 공격이 대상 주변 1칸 광역화' },
+  { k: 'chain',    kind: 'skill',   fit: 'mage',   icon: '⚡', name: '연쇄 번개',   desc: '마법사 공격이 최대 3마리 연쇄 (70%씩)' },
+  { k: 'freeze',   kind: 'skill',   fit: 'mage',   icon: '❄️', name: '빙결',       desc: '마법사 공격 시 2초 슬로우' },
+  { k: 'smite',    kind: 'skill',   fit: 'knight', icon: '💥', name: '강타',       desc: '리더 근접 20% 확률 1초 스턴' },
+  { k: 'holy',     kind: 'skill',   fit: 'priest', icon: '🌟', name: '신성한 빛',   desc: '사제의 힐이 반경 2칸 광역화' },
+  { k: 'poison',   kind: 'skill',   fit: 'knight', icon: '🧪', name: '맹독',       desc: '리더 근접 3초간 초당 30% 도트' },
+  { k: 'amp',      kind: 'support', fit: null,     icon: '📈', name: '증폭',       desc: '연결된 스킬 피해 +30%' },
+  { k: 'haste',    kind: 'support', fit: null,     icon: '💨', name: '가속',       desc: '해당 캐릭터 공격/시전 쿨 -25%' },
+  { k: 'spread',   kind: 'support', fit: null,     icon: '🌀', name: '확산',       desc: '광역 반경 / 연쇄 수 +1' },
+];
+const GEM_BY_KEY = {};
+GEMS.forEach(g => { GEM_BY_KEY[g.k] = g; });
+const SUPPORT_LV = 15;                        // 서포트 슬롯 해금 레벨
+function supportUnlocked() { return state.lv >= SUPPORT_LV; }
+
+function loadoutOf(m) {
+  const id = typeof m === 'string' ? m : m.id;
+  if (!state.gemLoadout[id]) state.gemLoadout[id] = { skill: null, support: null };
+  return state.gemLoadout[id];
+}
+// 젬이 해당 파티원 / 슬롯에 맞는가
+function gemFits(gem, m, slot) {
+  if (!gem) return false;
+  if (slot === 'support') return gem.kind === 'support';
+  if (gem.kind !== 'skill') return false;
+  return gem.fit === null || gem.fit === m.id;
+}
+// 인벤토리 보유 수 - 장착 중인 수 = 사용 가능 수
+function gemOwned(k) { return state.gems.filter(g => g === k).length; }
+function gemEquippedCount(k) {
+  let n = 0;
+  party.forEach(m => {
+    const lo = loadoutOf(m);
+    if (lo.skill === k) n++;
+    if (lo.support === k) n++;
+  });
+  return n;
+}
+function gemAvailable(k) { return gemOwned(k) - gemEquippedCount(k); }
+function giveGem(k) {
+  if (!GEM_BY_KEY[k]) return false;
+  state.gems.push(k);
+  saveDirty = true;
+  return true;
+}
+function equipGem(memberId, slot, gemKey) {
+  const m = party.find(p => p.id === memberId);
+  if (!m) return false;
+  if (slot !== 'skill' && slot !== 'support') return false;
+  if (slot === 'support' && !supportUnlocked()) return false;
+  const lo = loadoutOf(m);
+  if (gemKey == null) { lo[slot] = null; saveDirty = true; return true; }
+  const gem = GEM_BY_KEY[gemKey];
+  if (!gemFits(gem, m, slot)) return false;
+  if (gemAvailable(gemKey) <= 0 && lo[slot] !== gemKey) return false;
+  lo[slot] = gemKey;
+  saveDirty = true;
+  return true;
+}
+function unequipGem(memberId, slot) { return equipGem(memberId, slot, null); }
+// 파티원의 젬 효과 요약 (전투 로직에서 사용)
+function gemMods(m) {
+  const lo = loadoutOf(m);
+  const skill = lo.skill;
+  const sup = supportUnlocked() ? lo.support : null;
+  return {
+    skill,
+    dmg: (sup === 'amp' && skill) ? 1.3 : 1,     // 증폭은 '연결된 스킬'이 있어야 발동
+    cd: sup === 'haste' ? 0.75 : 1,
+    spread: sup === 'spread' ? 1 : 0,
+  };
+}
+
+/* ---------------- 간이 패시브 트리 ---------------- */
+// 각 갈래 5노드 직선 — 순서대로만 찍을 수 있다
+const PASSIVE_TREES = {
+  atk: {
+    key: 'atk', icon: '🗡️', name: '공격',
+    nodes: [
+      { name: '날카로움 I',  desc: '전체 피해 +4%' },
+      { name: '날카로움 II', desc: '전체 피해 +4%' },
+      { name: '급소 포착',   desc: '치명타 확률 +5%' },
+      { name: '날카로움 III', desc: '전체 피해 +4%' },
+      { name: '처형',        desc: 'HP 10% 이하 적 즉사' },
+    ],
+  },
+  def: {
+    key: 'def', icon: '🛡️', name: '생존',
+    nodes: [
+      { name: '단련 I',   desc: '최대 체력 +5%' },
+      { name: '단련 II',  desc: '최대 체력 +5%' },
+      { name: '방벽',     desc: '받는 피해 -5%' },
+      { name: '단련 III', desc: '최대 체력 +5%' },
+      { name: '불굴',     desc: '전멸 위기 시 1회 HP1 생존' },
+    ],
+  },
+  util: {
+    key: 'util', icon: '🎒', name: '유틸',
+    nodes: [
+      { name: '수완 I',   desc: '골드 획득 +5%' },
+      { name: '수완 II',  desc: '골드 획득 +5%' },
+      { name: '경보',     desc: '이동 속도 +8%' },
+      { name: '수완 III', desc: '골드 획득 +5%' },
+      { name: '매의 눈',  desc: '시야 +1' },
+    ],
+  },
+};
+const PASSIVE_KEYS = Object.keys(PASSIVE_TREES);
+const STACK_NODES = [1, 2, 4];                 // 수치가 누적되는 노드 순번
+function passiveN(tree) { return clamp(state.passives[tree] || 0, 0, 5); }
+function passiveStacks(tree) {
+  const n = passiveN(tree);
+  return STACK_NODES.filter(i => n >= i).length;
+}
+function passiveDmgMult()  { return 1 + 0.04 * passiveStacks('atk'); }
+function passiveCrit()     { return passiveN('atk') >= 3 ? 0.05 : 0; }
+function hasExecute()      { return passiveN('atk') >= 5; }
+function passiveHpMult()   { return 1 + 0.05 * passiveStacks('def'); }
+function passiveDR()       { return passiveN('def') >= 3 ? 0.05 : 0; }
+function hasUnyielding()   { return passiveN('def') >= 5; }
+function passiveGoldMult() { return 1 + 0.05 * passiveStacks('util'); }
+function passiveSpeedMult(){ return passiveN('util') >= 3 ? 1.08 : 1; }
+function passiveSight()    { return passiveN('util') >= 5 ? 1 : 0; }
+function sightRadius()     { return SIGHT + passiveSight(); }
+function revealRadius()    { return REVEAL + passiveSight(); }
+// 순서 강제: 다음 노드만 찍을 수 있고, 포인트가 있어야 한다
+function canTakePassive(tree) {
+  return !!PASSIVE_TREES[tree] && state.passivePts > 0 && passiveN(tree) < 5;
+}
+function addPassive(tree) {
+  if (!canTakePassive(tree)) return false;
+  const before = party.map(m => maxHp(m));
+  state.passives[tree] = passiveN(tree) + 1;
+  state.passivePts--;
+  if (tree === 'def') party.forEach((m, i) => { if (!m.down) m.hp += maxHp(m) - before[i]; });
+  saveDirty = true;
+  return true;
+}
+function passiveSpent() { return PASSIVE_KEYS.reduce((a, k) => a + passiveN(k), 0); }
 
 /* ---------------- 파티 ---------------- */
 function makeMember(spec) {
@@ -83,12 +289,12 @@ function relicCount(k) { return (state.run && state.run.relics[k]) || 0; }
 function maxHp(m) {
   const base = { knight: 60, mage: 40, priest: 42, porter: 50 }[m.role];
   const per  = { knight: 12, mage: 8,  priest: 8,  porter: 10 }[m.role];
-  return Math.floor((base + per * (state.lv - 1)) * (1 + 0.08 * state.meta.hp) * (1 + 0.12 * runBuff('hp')));
+  return Math.floor((base + per * (state.lv - 1)) * (1 + 0.08 * state.meta.hp) * (1 + 0.12 * runBuff('hp')) * passiveHpMult());
 }
 function atkPow(m) {
   const base = { knight: 6, mage: 5, priest: 0, porter: 3 }[m.role];
   const per  = { knight: 2.2, mage: 2.0, priest: 0, porter: 1.1 }[m.role];
-  return (base + per * (state.lv - 1)) * (1 + 0.08 * state.meta.atk) * (1 + 0.15 * runBuff('atk'));
+  return (base + per * (state.lv - 1)) * (1 + 0.08 * state.meta.atk) * (1 + 0.15 * runBuff('atk')) * passiveDmgMult();
 }
 function healPow() { return (10 + 3 * (state.lv - 1)) * (1 + 0.10 * state.meta.heal) * (1 + 0.20 * runBuff('heal')); }
 // 층 단위 위험 보상 배율 (위험한 경로 / 도전방)
@@ -96,7 +302,7 @@ function floorRisk() {
   const w = state.world;
   return (w && w.mode === 'dungeon' && w.riskMult) ? w.riskMult : 1;
 }
-function goldMult() { return 1.3 * (1 + 0.10 * state.meta.gold) * (1 + 0.20 * runBuff('gold')) * (1 + 0.30 * relicCount('charm')) * rewardMult() * floorRisk(); }
+function goldMult() { return 1.3 * (1 + 0.10 * state.meta.gold) * (1 + 0.20 * runBuff('gold')) * (1 + 0.30 * relicCount('charm')) * rewardMult() * floorRisk() * passiveGoldMult(); }
 party.forEach(m => { m.hp = maxHp(m); });
 
 /* ---------------- 이펙트 ---------------- */
@@ -124,6 +330,9 @@ function newWorld(mode, w, h) {
     seen: new Uint8Array(w * h),
     props: [], monsters: [], items: [],
     telegraphs: [],       // 강공격 예고 장판
+    // Phase 3: 직업 소환물 (저장하지 않는 층 내 상태)
+    minions: [],          // 네크로맨서 해골
+    mines: [],            // 폭탄공 지뢰
     floor: 0, walkTotal: 0, seenCount: 0,
     spawn: { x: 0, y: 0 },
     entrance: null, stairs: null, shrineUsed: false,
@@ -673,8 +882,9 @@ function countWalkable(wld) {
 }
 
 function reveal(wld, cx, cy) {
-  for (let dy = -REVEAL; dy <= REVEAL; dy++) for (let dx = -REVEAL; dx <= REVEAL; dx++) {
-    if (dx * dx + dy * dy > REVEAL * REVEAL + 1) continue;
+  const R = revealRadius();
+  for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+    if (dx * dx + dy * dy > R * R + 1) continue;
     const x = cx + dx, y = cy + dy;
     if (x < 0 || y < 0 || x >= wld.w || y >= wld.h) continue;
     const i = idx(wld, x, y);
@@ -719,6 +929,8 @@ function makeMonster(type, floor, x, y) {
     boss: !!d.boss, scale: d.scale || 1,
     stepInt: d.step, stepT: rand(0, d.step), atkCd: rand(0, .9), face: 1,
     packId: null, aggro: false, affixes: null, rewardMult: 1,
+    // Phase 3: 상태이상 (빙결 슬로우 / 스턴 / 도트)
+    slowT: 0, stunT: 0, dots: [], dotAcc: 0, dotT: 0,
   };
   if (mon.boss) mon.castT = rand(4, 8);   // 보스는 텔레그래프 강공격 사용
   return mon;
@@ -882,7 +1094,7 @@ function updateEntityMove(e, dt, stepTime) {
   e.px = isoX(fx, fy); e.py = isoY(fx, fy);
 }
 
-function leaderStepTime() { return STEP_TIME / (1 + 0.12 * relicCount('boots')); }
+function leaderStepTime() { return STEP_TIME / (1 + 0.12 * relicCount('boots')) / passiveSpeedMult(); }
 
 function tryLeaderStep(dx, dy) {
   if (leader.moving || state.transitioning) return false;
@@ -903,6 +1115,11 @@ function tryLeaderStep(dx, dy) {
 function onLeaderArrive() {
   const wld = state.world;
   reveal(wld, leader.gx, leader.gy);
+  // 폭탄공: 지나온 칸에 지뢰를 남긴다 (쿨 1.2초 · 동시 최대 6개)
+  if (wld.mode === 'dungeon' && state.classId === 'bomber' && (leader.mineCd || 0) <= 0) {
+    const back = trail[0];
+    if (back && placeMine(back.x, back.y)) leader.mineCd = 1.2;
+  }
   // 아이템 획득 (리더 주변 1칸)
   for (let i = wld.items.length - 1; i >= 0; i--) {
     const it = wld.items[i];
@@ -990,12 +1207,20 @@ function updateFollowers(dt) {
 /* ---------------- 전투 ---------------- */
 function aliveMembers() { return party.filter(m => !m.down); }
 
-function damageMonster(mon, dmg, color) {
-  const crit = Math.random() < 0.08 * runBuff('crit');
+function damageMonster(mon, dmg, color, opt) {
+  if (mon.hp <= 0) return;
+  opt = opt || {};
+  const crit = !opt.noCrit && Math.random() < (0.08 * runBuff('crit') + passiveCrit());
   if (crit) dmg *= 2;
   if (mon.dr) dmg *= (1 - mon.dr);           // '단단한' 어픽스
   mon.hp -= dmg;
-  addFloater(mon.px, mon.py - 26, (crit ? '💥' : '') + Math.floor(dmg), crit ? '#ffb347' : (color || '#fff'), crit ? 16 : 13);
+  if (!opt.silent)
+    addFloater(mon.px, mon.py - 26, (crit ? '💥' : '') + Math.floor(dmg), crit ? '#ffb347' : (color || '#fff'), crit ? 16 : 13);
+  // 패시브 '처형' — 빈사 상태의 적을 즉시 끝낸다
+  if (mon.hp > 0 && hasExecute() && mon.hp <= mon.maxHp * 0.1) {
+    mon.hp = 0;
+    addFloater(mon.px, mon.py - 40, '☠️ 처형!', '#ff5a5a', 15);
+  }
   if (mon.hp <= 0) {
     const rm = mon.rewardMult || 1;
     const gainedXp = Math.floor(mon.xp * rewardMult() * floorRisk());
@@ -1008,7 +1233,9 @@ function damageMonster(mon, dmg, color) {
       state.world.items.push({ type: 'gold', gx: mon.gx, gy: mon.gy, mult: rm });
       if (Math.random() < .4) state.world.items.push({ type: 'potion', gx: mon.gx, gy: mon.gy });
       addFloater(mon.px, mon.py - 54, '엘리트 처치!', '#d8a4ff', 13);
+      if (Math.random() < 0.2) dropGem(mon);          // 엘리트 20% 스킬 젬
     }
+    if (mon.boss) dropGem(mon);                       // 보스 100% 스킬 젬
     // '폭발하는' 어픽스: 죽을 때 주변 1칸 광역 피해
     if (mon.blast) {
       addFloater(mon.px, mon.py - 16, '💥 폭발!', '#ff8a4a', 15);
@@ -1022,6 +1249,16 @@ function damageMonster(mon, dmg, color) {
     saveDirty = true;
   }
 }
+/* ---- 스킬 젬 드랍 (엘리트 20% / 보스 100%) ---- */
+function dropGem(mon) {
+  const g = pick(GEMS);
+  giveGem(g.k);
+  addFloater(mon.px, mon.py - 68, `${g.icon} ${g.name} 젬!`, '#9be8ff', 14);
+  addSparkle(mon.px, mon.py, '#9be8ff');
+  toast(`${g.icon} 스킬 젬 획득 — ${g.name}`);
+  return g.k;
+}
+
 function onBossDefeated(mon) {
   const wld = state.world;
   toast('👑 보스 처치! 계단이 나타났습니다');
@@ -1040,8 +1277,11 @@ function checkLevelUp() {
   while (state.xp >= need) {
     state.xp -= need;
     state.lv++;
+    state.passivePts++;                        // 레벨업 = 패시브 포인트 1
     party.forEach(m => { if (!m.down) m.hp = maxHp(m); });
     addFloater(leader.px, leader.py - 52, 'LEVEL UP!', '#ffe88a', 17);
+    addFloater(leader.px, leader.py - 70, '🎯 패시브 +1', '#8fe0ff', 13);
+    if (state.lv === SUPPORT_LV) toast('💠 서포트 젬 슬롯 해금!');
     addSparkle(leader.px, leader.py, '#ffe88a');
     say(leader, `레벨 ${state.lv} 달성!`);
     need = xpNeed(state.lv);
@@ -1050,6 +1290,7 @@ function checkLevelUp() {
 function damageMember(m, dmg, attacker) {
   if (m.down) return;
   dmg *= Math.max(0.4, 1 - 0.08 * runBuff('def'));
+  dmg *= (1 - passiveDR());                   // 패시브 '방벽'
   dmg *= diff().dmg;                          // 난이도 보정
   m.hp -= dmg;
   addFloater(m.px, m.py - 30, String(Math.floor(dmg)), '#ff7a7a', 12);
@@ -1097,30 +1338,328 @@ function finishArena() {
   setTimeout(() => openRelicChoice('⚔️ 도전방 보상 — 유물을 선택하세요'), 600);
 }
 
+/* =====================================================================
+ * Phase 3 — 직업 능력 (해골 미니언 / 지뢰 / 회전 칼날 오라)
+ * 미니언·지뢰는 층 내 상태이며 저장되지 않는다.
+ * =================================================================== */
+const MINION_MAX = 3, MINE_MAX = 6;
+const DIRS8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+
+function minionList() { const w = state.world; return (w && w.minions) || []; }
+function mineList() { const w = state.world; return (w && w.mines) || []; }
+function minionAt(wld, x, y) { return (wld.minions || []).find(k => k.hp > 0 && k.gx === x && k.gy === y); }
+
+function makeMinion(x, y) {
+  const hp = Math.max(8, Math.floor(maxHp(leader) * 0.35));
+  return {
+    gx: x, gy: y, px: isoX(x, y), py: isoY(x, y),
+    fromX: x, fromY: y, moveT: 1, moving: false, face: 1,
+    hp, maxHp: hp, atkCd: rand(0, .4), stepT: rand(0, .3), stepInt: 0.4, born: 0,
+  };
+}
+// 리더 주변 빈 칸에 해골을 세운다
+function summonSkeleton() {
+  const wld = state.world;
+  if (!wld || wld.mode !== 'dungeon') return null;
+  if (!wld.minions) wld.minions = [];
+  wld.minions = wld.minions.filter(k => k.hp > 0);
+  if (wld.minions.length >= MINION_MAX) return null;
+  for (const [dx, dy] of shuffle(DIRS8.slice())) {
+    const x = leader.gx + dx, y = leader.gy + dy;
+    if (!walkable(wld, x, y) || monsterAt(wld, x, y)) continue;
+    if (party.some(p => p.gx === x && p.gy === y)) continue;
+    if (minionAt(wld, x, y)) continue;
+    const k = makeMinion(x, y);
+    wld.minions.push(k);
+    addSparkle(isoX(x, y), isoY(x, y), '#8fe07f');
+    addFloater(isoX(x, y), isoY(x, y) - 32, '💀 소환!', '#8fe07f', 12);
+    return k;
+  }
+  return null;
+}
+function damageMinion(k, dmg) {
+  if (k.hp <= 0) return;
+  k.hp -= dmg;
+  addFloater(k.px, k.py - 24, String(Math.floor(dmg)), '#ffb3b3', 11);
+  if (k.hp <= 0) {
+    k.hp = 0;
+    addSparkle(k.px, k.py, '#8a8a96');
+    addFloater(k.px, k.py - 30, '💀 파괴', '#a0a0b0', 11);
+  }
+}
+function updateMinions(dt) {
+  const wld = state.world;
+  const list = wld.minions;
+  if (!list || !list.length) return;
+  const mons = wld.monsters;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const k = list[i];
+    if (k.hp <= 0) { list.splice(i, 1); continue; }   // 죽으면 제거 → 6초 뒤 재소환
+    k.born += dt;
+    updateEntityMove(k, dt, 0.4);
+    k.atkCd -= dt;
+    // 가장 가까운 몬스터
+    let tgt = null, bd = 99;
+    mons.forEach(mon => {
+      if (mon.hp <= 0) return;
+      const d = cheb(k.gx, k.gy, mon.gx, mon.gy);
+      if (d < bd) { bd = d; tgt = mon; }
+    });
+    // 인접 몬스터 자동 공격
+    if (tgt && bd <= 1) {
+      if (k.atkCd <= 0) {
+        damageMonster(tgt, atkPow(leader) * 0.55 * rand(0.85, 1.15), '#9be8a0');
+        k.face = (tgt.gx > k.gx || tgt.gy < k.gy) ? 1 : -1;
+        k.atkCd = 0.9;
+        if (!tgt.aggro) aggroPack(wld, tgt);
+      }
+      continue;
+    }
+    if (k.moving) continue;
+    k.stepT -= dt;
+    if (k.stepT > 0) continue;
+    k.stepT = k.stepInt;
+    // 목표: 6칸 내 몬스터 → 없으면 리더 곁을 지킨다
+    const goal = (tgt && bd <= 6) ? tgt : leader;
+    if (goal === leader && cheb(k.gx, k.gy, leader.gx, leader.gy) <= 2) continue;
+    let dx = Math.sign(goal.gx - k.gx), dy = Math.sign(goal.gy - k.gy);
+    if (dx && dy) (Math.random() < .5) ? dx = 0 : dy = 0;
+    const blocked = (x, y) => !walkable(wld, x, y) || monsterAt(wld, x, y) ||
+      minionAt(wld, x, y) || party.some(p => p.gx === x && p.gy === y);
+    let tx = k.gx + dx, ty = k.gy + dy;
+    if (blocked(tx, ty)) {
+      const alts = [[Math.sign(goal.gx - k.gx), 0], [0, Math.sign(goal.gy - k.gy)], [dy, dx], [-dy, -dx]];
+      for (const [ax, ay] of alts) {
+        if (!ax && !ay) continue;
+        if (!blocked(k.gx + ax, k.gy + ay)) { tx = k.gx + ax; ty = k.gy + ay; break; }
+      }
+    }
+    if ((tx !== k.gx || ty !== k.gy) && !blocked(tx, ty)) beginStep(k, tx, ty);
+  }
+}
+
+/* ---- 폭탄공 지뢰 ---- */
+function placeMine(x, y) {
+  const wld = state.world;
+  if (!wld || wld.mode !== 'dungeon') return null;
+  if (!wld.mines) wld.mines = [];
+  if (wld.mines.some(m => m.gx === x && m.gy === y)) return null;
+  const mine = { gx: x, gy: y, t: 0 };
+  wld.mines.push(mine);
+  while (wld.mines.length > MINE_MAX) wld.mines.shift();   // 오래된 것부터 회수
+  addSparkle(isoX(x, y), isoY(x, y), '#ffa23a');
+  return mine;
+}
+function explodeMine(mine) {
+  const wld = state.world;
+  const dmg = atkPow(leader) * 1.8;
+  addFloater(isoX(mine.gx, mine.gy), isoY(mine.gx, mine.gy) - 20, '💥 폭발!', '#ff8a4a', 15);
+  addSparkle(isoX(mine.gx, mine.gy), isoY(mine.gx, mine.gy), '#ff9a5a');
+  let hit = 0;
+  wld.monsters.forEach(mon => {
+    if (mon.hp <= 0) return;
+    if (cheb(mon.gx, mon.gy, mine.gx, mine.gy) > 1) return;   // 주변 1칸 광역
+    damageMonster(mon, dmg * rand(0.9, 1.1), '#ff9a5a');
+    if (!mon.aggro) aggroPack(wld, mon);
+    hit++;
+  });
+  mine.exploded = true;
+  mine.hits = hit;
+  return hit;
+}
+function updateMines(dt) {
+  const wld = state.world;
+  const list = wld.mines;
+  if (!list || !list.length) return;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const mine = list[i];
+    mine.t += dt;
+    if (wld.monsters.some(mon => mon.hp > 0 && mon.gx === mine.gx && mon.gy === mine.gy)) {
+      explodeMine(mine);
+      list.splice(i, 1);
+    }
+  }
+}
+
+/* ---- 상태이상 (빙결 슬로우 / 스턴 / 도트) ---- */
+function applySlow(mon, dur) {
+  if (!mon || mon.hp <= 0) return;
+  if (!(mon.slowT > 0)) addFloater(mon.px, mon.py - 44, '❄️ 빙결!', '#9be8ff', 12);
+  mon.slowT = Math.max(mon.slowT || 0, dur);
+}
+function applyStun(mon, dur) {
+  if (!mon || mon.hp <= 0) return;
+  mon.stunT = Math.max(mon.stunT || 0, dur);
+  addFloater(mon.px, mon.py - 46, '⭐ 스턴!', '#ffe88a', 13);
+}
+function addDot(mon, dps, dur, k) {
+  if (!mon || mon.hp <= 0) return;
+  if (!mon.dots) mon.dots = [];
+  const ex = mon.dots.find(d => d.k === k);
+  if (ex) { ex.t = Math.max(ex.t, dur); ex.dps = Math.max(ex.dps, dps); }
+  else { mon.dots.push({ k, dps, t: dur }); addFloater(mon.px, mon.py - 44, '🧪 중독!', '#8fe07f', 12); }
+}
+function updateMonsterStatus(mon, dt) {
+  if (mon.slowT > 0) mon.slowT = Math.max(0, mon.slowT - dt);
+  if (mon.stunT > 0) mon.stunT = Math.max(0, mon.stunT - dt);
+  if (!mon.dots || !mon.dots.length) return;
+  let total = 0;
+  for (let i = mon.dots.length - 1; i >= 0; i--) {
+    const d = mon.dots[i];
+    total += d.dps * dt;
+    d.t -= dt;
+    if (d.t <= 0) mon.dots.splice(i, 1);
+  }
+  if (total <= 0) return;
+  damageMonster(mon, total, '#8fe07f', { silent: true, noCrit: true });
+  // 초록 숫자는 0.5초마다 누적해서 표시
+  mon.dotAcc = (mon.dotAcc || 0) + total;
+  mon.dotT = (mon.dotT || 0) + dt;
+  if (mon.dotT >= 0.5) {
+    addFloater(mon.px, mon.py - 32, String(Math.max(1, Math.floor(mon.dotAcc))), '#8fe07f', 12);
+    mon.dotAcc = 0; mon.dotT = 0;
+  }
+}
+
+/* ---- 리더 근접 젬 효과 (강타 / 맹독) ---- */
+function applyLeaderGems(mon, dmg, mods) {
+  if (!mon || mon.hp <= 0) return;
+  if (mods.skill === 'smite' && Math.random() < 0.2) applyStun(mon, 1);
+  if (mods.skill === 'poison') addDot(mon, dmg * 0.3, 3, 'poison');
+}
+
+/* ---- 마법사 공격 (화염구 / 연쇄 번개 / 빙결) ---- */
+function mageAttack(m, best, mons, mods) {
+  const base = atkPow(m) * mods.dmg;
+  const onHit = mon => {
+    addSparkle(mon.px, mon.py, '#c9a4ff');
+    if (mods.skill === 'freeze') applySlow(mon, 2);
+  };
+  if (mods.skill === 'fireball') {
+    const R = 1 + mods.spread;                 // 확산 젬으로 반경 +1
+    let n = 0;
+    mons.forEach(mon => {
+      if (mon.hp <= 0) return;
+      if (cheb(mon.gx, mon.gy, best.gx, best.gy) > R) return;
+      damageMonster(mon, base * rand(0.85, 1.2) * (mon === best ? 1 : 0.6), '#ff9a5a');
+      onHit(mon);
+      n++;
+    });
+    addFloater(best.px, best.py - 54, `🔥 화염구 ×${n}`, '#ff9a5a', 13);
+    return n;
+  }
+  if (mods.skill === 'chain') {
+    const maxT = 3 + mods.spread;               // 확산 젬으로 연쇄 +1
+    const hitList = [];
+    let cur = best, mult = 1;
+    while (cur && hitList.length < maxT) {
+      damageMonster(cur, base * rand(0.85, 1.2) * mult, '#9be8ff');
+      onHit(cur);
+      hitList.push(cur);
+      mult *= 0.7;                              // 연쇄마다 70%
+      let nxt = null, nd = 99;
+      mons.forEach(mon => {
+        if (mon.hp <= 0 || hitList.indexOf(mon) >= 0) return;
+        const d = cheb(cur.gx, cur.gy, mon.gx, mon.gy);
+        if (d <= 3 && d < nd) { nd = d; nxt = mon; }
+      });
+      cur = nxt;
+    }
+    if (hitList.length > 1) addFloater(best.px, best.py - 54, `⚡ 연쇄 ×${hitList.length}`, '#9be8ff', 13);
+    return hitList.length;
+  }
+  damageMonster(best, base * rand(0.85, 1.2), '#c9a4ff');
+  onHit(best);
+  return 1;
+}
+
+/* ---- 사제 치유 (신성한 빛) ---- */
+function priestHeal(m, mods) {
+  const alive = aliveMembers();
+  const hurt = alive.filter(a => a.hp < maxHp(a) * 0.85)
+    .sort((a, b) => a.hp / maxHp(a) - b.hp / maxHp(b))[0];
+  if (!hurt || cheb(m.gx, m.gy, hurt.gx, hurt.gy) > 4) return 0;
+  const h = healPow() * mods.dmg;
+  const heal = a => {
+    a.hp = Math.min(maxHp(a), a.hp + h);
+    addFloater(a.px, a.py - 34, `+${Math.floor(h)}`, '#8dffb0', 12);
+    addSparkle(a.px, a.py, '#8dffb0');
+  };
+  let n = 0;
+  if (mods.skill === 'holy') {
+    const R = 2 + mods.spread;                  // 대상 주변 2칸 모든 아군
+    alive.forEach(a => { if (cheb(a.gx, a.gy, hurt.gx, hurt.gy) <= R) { heal(a); n++; } });
+    addFloater(hurt.px, hurt.py - 52, `🌟 신성한 빛 ×${n}`, '#ffe88a', 13);
+  } else {
+    heal(hurt); n = 1;
+  }
+  if (Math.random() < .3) say(m, '잠깐만요, 다친 곳부터 볼게요!');
+  m.atkCd = 3.4 * mods.cd;
+  return n;
+}
+
+/* ---- 직업 능력 갱신 (소환 타이머 / 오라 / 지뢰) ---- */
+function updateClassAbilities(dt) {
+  const wld = state.world;
+  if (!wld || wld.mode !== 'dungeon') return;
+  const cls = curClass();
+  const mods = gemMods(leader);
+  if (leader.summonT === undefined) leader.summonT = 0;
+  if (leader.auraT === undefined) leader.auraT = 0;
+  if (leader.mineCd === undefined) leader.mineCd = 0;
+  leader.mineCd = Math.max(0, leader.mineCd - dt);
+
+  if (cls.k === 'necro' && !leader.down) {
+    leader.summonT -= dt;
+    if (leader.summonT <= 0) {
+      leader.summonT = 6;                       // 6초마다 소환 (최대 3)
+      summonSkeleton();
+    }
+  }
+  if (cls.k === 'blade' && !leader.down) {
+    leader.auraT -= dt;
+    if (leader.auraT <= 0) {
+      leader.auraT = 0.5 * mods.cd;             // 0.5초 틱 (가속 젬 반영)
+      bladeAura(mods);
+    }
+  }
+  updateMinions(dt);
+  updateMines(dt);
+}
+// 주변 8칸 회전 칼날
+function bladeAura(mods) {
+  const wld = state.world;
+  const dmg = atkPow(leader) * 0.45 * mods.dmg;
+  let hit = 0;
+  wld.monsters.forEach(mon => {
+    if (mon.hp <= 0) return;
+    if (cheb(mon.gx, mon.gy, leader.gx, leader.gy) > 1) return;
+    damageMonster(mon, dmg * rand(0.9, 1.1), '#7ee8d8');
+    applyLeaderGems(mon, dmg, mods);
+    if (!mon.aggro) aggroPack(wld, mon);
+    hit++;
+  });
+  if (hit) addSparkle(leader.px, leader.py, '#7ee8d8');
+  return hit;
+}
+
 function updateCombat(dt) {
   const wld = state.world;
   if (wld.mode !== 'dungeon') return;
   updateArena(dt);
+  updateClassAbilities(dt);
   const mons = wld.monsters;
 
   // 파티 공격
   party.forEach(m => {
     if (m.down) return;
+    const mods = gemMods(m);
     m.atkCd -= dt;
     if (m.atkCd > 0) return;
-    if (m.role === 'priest') {
-      const hurt = aliveMembers().filter(a => a.hp < maxHp(a) * 0.85)
-        .sort((a, b) => a.hp / maxHp(a) - b.hp / maxHp(b))[0];
-      if (hurt && cheb(m.gx, m.gy, hurt.gx, hurt.gy) <= 4) {
-        const h = healPow();
-        hurt.hp = Math.min(maxHp(hurt), hurt.hp + h);
-        addFloater(hurt.px, hurt.py - 34, `+${Math.floor(h)}`, '#8dffb0', 12);
-        addSparkle(hurt.px, hurt.py, '#8dffb0');
-        if (Math.random() < .3) say(m, '잠깐만요, 다친 곳부터 볼게요!');
-        m.atkCd = 3.4;
-      }
-      return;
-    }
+    if (m.role === 'priest') { priestHeal(m, mods); return; }
+    // 리더는 직업에 따라 근접 배율이 다르다 (블레이드 댄서는 근접 공격 없음)
+    const meleeMult = (m === leader) ? curClass().melee : 1;
+    if (m === leader && meleeMult <= 0) { m.atkCd = 0; return; }
     const range = m.role === 'mage' ? 3.5 : 1;
     let best = null, bd = 99;
     mons.forEach(mon => {
@@ -1129,15 +1668,21 @@ function updateCombat(dt) {
       if (d <= range && d < bd) { best = mon; bd = d; }
     });
     if (best) {
-      const dmg = atkPow(m) * rand(0.85, 1.2);
-      damageMonster(best, dmg, m.role === 'mage' ? '#c9a4ff' : '#fff');
-      if (m.role === 'mage') addSparkle(best.px, best.py, '#c9a4ff');
+      let dmg;
+      if (m.role === 'mage') {
+        dmg = atkPow(m) * mods.dmg;
+        mageAttack(m, best, mons, mods);
+      } else {
+        dmg = atkPow(m) * meleeMult * mods.dmg;
+        damageMonster(best, dmg * rand(0.85, 1.2), '#fff');
+        if (m === leader) applyLeaderGems(best, dmg, mods);
+      }
       // 흡혈 송곳니: 가한 피해의 일부 회복
       if (relicCount('fang')) {
         m.hp = Math.min(maxHp(m), m.hp + dmg * 0.08 * relicCount('fang'));
       }
       m.face = (best.gx > m.gx || best.gy < m.gy) ? 1 : -1;
-      m.atkCd = { knight: 0.55, mage: 1.1 / (1 + 0.2 * relicCount('crystal')), porter: 0.9 }[m.role];
+      m.atkCd = { knight: 0.55, mage: 1.1 / (1 + 0.2 * relicCount('crystal')), porter: 0.9 }[m.role] * mods.cd;
     }
   });
 
@@ -1149,6 +1694,8 @@ function updateCombat(dt) {
     const mon = mons[i];
     if (mon.hp <= 0) { mons.splice(i, 1); continue; }
     updateEntityMove(mon, dt, MONSTER_STEP);
+    updateMonsterStatus(mon, dt);
+    if (mon.hp <= 0) continue;                  // 도트로 쓰러지면 다음 프레임에 정리
     mon.atkCd -= dt;
 
     const dToLeader = cheb(mon.gx, mon.gy, leader.gx, leader.gy);
@@ -1157,6 +1704,8 @@ function updateCombat(dt) {
 
     // '재생하는' 어픽스
     if (mon.regen && mon.hp < mon.maxHp) mon.hp = Math.min(mon.maxHp, mon.hp + mon.maxHp * mon.regen * dt);
+    // 스턴: 이동/공격/시전 모두 정지
+    if (mon.stunT > 0) continue;
     // '소환사' 어픽스
     if (mon.summonT !== undefined && mon.aggro) {
       mon.summonT -= dt;
@@ -1168,11 +1717,13 @@ function updateCombat(dt) {
       if (mon.castT <= 0) { mon.castT = 8 + rand(-2, 2); castTelegraph(mon); }
     }
 
-    // 인접 파티원 공격
+    // 인접 파티원 / 해골 미니언 공격 (미니언이 어그로를 대신 받는다)
     const targets = aliveMembers().filter(a => cheb(a.gx, a.gy, mon.gx, mon.gy) <= 1);
-    if (targets.length && mon.atkCd <= 0) {
+    const kins = (wld.minions || []).filter(k => k.hp > 0 && cheb(k.gx, k.gy, mon.gx, mon.gy) <= 1);
+    if ((targets.length || kins.length) && mon.atkCd <= 0) {
       const raw = mon.atk * rand(0.8, 1.15);
-      damageMember(pick(targets), raw, mon);
+      if (kins.length && (!targets.length || Math.random() < 0.7)) damageMinion(pick(kins), raw);
+      else damageMember(pick(targets), raw, mon);
       // '흡혈의' 어픽스
       if (mon.leech && mon.hp > 0) {
         const heal = raw * mon.leech;
@@ -1182,14 +1733,21 @@ function updateCombat(dt) {
       mon.atkCd = 0.95 / (mon.atkSpeed || 1);
       continue;
     }
-    // 이동
+    // 이동 (빙결 슬로우 = 이동 간격 2배)
     if (mon.moving) continue;
     mon.stepT -= dt;
     if (mon.stepT > 0) continue;
-    mon.stepT = mon.stepInt;
+    mon.stepT = mon.stepInt * (mon.slowT > 0 ? 2 : 1);
+    // 추격 대상: 리더 또는 더 가까운 해골 미니언
+    let goal = leader, gd = dToLeader;
+    (wld.minions || []).forEach(k => {
+      if (k.hp <= 0) return;
+      const d = cheb(mon.gx, mon.gy, k.gx, k.gy);
+      if (d < gd) { gd = d; goal = k; }
+    });
     let dx = 0, dy = 0;
-    if (mon.aggro && dToLeader > 1) {
-      dx = Math.sign(leader.gx - mon.gx); dy = Math.sign(leader.gy - mon.gy);
+    if (mon.aggro && gd > 1) {
+      dx = Math.sign(goal.gx - mon.gx); dy = Math.sign(goal.gy - mon.gy);
       if (dx && dy) (Math.random() < .5) ? dx = 0 : dy = 0;
     } else if (!mon.aggro && Math.random() < .5) {
       const dir = pick([[1, 0], [-1, 0], [0, 1], [0, -1]]);
@@ -1197,11 +1755,11 @@ function updateCombat(dt) {
     }
     if (dx || dy) {
       const blocked = (x, y) => !walkable(wld, x, y) || monsterAt(wld, x, y) ||
-        party.some(p => p.gx === x && p.gy === y);
+        minionAt(wld, x, y) || party.some(p => p.gx === x && p.gy === y);
       let tx = mon.gx + dx, ty = mon.gy + dy;
       if (blocked(tx, ty) && mon.aggro) {
         // 막히면 다른 축/옆으로 우회 (끝까지 쫓아오게)
-        const alts = [[Math.sign(leader.gx - mon.gx), 0], [0, Math.sign(leader.gy - mon.gy)], [dy, dx], [-dy, -dx]];
+        const alts = [[Math.sign(goal.gx - mon.gx), 0], [0, Math.sign(goal.gy - mon.gy)], [dy, dx], [-dy, -dx]];
         for (const [ax, ay] of alts) {
           if (!ax && !ay) continue;
           if (!blocked(mon.gx + ax, mon.gy + ay)) { tx = mon.gx + ax; ty = mon.gy + ay; break; }
@@ -1228,6 +1786,15 @@ function updateCombat(dt) {
 }
 
 function partyWipe() {
+  // 패시브 '불굴': 런당 1회, HP 1로 버틴다
+  if (hasUnyielding() && state.run && !state.run.unyielding) {
+    state.run.unyielding = true;
+    party.forEach(m => { m.down = false; m.hp = 1; });
+    party.forEach(m => addSparkle(m.px, m.py, '#8fe0ff'));
+    addFloater(leader.px, leader.py - 60, '🛡️ 불굴!', '#8fe0ff', 16);
+    toast('🛡️ 불굴 — 파티가 HP 1로 버텼다!');
+    return;
+  }
   // 불사조 깃털: 전멸을 1회 무효화
   if (relicCount('feather') > 0) {
     state.run.relics.feather--;
@@ -1259,6 +1826,9 @@ function placeParty(wld, x, y) {
     m.px = isoX(m.gx, m.gy); m.py = isoY(m.gx, m.gy);
   });
   for (let i = 0; i < 12; i++) trail.push({ x, y });
+  // 직업 능력 상태 초기화 (미니언/지뢰는 층을 넘어가지 않는다)
+  leader.summonT = 0; leader.auraT = 0; leader.mineCd = 0;
+  wld.minions = []; wld.mines = [];
   reveal(wld, x, y);
   state.cam.x = isoX(x, y);
   state.cam.y = isoY(x, y);
@@ -1627,6 +2197,15 @@ function makeMerchantStock(floor) {
       price: Math.floor(irand(80, 150) * fm), sold: false,
     });
   });
+  // 스킬 젬 1개 확률 등장 (영구 소장 아이템)
+  if (Math.random() < 0.5) {
+    const g = pick(GEMS);
+    stock.push({
+      kind: 'gem', k: g.k, icon: g.icon, name: `${g.name} 젬`, desc: g.desc,
+      price: Math.floor(120 * fm), sold: false,
+    });
+  }
+  // 소모품은 항상 재고 마지막에
   stock.push({
     kind: 'potion', icon: '🧪', name: '회복 물약', desc: '파티 전원 30% 회복',
     price: Math.floor(30 * floor), sold: false,
@@ -1654,6 +2233,9 @@ function openMerchant(p) {
           if (s.kind === 'relic') {
             state.run.relics[s.k] = (state.run.relics[s.k] || 0) + 1;
             toast(`${s.icon} ${s.name} 구매!`);
+          } else if (s.kind === 'gem') {
+            giveGem(s.k);
+            toast(`${s.icon} ${s.name} 구매! (영구 소장)`);
           } else {
             party.forEach(m => {
               if (m.down) return;
@@ -1677,6 +2259,223 @@ function openMerchant(p) {
     render();
   });
   say(party[3], '상인이다! 뭐 좋은 거 없나요?');
+}
+
+/* =====================================================================
+ * Phase 3 UI — 직업 선택 / 파티(젬·패시브) 모달
+ * =================================================================== */
+function openClassChoice() {
+  if (!canChangeClass()) {
+    toast('🎭 던전 안에서는 직업을 바꿀 수 없어요!');
+    return;
+  }
+  openModal('🎭 직업 변경', body => {
+    const render = () => {
+      body.innerHTML = `<div class="shopGold"><span class="coin"></span>${fmt(state.gold)}</div>`;
+      CLASS_KEYS.forEach(k => {
+        const c = CLASSES[k];
+        const unlocked = classUnlocked(k);
+        const cur = state.classId === k;
+        const row = document.createElement('div');
+        row.className = 'shopRow classRow' + (cur ? ' cur' : '');
+        row.dataset.class = k;
+        const label = cur ? '사용 중' : unlocked ? '선택' : fmt(c.cost);
+        row.innerHTML = `<span class="sIcon">${c.icon}</span>
+          <div class="sInfo"><b>${c.name} ${cur ? '<em>현재</em>' : unlocked ? '<em>해금됨</em>' : ''}</b>
+          <small>${c.desc}</small></div>
+          <button class="buyBtn" data-class="${k}" ${(cur || (!unlocked && state.gold < c.cost)) ? 'disabled' : ''}>${label}</button>`;
+        row.querySelector('.buyBtn').addEventListener('click', () => {
+          if (cur) return;
+          if (!unlocked) {
+            if (state.gold < c.cost) return;
+            state.gold -= c.cost;
+            unlockClass(k);
+            toast(`${c.icon} ${c.name} 해금!`);
+          }
+          if (setClass(k)) {
+            addSparkle(leader.px, leader.py, '#c9a4ff');
+            toast(`${c.icon} 직업 변경 — ${c.name}`);
+          }
+          saveDirty = true;
+          render();
+        });
+        body.appendChild(row);
+      });
+      const hint = document.createElement('p');
+      hint.className = 'sumHint';
+      hint.textContent = '직업은 초원(던전 밖)에서만 바꿀 수 있어요.';
+      body.appendChild(hint);
+      const close = document.createElement('button');
+      close.className = 'modalBtn';
+      close.id = 'classClose';
+      close.textContent = '닫기';
+      close.addEventListener('click', () => { closeModal(); openShop(); });
+      body.appendChild(close);
+    };
+    render();
+  });
+}
+
+/* ---- 파티 모달 (젬 장착 / 패시브 트리) ---- */
+let partyTab = 'gem';
+function openParty(tab) {
+  if (state.transitioning) return;
+  if (tab) partyTab = tab;
+  openModal('👤 파티 & 빌드', body => {
+    let picking = null;   // { memberId, slot }
+    const render = () => {
+      body.innerHTML = '';
+      // 탭
+      const tabs = document.createElement('div');
+      tabs.className = 'tabRow';
+      [['gem', '💠 젬'], ['passive', `🌳 패시브 (${state.passivePts})`]].forEach(([k, label]) => {
+        const b = document.createElement('button');
+        b.className = 'tabBtn' + (partyTab === k ? ' on' : '');
+        b.id = k === 'gem' ? 'tabGem' : 'tabPassive';
+        b.textContent = label;
+        b.addEventListener('click', () => { partyTab = k; picking = null; render(); });
+        tabs.appendChild(b);
+      });
+      body.appendChild(tabs);
+      if (partyTab === 'gem') renderGems(); else renderPassives();
+      const close = document.createElement('button');
+      close.className = 'modalBtn';
+      close.id = 'partyClose';
+      close.textContent = '닫기';
+      close.addEventListener('click', closeModal);
+      body.appendChild(close);
+    };
+
+    const slotBtn = (m, slot) => {
+      const lo = loadoutOf(m);
+      const key = lo[slot];
+      const gem = key ? GEM_BY_KEY[key] : null;
+      const locked = slot === 'support' && !supportUnlocked();
+      const b = document.createElement('button');
+      b.className = 'gemSlot' + (gem ? ' filled' : '') + (locked ? ' locked' : '') +
+        (picking && picking.memberId === m.id && picking.slot === slot ? ' picking' : '');
+      b.dataset.member = m.id;
+      b.dataset.slot = slot;
+      b.dataset.gem = key || '';
+      b.innerHTML = locked
+        ? `<span class="gIcon">🔒</span><small>Lv.${SUPPORT_LV}</small>`
+        : gem ? `<span class="gIcon">${gem.icon}</span><small>${gem.name}</small>`
+              : `<span class="gIcon">＋</span><small>${slot === 'skill' ? '스킬' : '서포트'}</small>`;
+      b.addEventListener('click', () => {
+        if (locked) { toast(`💠 서포트 슬롯은 Lv.${SUPPORT_LV}부터!`); return; }
+        picking = (picking && picking.memberId === m.id && picking.slot === slot)
+          ? null : { memberId: m.id, slot };
+        render();
+      });
+      return b;
+    };
+
+    const renderGems = () => {
+      party.forEach(m => {
+        const row = document.createElement('div');
+        row.className = 'partyRow';
+        row.dataset.member = m.id;
+        const roleName = { knight: curClass().name, mage: '마법사', priest: '사제', porter: '짐꾼' }[m.role];
+        const icon = m === leader ? curClass().icon : { mage: '🔮', priest: '✨', porter: '🎒' }[m.role];
+        const hpNow = clamp(Math.floor(m.hp), 0, maxHp(m));
+        row.innerHTML = `<div class="pFace">${icon}</div>
+          <div class="pInfo"><b>${m.name}</b><small>${roleName}</small>
+          <small class="pHp">${m.down ? '쓰러짐' : `HP ${hpNow} / ${maxHp(m)}`}</small></div>`;
+        const slots = document.createElement('div');
+        slots.className = 'pSlots';
+        slots.appendChild(slotBtn(m, 'skill'));
+        slots.appendChild(slotBtn(m, 'support'));
+        row.appendChild(slots);
+        body.appendChild(row);
+        // 선택 중이면 바로 아래에 인벤토리 목록
+        if (picking && picking.memberId === m.id) {
+          const list = document.createElement('div');
+          list.className = 'gemPickList';
+          const keys = [];
+          state.gems.forEach(k => { if (keys.indexOf(k) < 0) keys.push(k); });
+          const fitKeys = keys.filter(k => gemFits(GEM_BY_KEY[k], m, picking.slot));
+          const lo = loadoutOf(m);
+          if (lo[picking.slot]) {
+            const un = document.createElement('button');
+            un.className = 'gemPick off';
+            un.dataset.gem = '';
+            un.textContent = '✖ 해제';
+            un.addEventListener('click', () => { unequipGem(m.id, picking.slot); picking = null; render(); });
+            list.appendChild(un);
+          }
+          if (!fitKeys.length) {
+            const e = document.createElement('div');
+            e.className = 'gemEmpty';
+            e.textContent = '장착 가능한 젬이 없어요 (엘리트/보스/상인에게서 획득)';
+            list.appendChild(e);
+          }
+          fitKeys.forEach(k => {
+            const g = GEM_BY_KEY[k];
+            const avail = gemAvailable(k);
+            const b = document.createElement('button');
+            b.className = 'gemPick' + (avail <= 0 ? ' dim' : '');
+            b.dataset.gem = k;
+            b.disabled = avail <= 0;
+            b.innerHTML = `<span class="gIcon">${g.icon}</span><b>${g.name}</b><small>${g.desc}</small><em>×${avail}</em>`;
+            b.addEventListener('click', () => {
+              if (equipGem(m.id, picking.slot, k)) { picking = null; render(); }
+            });
+            list.appendChild(b);
+          });
+          body.appendChild(list);
+        }
+      });
+      const inv = document.createElement('p');
+      inv.className = 'sumHint';
+      inv.id = 'gemInv';
+      inv.textContent = `보유 젬 ${state.gems.length}개` +
+        (supportUnlocked() ? '' : ` · 서포트 슬롯은 Lv.${SUPPORT_LV} 해금`);
+      body.appendChild(inv);
+    };
+
+    const renderPassives = () => {
+      const head = document.createElement('div');
+      head.className = 'sumRow';
+      head.innerHTML = `<span>남은 포인트</span><b id="ptsVal">${state.passivePts}</b>`;
+      body.appendChild(head);
+      PASSIVE_KEYS.forEach(tk => {
+        const tree = PASSIVE_TREES[tk];
+        const took = passiveN(tk);
+        const wrap = document.createElement('div');
+        wrap.className = 'treeRow';
+        wrap.dataset.tree = tk;
+        wrap.innerHTML = `<div class="treeHead">${tree.icon} <b>${tree.name}</b> <em>${took}/5</em></div>`;
+        const line = document.createElement('div');
+        line.className = 'treeLine';
+        tree.nodes.forEach((nd, i) => {
+          const b = document.createElement('button');
+          const taken = took > i;
+          const next = took === i;
+          b.className = 'pNode' + (taken ? ' taken' : next ? ' next' : ' far');
+          b.dataset.tree = tk;
+          b.dataset.i = String(i);
+          b.disabled = !next || state.passivePts <= 0;
+          b.innerHTML = `<b>${i + 1}</b><small>${nd.name}</small><em>${nd.desc}</em>`;
+          b.addEventListener('click', () => {
+            if (addPassive(tk)) {
+              addSparkle(leader.px, leader.py, '#8fe0ff');
+              toast(`🌳 ${tree.name} — ${nd.name}!`);
+              render();
+            }
+          });
+          line.appendChild(b);
+        });
+        wrap.appendChild(line);
+        body.appendChild(wrap);
+      });
+      const hint = document.createElement('p');
+      hint.className = 'sumHint';
+      hint.textContent = '노드는 순서대로만 찍을 수 있어요. 레벨업마다 포인트 1개!';
+      body.appendChild(hint);
+    };
+
+    render();
+  });
 }
 
 const META_DEFS = [
@@ -1712,6 +2511,12 @@ function openShop() {
         });
         body.appendChild(row);
       });
+      const cbtn = document.createElement('button');
+      cbtn.className = 'modalBtn';
+      cbtn.id = 'classBtn';
+      cbtn.textContent = `🎭 직업 변경 (현재: ${curClass().name})`;
+      cbtn.addEventListener('click', () => { closeModal(); openClassChoice(); });
+      body.appendChild(cbtn);
       const dbtn = document.createElement('button');
       dbtn.className = 'modalBtn';
       dbtn.id = 'diffBtn';
@@ -1868,6 +2673,8 @@ document.querySelectorAll('.deco').forEach(btn => {
     if (btn.dataset.act === 'map') {
       state.minimapOn = !state.minimapOn;
       el('minimap').classList.toggle('hidden', !state.minimapOn);
+    } else if (btn.dataset.act === 'party') {
+      openParty();
     } else {
       toast('🔧 준비 중이에요!');
     }
@@ -1920,7 +2727,7 @@ resize();
 function tileBrightness(wld, x, y) {
   if (wld.mode !== 'dungeon') return 1;
   const d = Math.hypot(x - leader.gx, y - leader.gy);
-  return d <= SIGHT ? 1 : 0.5;
+  return d <= sightRadius() ? 1 : 0.5;
 }
 
 function drawDiamond(sx, sy, color) {
@@ -2090,8 +2897,26 @@ function rr(x, y, w, h, r) {
 function drawChibi(sx, sy, m) {
   const t = state.time;
   const bob = m.moving ? Math.sin(t * 22 + m.gx) * 1.6 : Math.sin(t * 3 + m.gy) * 0.6;
+  const cls = (m === leader) ? curClass() : null;
   ctx.save();
   ctx.translate(sx, sy);
+  // 블레이드 댄서 회전 칼날 오라 (바닥 링)
+  if (cls && cls.k === 'blade' && !m.down) {
+    const spin = t * 7;
+    ctx.save();
+    ctx.globalAlpha = 0.35 + 0.15 * Math.sin(t * 12);
+    ctx.strokeStyle = '#7ee8d8'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(0, 0, 30, 14, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 0.75;
+    ctx.fillStyle = '#bff5ec';
+    for (let i = 0; i < 2; i++) {
+      const a = spin + i * Math.PI;
+      ctx.beginPath();
+      ctx.ellipse(Math.cos(a) * 30, Math.sin(a) * 14, 5, 2.4, a, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
   // 그림자
   ctx.fillStyle = 'rgba(0,0,0,0.25)';
   ctx.beginPath(); ctx.ellipse(0, 2, 12, 5, 0, 0, Math.PI * 2); ctx.fill();
@@ -2110,11 +2935,38 @@ function drawChibi(sx, sy, m) {
   const step = m.moving ? Math.sin(t * 22) * 3 : 0;
   rr(-6, -5 + step * .5, 5, 5, 1.5);
   rr(1, -5 - step * .5, 5, 5, 1.5);
-  // 몸(옷)
-  ctx.fillStyle = m.dress;
+  // 몸(옷) — 리더는 직업별 복장
+  ctx.fillStyle = cls ? cls.dress : m.dress;
   rr(-8, -16, 16, 12, 4);
   // 무기/소품 (몸 옆)
-  if (m.role === 'knight') {
+  if (cls && cls.k === 'necro') {
+    // 네크로맨서: 낫 느낌의 지팡이 + 보라 오라
+    ctx.fillStyle = '#5a4636'; rr(9, -34, 2.5, 26, 1);
+    ctx.strokeStyle = '#c9a4ff'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(10, -34, 8, Math.PI * 1.05, Math.PI * 1.85); ctx.stroke();
+    ctx.fillStyle = '#8f4fd6';
+    ctx.beginPath(); ctx.arc(10, -35, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(160, 90, 230, 0.35)';               // 로브 자락
+    rr(-10, -10, 20, 8, 4);
+  } else if (cls && cls.k === 'bomber') {
+    // 폭탄공: 주황 두건 + 폭탄
+    ctx.fillStyle = '#2b2b33';
+    ctx.beginPath(); ctx.arc(-11, -12, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#4a4a55';
+    ctx.beginPath(); ctx.arc(-12, -14, 2, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#b58a3a'; ctx.lineWidth = 1.6;         // 심지
+    ctx.beginPath(); ctx.moveTo(-11, -18); ctx.quadraticCurveTo(-8, -23, -5, -20); ctx.stroke();
+    const sp = 0.5 + 0.5 * Math.sin(t * 14);
+    ctx.fillStyle = `rgba(255, 190, 60, ${0.5 + 0.5 * sp})`;
+    ctx.beginPath(); ctx.arc(-5, -20, 2 + sp, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#c96a2a'; rr(7, -22, 3, 13, 1.4);        // 도화선 막대
+  } else if (cls && cls.k === 'blade') {
+    // 블레이드 댄서: 쌍검
+    ctx.fillStyle = '#dff6f2'; rr(8, -28, 2.6, 18, 1);
+    ctx.fillStyle = '#dff6f2'; rr(-11, -28, 2.6, 18, 1);
+    ctx.fillStyle = '#1e6b63'; rr(6.5, -12, 6, 3, 1);
+    ctx.fillStyle = '#1e6b63'; rr(-12.5, -12, 6, 3, 1);
+  } else if (m.role === 'knight') {
     ctx.fillStyle = '#cfd6e0'; rr(8, -26, 3, 16, 1);        // 검
     ctx.fillStyle = '#8a6b45'; rr(6.5, -12, 6, 3, 1);       // 손잡이
     ctx.fillStyle = '#3f6fd0';                               // 방패
@@ -2136,14 +2988,29 @@ function drawChibi(sx, sy, m) {
   // 머리(피부)
   ctx.fillStyle = '#ffe3c9';
   rr(-11, -34, 22, 18, 7);
-  // 머리카락
-  ctx.fillStyle = m.hair;
+  // 머리카락 (리더는 직업별 색)
+  ctx.fillStyle = cls ? cls.hair : m.hair;
   rr(-12, -36, 24, 11, 6);                     // 윗머리
   rr(-12, -30, 5, 12, 2);                      // 옆머리
   rr(7, -30, 5, 12, 2);
-  if (m.hair2) {                               // 유리의 붉은 브릿지
+  if (m.hair2 && (!cls || cls.k === 'knight')) {   // 유리의 붉은 브릿지
     ctx.fillStyle = m.hair2;
     rr(-3, -36, 5, 9, 2);
+  }
+  if (cls && cls.k === 'necro') {              // 보라 후드
+    ctx.fillStyle = '#3b2560';
+    rr(-13, -38, 26, 10, 6);
+    ctx.fillStyle = '#4a2f78';
+    rr(-13, -32, 6, 14, 3); rr(7, -32, 6, 14, 3);
+  } else if (cls && cls.k === 'bomber') {      // 주황 두건
+    ctx.fillStyle = '#e07b2a';
+    rr(-13, -37, 26, 8, 4);
+    ctx.fillStyle = '#c1601a';
+    rr(-14, -33, 7, 4, 2);
+    ctx.beginPath(); ctx.moveTo(-13, -33); ctx.lineTo(-20, -28); ctx.lineTo(-13, -28); ctx.closePath(); ctx.fill();
+  } else if (cls && cls.k === 'blade') {       // 청록 머리띠
+    ctx.fillStyle = '#0f4d47';
+    rr(-13, -33, 26, 4, 2);
   }
   if (m.flower) {                              // 리라의 꽃
     ctx.fillStyle = '#ffd75e';
@@ -2173,11 +3040,75 @@ function drawChibi(sx, sy, m) {
   }
 }
 
+/* ---- 해골 미니언 (아군: 초록빛 눈) ---- */
+function drawMinion(sx, sy, k) {
+  const t = state.time;
+  ctx.save();
+  ctx.translate(sx, sy);
+  // 아군 표시: 초록 오라
+  ctx.fillStyle = `rgba(120, 240, 130, ${0.18 + 0.08 * Math.sin(t * 4 + k.gx)})`;
+  ctx.beginPath(); ctx.ellipse(0, 1, 12, 5.5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath(); ctx.ellipse(0, 2, 8, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.scale(0.72 * (k.face || 1), 0.72);
+  const bob = k.moving ? Math.sin(t * 20 + k.gx) * 1.4 : Math.sin(t * 3) * 0.6;
+  ctx.translate(0, bob);
+  // 갈비뼈 몸통
+  ctx.fillStyle = '#d9d4c8';
+  rr(-6, -18, 12, 9, 3);
+  ctx.strokeStyle = '#b8b2a4'; ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(-4, -15); ctx.lineTo(4, -15);
+  ctx.moveTo(-4, -12); ctx.lineTo(4, -12);
+  ctx.stroke();
+  // 두개골
+  ctx.fillStyle = '#e8e4da';
+  rr(-8, -30, 16, 14, 5);
+  // 초록빛 눈 (아군)
+  const glow = 0.7 + 0.3 * Math.sin(t * 6 + k.gy);
+  ctx.fillStyle = `rgba(120, 255, 140, ${glow})`;
+  rr(-5, -26, 3.5, 4.5, 1.5);
+  rr(2, -26, 3.5, 4.5, 1.5);
+  ctx.restore();
+  // HP 바
+  if (k.hp < k.maxHp) {
+    const w = 20, ratio = clamp(k.hp / k.maxHp, 0, 1);
+    ctx.fillStyle = 'rgba(10,25,35,0.8)';
+    ctx.fillRect(sx - w / 2, sy - 32, w, 4);
+    ctx.fillStyle = '#8fe07f';
+    ctx.fillRect(sx - w / 2 + 1, sy - 31, (w - 2) * ratio, 2);
+  }
+}
+
+/* ---- 지뢰 ---- */
+function drawMine(sx, sy, mine) {
+  const t = state.time;
+  const blink = 0.45 + 0.55 * Math.abs(Math.sin(t * 4 + mine.gx));
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.fillStyle = `rgba(255, 140, 50, ${0.14 + 0.12 * blink})`;
+  ctx.beginPath(); ctx.ellipse(0, 0, 16, 8, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#2b2b33';
+  ctx.beginPath(); ctx.arc(0, -6, 6, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#4a4a55';
+  ctx.beginPath(); ctx.arc(-2, -8, 2, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#b58a3a'; ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.moveTo(2, -11); ctx.quadraticCurveTo(5, -15, 8, -13); ctx.stroke();
+  ctx.fillStyle = `rgba(255, 190, 60, ${blink})`;
+  ctx.beginPath(); ctx.arc(8, -13, 2.2, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
 function drawMonster(sx, sy, mon) {
   const t = state.time;
   ctx.save();
   ctx.translate(sx, sy);
   ctx.scale(mon.scale, mon.scale);
+  // 빙결(슬로우) — 파란 틴트 원
+  if (mon.slowT > 0) {
+    ctx.fillStyle = `rgba(120, 200, 255, ${0.25 + 0.1 * Math.sin(t * 5)})`;
+    ctx.beginPath(); ctx.ellipse(0, -12, 15, 16, 0, 0, Math.PI * 2); ctx.fill();
+  }
   if (mon.elite) {
     // 엘리트 오라
     const pulse = .3 + Math.sin(t * 5) * .12;
@@ -2233,6 +3164,45 @@ function drawMonster(sx, sy, mon) {
     ctx.stroke();
   }
   ctx.restore();
+
+  /* ---- 상태이상 시각 표시 ---- */
+  // 빙결: 파란 서리 틴트
+  if (mon.slowT > 0) {
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = '#7fd0ff';
+    ctx.beginPath(); ctx.ellipse(sx, sy - 14 * mon.scale, 13 * mon.scale, 15 * mon.scale, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.9;
+    ctx.font = `bold ${10 * mon.scale}px sans-serif`; ctx.textAlign = 'center';
+    ctx.fillStyle = '#dff4ff';
+    ctx.fillText('❄', sx, sy - 30 * mon.scale);
+    ctx.restore();
+  }
+  // 스턴: 머리 위를 도는 별
+  if (mon.stunT > 0) {
+    ctx.save();
+    ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffe88a';
+    for (let i = 0; i < 3; i++) {
+      const a = state.time * 5 + i * Math.PI * 2 / 3;
+      ctx.globalAlpha = 0.5 + 0.5 * Math.sin(a);
+      ctx.fillText('★', sx + Math.cos(a) * 11 * mon.scale, sy - 38 * mon.scale + Math.sin(a) * 3);
+    }
+    ctx.restore();
+  }
+  // 독: 초록 방울
+  if (mon.dots && mon.dots.length) {
+    ctx.save();
+    for (let i = 0; i < 3; i++) {
+      const p = (state.time * 1.3 + i * 0.33 + mon.gx * 0.11) % 1;
+      ctx.globalAlpha = (1 - p) * 0.8;
+      ctx.fillStyle = '#8fe07f';
+      ctx.beginPath();
+      ctx.arc(sx + (i - 1) * 5 * mon.scale, sy - 6 - p * 22, 2.2 - p, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
 
   if (mon.hp < mon.maxHp) {
     const w = mon.boss ? 44 : 24, ratio = clamp(mon.hp / mon.maxHp, 0, 1);
@@ -2635,10 +3605,19 @@ function render() {
     if (wld.mode === 'dungeon' && !wld.seen[idx(wld, it.gx, it.gy)]) return;
     drawList.push({ key: it.gx + it.gy, fn: () => drawItem(isoX(it.gx, it.gy) + offX, isoY(it.gx, it.gy) + offY, it) });
   });
+  // 지뢰 (바닥에 붙어 있으므로 타일 순서 그대로)
+  (wld.mines || []).forEach(mn => {
+    drawList.push({ key: mn.gx + mn.gy - 0.1, fn: () => drawMine(isoX(mn.gx, mn.gy) + offX, isoY(mn.gx, mn.gy) + offY, mn) });
+  });
+  // 해골 미니언
+  (wld.minions || []).forEach(k => {
+    if (k.hp <= 0) return;
+    drawList.push({ key: k.py / (TILE_H / 2), fn: () => drawMinion(k.px + offX, k.py + offY, k) });
+  });
   wld.monsters.forEach(mon => {
     if (wld.mode === 'dungeon') {
       const d = Math.hypot(mon.gx - leader.gx, mon.gy - leader.gy);
-      if (d > SIGHT + 1.5) return;
+      if (d > sightRadius() + 1.5) return;
     }
     drawList.push({ key: (mon.px + 0) / (TILE_W / 2) * 0 + (mon.py / (TILE_H / 2)), fn: () => drawMonster(mon.px + offX, mon.py + offY, mon) });
   });
@@ -2685,13 +3664,47 @@ function loadSave() {
       state.lv = clamp(s.lv, 1, 99);
       state.xp = s.xp || 0;
       state.gold = s.gold || 0;
-      if (s.meta) for (const k of Object.keys(state.meta)) state.meta[k] = clamp(s.meta[k] || 0, 0, 99);
+      // 수치형 메타만 clamp (classes 는 배열이므로 제외)
+      if (s.meta) for (const k of Object.keys(state.meta)) {
+        if (k === 'classes') continue;
+        state.meta[k] = clamp(s.meta[k] || 0, 0, 99);
+      }
       state.best = clamp(s.best || 0, 0, 999);
       if (s.difficulty && DIFFS[s.difficulty]) state.difficulty = s.difficulty;
       state.difficultyPicked = !!s.difficultyPicked;
+
+      /* ---- Phase 3: 직업 / 젬 / 패시브 (구 세이브는 기본값으로 채운다) ---- */
+      state.meta.classes = ['knight'];
+      if (s.meta && Array.isArray(s.meta.classes)) {
+        s.meta.classes.forEach(c => {
+          if (CLASSES[c] && state.meta.classes.indexOf(c) < 0) state.meta.classes.push(c);
+        });
+      }
+      state.classId = (CLASSES[s.classId] && classUnlocked(s.classId)) ? s.classId : 'knight';
+      state.gems = Array.isArray(s.gems) ? s.gems.filter(g => !!GEM_BY_KEY[g]) : [];
+      state.gemLoadout = {};
+      party.forEach(m => { state.gemLoadout[m.id] = { skill: null, support: null }; });
+      if (s.gemLoadout && typeof s.gemLoadout === 'object') {
+        party.forEach(m => {
+          const src = s.gemLoadout[m.id];
+          if (!src) return;
+          ['skill', 'support'].forEach(slot => {
+            const g = GEM_BY_KEY[src[slot]];
+            if (g && gemFits(g, m, slot) && gemAvailable(src[slot]) > 0) state.gemLoadout[m.id][slot] = src[slot];
+          });
+        });
+      }
+      state.passives = { atk: 0, def: 0, util: 0 };
+      if (s.passives) PASSIVE_KEYS.forEach(k => { state.passives[k] = clamp(Math.floor(s.passives[k] || 0), 0, 5); });
+      state.passivePts = (typeof s.passivePts === 'number')
+        ? clamp(Math.floor(s.passivePts), 0, 999)
+        : Math.max(0, state.lv - 1 - passiveSpent());   // 구 세이브 소급 지급
+
       party.forEach(m => { m.hp = maxHp(m); });
     }
   } catch (e) { /* 무시 */ }
+  // 세이브 유무와 무관하게 로드아웃 골격을 보장
+  party.forEach(m => { loadoutOf(m); });
 }
 setInterval(() => {
   if (!saveDirty) return;
@@ -2700,6 +3713,9 @@ setInterval(() => {
     localStorage.setItem('dunjeon-save', JSON.stringify({
       lv: state.lv, xp: state.xp, gold: state.gold, meta: state.meta, best: state.best,
       difficulty: state.difficulty, difficultyPicked: state.difficultyPicked,
+      // Phase 3
+      classId: state.classId, gems: state.gems, gemLoadout: state.gemLoadout,
+      passivePts: state.passivePts, passives: state.passives,
     }));
   } catch (e) { /* 무시 */ }
 }, 3000);
@@ -2716,7 +3732,7 @@ function frame(now) {
     updateInput();
     updateAuto();
     const wasMoving = leader.moving;
-    updateEntityMove(leader, dt, STEP_TIME);
+    updateEntityMove(leader, dt, leaderStepTime());
     if (wasMoving && !leader.moving) onLeaderArrive();
     updateFollowers(dt);
     updateCombat(dt);
@@ -2774,6 +3790,36 @@ window.GAME = {
   openMerchant, makeMerchantStock,
   arena: () => state.world.arena,
   finishArena,
+  /* ---- Phase 3 (직업 & 젬 빌드) 훅 ---- */
+  CLASSES, CLASS_KEYS, GEMS, GEM_BY_KEY, PASSIVE_TREES, PASSIVE_KEYS,
+  SUPPORT_LV, MINION_MAX, MINE_MAX,
+  curClass, classUnlocked, unlockClass, setClass, canChangeClass,
+  openClassChoice, openParty,
+  giveGem, equipGem, unequipGem, gemMods, gemAvailable, gemOwned, gemFits,
+  loadout: id => loadoutOf(id),
+  supportUnlocked,
+  addPassive, canTakePassive, passiveN, passiveSpent,
+  passiveDmgMult, passiveHpMult, passiveGoldMult, passiveCrit, passiveDR,
+  hasExecute, hasUnyielding, passiveSpeedMult, passiveSight, sightRadius, revealRadius,
+  maxHp, atkPow, healPow, goldMult, leaderStepTime,
+  // 직업 능력
+  summonSkeleton, minions: () => minionList(), damageMinion,
+  placeMine, explodeMine, mines: () => mineList(),
+  bladeAura: () => bladeAura(gemMods(leader)),
+  updateClassAbilities,
+  // 역할별 공격 로직 (젬 효과 검증용)
+  mageAttack, priestHeal, applyLeaderGems,
+  // 상태이상
+  applySlow, applyStun, addDot, updateMonsterStatus,
+  damageMonster, damageMember, dropGem, checkLevelUp,
+  // 테스트: 지정 위치에 몬스터 스폰
+  spawnMonster: (type, x, y, floor) => {
+    const mon = makeMonster(type || 'slime', floor || (state.world.floor || 1), x, y);
+    mon.aggro = true;
+    state.world.monsters.push(mon);
+    return mon;
+  },
+  clearMonsters: () => { state.world.monsters.length = 0; },
   // 바이옴/특수 층을 강제로 불러온다 (테스트용)
   loadFloor: (biome, kind, floor) => {
     state.world = genFloor(biome, kind, floor || state.world.floor || 1);
