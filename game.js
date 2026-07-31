@@ -58,6 +58,10 @@ const state = {
   gemLoadout: {},                          // { memberId: { skill, support } }
   passivePts: 0,                           // 미사용 패시브 포인트
   passives: { atk: 0, def: 0, util: 0 },   // 갈래별 찍은 노드 수 (0~5)
+  newGems: 0,                              // 획득 후 아직 파티 화면에서 확인하지 않은 젬 수 (뱃지용)
+  // 리뷰 4차 — 설정 / 온보딩 힌트 (둘 다 저장에 포함)
+  settings: { sound: true, shake: true, hitstop: true },
+  hints: {},                               // { firstDungeon, firstLevel, firstGold } — 각 1회만
 };
 function xpNeed(lv) { return Math.floor(30 * Math.pow(lv, 1.35)); }
 
@@ -172,20 +176,25 @@ function gemAvailable(k) { return gemOwned(k) - gemEquippedCount(k); }
 function giveGem(k) {
   if (!GEM_BY_KEY[k]) return false;
   state.gems.push(k);
+  state.newGems = (state.newGems || 0) + 1;    // 👤 버튼 뱃지에 '새 젬'으로 표시
+  updatePartyBadge();
   saveDirty = true;
   return true;
 }
+// 젬 획득 안내 문구 (드랍/구매 공통) — 어디서 장착하는지까지 알려준다
+function gemGetMsg(g) { return `💎 스킬 젬 획득: ${g.name} — 👤에서 장착!`; }
 function equipGem(memberId, slot, gemKey) {
   const m = party.find(p => p.id === memberId);
   if (!m) return false;
   if (slot !== 'skill' && slot !== 'support') return false;
   if (slot === 'support' && !supportUnlocked()) return false;
   const lo = loadoutOf(m);
-  if (gemKey == null) { lo[slot] = null; saveDirty = true; return true; }
+  if (gemKey == null) { lo[slot] = null; updatePartyBadge(); saveDirty = true; return true; }
   const gem = GEM_BY_KEY[gemKey];
   if (!gemFits(gem, m, slot)) return false;
   if (gemAvailable(gemKey) <= 0 && lo[slot] !== gemKey) return false;
   lo[slot] = gemKey;
+  updatePartyBadge();
   saveDirty = true;
   return true;
 }
@@ -265,6 +274,7 @@ function addPassive(tree) {
   state.passives[tree] = passiveN(tree) + 1;
   state.passivePts--;
   if (tree === 'def') party.forEach((m, i) => { if (!m.down) m.hp += maxHp(m) - before[i]; });
+  updatePartyBadge();
   saveDirty = true;
   return true;
 }
@@ -316,11 +326,147 @@ const SHAKE_MAG_SMASH = 5;      // 텔레그래프 강타 명중 시 진폭(px)
 const SHAKE_MAG_BOSS  = 9;      // 보스 사망 시 진폭(px)
 const HIT_STOP_TIME   = 0.06;   // 치명타 히트스톱(초) — 전투/이동만 정지, 렌더는 유지
 function addShake(mag) {
+  if (!state.settings.shake) return;               // 설정에서 끌 수 있다
   state.shakeT = SHAKE_TIME;
   state.shakeMag = Math.max(state.shakeMag || 0, mag);
 }
 function addHitStop(t) {
+  if (!state.settings.hitstop) return;             // 설정에서 끌 수 있다
   state.hitStop = Math.max(state.hitStop || 0, t === undefined ? HIT_STOP_TIME : t);
+}
+
+/* =====================================================================
+ * 사운드 — WebAudio 신스 (외부 오디오 파일 없음)
+ * 오실레이터 + 게인 엔벨로프만으로 짧은 SFX를 합성한다.
+ * 모바일 autoplay 정책: 첫 사용자 입력에서 AudioContext 를 만들고 resume 한다.
+ * =================================================================== */
+const SFX_MASTER = 0.25;                 // 마스터 볼륨
+const SFX_THROTTLE = 0.06;               // 연타되는 타격음 스로틀(초)
+// w: 파형 / f: 시작 주파수 / f2: 끝 주파수(글라이드) / t: 시작 오프셋 / d: 길이 / v: 볼륨 / jit: 피치 랜덤(비율)
+const SFX = {
+  // 타격 — 짧은 사각파 blip (피치 랜덤 · 스로틀)
+  hit:     { throttle: SFX_THROTTLE, notes: [{ w: 'square', f: 300, f2: 170, t: 0, d: 0.055, v: 0.5, jit: 0.16 }] },
+  // 치명타 — 더 강한 이중음
+  crit:    { notes: [{ w: 'square', f: 440, f2: 220, t: 0, d: 0.07, v: 0.65 },
+                     { w: 'sawtooth', f: 660, f2: 280, t: 0.035, d: 0.13, v: 0.5 }] },
+  // 몬스터 처치 — 하강음
+  kill:    { notes: [{ w: 'triangle', f: 520, f2: 140, t: 0, d: 0.20, v: 0.42 }] },
+  // 골드 획득 — 밝은 딩
+  gold:    { notes: [{ w: 'sine', f: 1175, t: 0, d: 0.09, v: 0.34 },
+                     { w: 'sine', f: 1568, t: 0.05, d: 0.14, v: 0.26 }] },
+  // 포션 / 힐 — 부드러운 상승음
+  heal:    { notes: [{ w: 'sine', f: 420, f2: 760, t: 0, d: 0.26, v: 0.34 }] },
+  // 레벨업 — 3음 아르페지오 (도-미-솔)
+  levelup: { notes: [{ w: 'triangle', f: 523.25, t: 0,    d: 0.11, v: 0.4 },
+                     { w: 'triangle', f: 659.25, t: 0.09, d: 0.11, v: 0.4 },
+                     { w: 'triangle', f: 783.99, t: 0.18, d: 0.22, v: 0.44 }] },
+  // 텔레그래프 경고 — 낮은 경고음
+  warn:    { notes: [{ w: 'sawtooth', f: 155, f2: 108, t: 0, d: 0.30, v: 0.30 }] },
+  // 강타 명중 — 둔탁한 노이즈성 저음
+  smash:   { noise: { t: 0, d: 0.26, v: 0.45, cut: 300 },
+             notes: [{ w: 'sine', f: 96, f2: 42, t: 0, d: 0.28, v: 0.5 }] },
+  // 보스 처치 — 팡파레 4음
+  boss:    { notes: [{ w: 'square', f: 392.00, t: 0,    d: 0.12, v: 0.34 },
+                     { w: 'square', f: 523.25, t: 0.11, d: 0.12, v: 0.34 },
+                     { w: 'square', f: 659.25, t: 0.22, d: 0.12, v: 0.36 },
+                     { w: 'square', f: 783.99, t: 0.33, d: 0.34, v: 0.40 }] },
+  // 전멸 — 하강 단조
+  wipe:    { notes: [{ w: 'triangle', f: 440.00, t: 0,    d: 0.18, v: 0.36 },
+                     { w: 'triangle', f: 349.23, t: 0.17, d: 0.18, v: 0.36 },
+                     { w: 'triangle', f: 261.63, t: 0.34, d: 0.22, v: 0.36 },
+                     { w: 'triangle', f: 174.61, t: 0.54, d: 0.5,  v: 0.34 }] },
+  // 모달 열기 / 버튼 — 클릭 톤
+  ui:      { notes: [{ w: 'square', f: 660, t: 0, d: 0.035, v: 0.20 }] },
+  // 계단 하강 — 하강 2음
+  stairs:  { notes: [{ w: 'triangle', f: 392, t: 0, d: 0.10, v: 0.32 },
+                     { w: 'triangle', f: 262, t: 0.09, d: 0.18, v: 0.32 }] },
+};
+
+let audioCtx = null, sfxBus = null, sfxNoiseBuf = null;
+let sfxPlayed = 0;                    // 실제로 재생된 SFX 수 (테스트/검증용)
+const sfxLast = {};                   // 스로틀 타임스탬프
+
+// 첫 사용자 입력에서만 호출된다 (모바일 autoplay 정책)
+function initAudio() {
+  if (audioCtx) {
+    if (audioCtx.state === 'suspended' && audioCtx.resume) audioCtx.resume();
+    return audioCtx;
+  }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  try {
+    audioCtx = new AC();
+    sfxBus = audioCtx.createGain();
+    sfxBus.gain.value = SFX_MASTER;
+    sfxBus.connect(audioCtx.destination);
+    if (audioCtx.state === 'suspended' && audioCtx.resume) audioCtx.resume();
+  } catch (e) { audioCtx = null; sfxBus = null; }
+  return audioCtx;
+}
+function audioUnlock() { initAudio(); }
+addEventListener('keydown', audioUnlock);
+addEventListener('pointerdown', audioUnlock);
+
+function sfxNoiseBuffer() {
+  if (sfxNoiseBuf) return sfxNoiseBuf;
+  const len = Math.floor(audioCtx.sampleRate * 0.3) || 1;
+  const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+  sfxNoiseBuf = buf;
+  return buf;
+}
+function sfxEnvelope(t0, d, v) {
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(Math.max(v, 0.001), t0 + Math.min(0.012, d * 0.3));
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + d);
+  g.connect(sfxBus);
+  return g;
+}
+function sfxNote(n, t0) {
+  const osc = audioCtx.createOscillator();
+  osc.type = n.w || 'square';
+  const jit = n.jit ? (1 + rand(-n.jit, n.jit)) : 1;
+  const f = Math.max(20, n.f * jit);
+  const st = t0 + (n.t || 0);
+  osc.frequency.setValueAtTime(f, st);
+  if (n.f2) osc.frequency.exponentialRampToValueAtTime(Math.max(20, n.f2 * jit), st + n.d);
+  osc.connect(sfxEnvelope(st, n.d, n.v));
+  osc.start(st);
+  osc.stop(st + n.d + 0.03);
+}
+function sfxNoise(n, t0) {
+  const src = audioCtx.createBufferSource();
+  src.buffer = sfxNoiseBuffer();
+  const st = t0 + (n.t || 0);
+  const env = sfxEnvelope(st, n.d, n.v);
+  if (audioCtx.createBiquadFilter) {
+    const lp = audioCtx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = n.cut || 400;
+    src.connect(lp); lp.connect(env);
+  } else {
+    src.connect(env);
+  }
+  src.start(st);
+  src.stop(st + n.d + 0.03);
+}
+/* 이벤트 이름으로 SFX 재생. 사운드가 꺼져 있거나 아직 오디오가 열리지 않았으면 아무 것도 하지 않는다. */
+function sfx(name) {
+  const def = SFX[name];
+  if (!def || !state.settings.sound || !audioCtx || !sfxBus) return false;
+  const now = audioCtx.currentTime;
+  if (def.throttle) {
+    if (sfxLast[name] !== undefined && now - sfxLast[name] < def.throttle) return false;
+    sfxLast[name] = now;
+  }
+  try {
+    (def.notes || []).forEach(n => sfxNote(n, now));
+    if (def.noise) sfxNoise(def.noise, now);
+  } catch (e) { return false; }
+  sfxPlayed++;
+  return true;
 }
 
 /* ---------------- 이펙트 ---------------- */
@@ -1115,6 +1261,7 @@ function castTelegraph(mon, force) {
   const tg = { cells, t: 0, delay: 1.0, dmg: mon.atk * TELEGRAPH_MULT };
   wld.telegraphs.push(tg);
   addFloater(mon.px, mon.py - 52, '⚠️ 강타 준비!', '#ff9a5a', 13);
+  sfx('warn');
   return tg;
 }
 function updateTelegraphs(dt) {
@@ -1135,7 +1282,7 @@ function updateTelegraphs(dt) {
       hit++;
     });
     const c0 = tg.cells[0];
-    if (hit) addShake(SHAKE_MAG_SMASH);        // 강타 명중 — 화면 흔들림
+    if (hit) { addShake(SHAKE_MAG_SMASH); sfx('smash'); }   // 강타 명중 — 흔들림 + 둔탁한 저음
     addFloater(isoX(c0.x, c0.y), isoY(c0.x, c0.y) - 24, hit ? '💥 강타!' : '회피!', hit ? '#ff5a5a' : '#8dffb0', 15);
   }
 }
@@ -1194,6 +1341,7 @@ function onLeaderArrive() {
           }
         });
         addFloater(isoX(it.gx, it.gy), isoY(it.gx, it.gy) - 18, '💗 회복!', '#ff9eae', 13);
+        sfx('heal');
       } else {
         let g = it.type === 'chest' ? irand(30, 80) : irand(5, 15);
         g = Math.floor(g * goldMult() * (it.mult || 1));
@@ -1201,6 +1349,7 @@ function onLeaderArrive() {
         if (state.run) state.run.goldGained += g;
         addFloater(isoX(it.gx, it.gy), isoY(it.gx, it.gy) - 18, `+${g}`, '#ffd75e', 14);
         addSparkle(isoX(it.gx, it.gy), isoY(it.gx, it.gy), '#ffd75e');
+        sfx('gold');
         if (it.type === 'chest' && Math.random() < .5) say(party[3], '오늘 벌이가 쏠쏠한데요?');
       }
       wld.items.splice(i, 1);
@@ -1246,6 +1395,7 @@ function onLeaderArrive() {
       } else {
         say(party[2], '치유의 샘이에요! 다들 이리로!');
         toast('✨ 치유의 샘 — 파티 회복!');
+        sfx('heal');
       }
     }
     const altar = wld.props.find(p => p.type === 'altar' && !p.used && p.gx === leader.gx && p.gy === leader.gy);
@@ -1279,6 +1429,7 @@ function damageMonster(mon, dmg, color, opt) {
   if (mon.dr) dmg *= (1 - mon.dr);           // '단단한' 어픽스
   mon.hp -= dmg;
   if (!opt.silent) {
+    sfx(crit ? 'crit' : 'hit');
     mon.flashT = HIT_FLASH_TIME;              // 피격 흰색 플래시
     addFloater(mon.px, mon.py - 26, (crit ? '💥' : '') + Math.floor(dmg), crit ? '#ffb347' : (color || '#fff'), crit ? 16 : 13);
   }
@@ -1288,6 +1439,7 @@ function damageMonster(mon, dmg, color, opt) {
     addFloater(mon.px, mon.py - 40, '☠️ 처형!', '#ff5a5a', 15);
   }
   if (mon.hp <= 0) {
+    if (!mon.boss) sfx('kill');               // 보스는 처치 팡파레로 대체
     const rm = mon.rewardMult || 1;
     const gainedXp = Math.floor(mon.xp * rewardMult() * floorRisk());
     state.xp += gainedXp;
@@ -1321,7 +1473,7 @@ function dropGem(mon) {
   giveGem(g.k);
   addFloater(mon.px, mon.py - 68, `${g.icon} ${g.name} 젬!`, '#9be8ff', 14);
   addSparkle(mon.px, mon.py, '#9be8ff');
-  toast(`${g.icon} 스킬 젬 획득 — ${g.name}`);
+  toast(gemGetMsg(g));
   return g.k;
 }
 
@@ -1337,10 +1489,12 @@ function onBossDefeated(mon) {
   addSparkle(mon.px, mon.py, '#ffd75e');
   say(leader, '해냈어! 더 깊이 가보자!');
   addShake(SHAKE_MAG_BOSS);
+  sfx('boss');
   scheduleModal('relic', 700, () => openRelicChoice());
 }
 function checkLevelUp() {
   let need = xpNeed(state.lv);
+  let leveled = false;
   while (state.xp >= need) {
     state.xp -= need;
     state.lv++;
@@ -1348,11 +1502,16 @@ function checkLevelUp() {
     party.forEach(m => { if (!m.down) m.hp = maxHp(m); });
     addFloater(leader.px, leader.py - 52, 'LEVEL UP!', '#ffe88a', 17);
     addFloater(leader.px, leader.py - 70, '🎯 패시브 +1', '#8fe0ff', 13);
+    leveled = true;
     if (state.lv === SUPPORT_LV) toast('💠 서포트 젬 슬롯 해금!');
     addSparkle(leader.px, leader.py, '#ffe88a');
     say(leader, `레벨 ${state.lv} 달성!`);
     need = xpNeed(state.lv);
   }
+  if (!leveled) return;
+  sfx('levelup');                              // 여러 레벨이 한 번에 올라도 소리는 한 번만
+  updatePartyBadge();
+  hintOnce('firstLevel', '🎯 패시브 포인트 +1 — 👤에서 사용하세요!', 900);
 }
 // opt: { capFrac } — 최종 피해를 대상 최대 HP의 capFrac 배로 상한 (텔레그래프 강타 전용)
 function damageMember(m, dmg, attacker, opt) {
@@ -1982,6 +2141,8 @@ function enterDungeon() {
     toast(`🗝️ 지하 1층 — ${state.world.theme.name}`);
     if (Math.random() < .7) say(pick(party.slice(1)), pick(['으스스해요…', '조심해서 가요!', '몬스터 냄새가 나요…']));
     updateHudMode();
+    // 최초 던전 입장 1회 — 빌드 시스템 안내 (층 안내 토스트 뒤에 이어서)
+    hintOnce('firstDungeon', '👤 버튼에서 젬 장착과 패시브를 찍을 수 있어요!', 2600);
     scheduleModal('buff', 500, openBuffChoice);
   });
 }
@@ -2002,6 +2163,7 @@ function onStairsStep() {
 function descend(choice) {
   const next = state.world.floor + 1;
   const ch = choice || defaultChoice(next);
+  sfx('stairs');
   transition(() => {
     if (state.run) state.run.floor = next;
     state.world = genDungeon(next, ch);
@@ -2032,6 +2194,7 @@ function showRunSummary(escaped) {
   // 런이 끝났으므로 예약된 축복/유물 모달은 의미가 없다 — 전부 취소하고 정산을 최우선으로 띄운다
   cancelPendingModals(false);
   const lost = escaped ? 0 : Math.floor(state.gold * diff().wipeLoss);
+  if (!escaped) sfx('wipe');
   openModal(escaped ? '🏃 던전 탈출!' : '💀 파티 전멸…', body => {
     body.innerHTML = `
       <div class="sumRow"><span>도달 층</span><b>지하 ${run.floor}층</b></div>
@@ -2195,6 +2358,7 @@ function modalIsOpen() { return modalCur !== null; }
 function showModalNow(m) {
   modalCur = m.key;
   state.paused = true;
+  sfx('ui');
   document.getElementById('modalTitle').textContent = m.title;
   const body = document.getElementById('modalBody');
   body.innerHTML = '';
@@ -2471,7 +2635,7 @@ function openMerchant(p) {
             toast(`${s.icon} ${s.name} 구매!`);
           } else if (s.kind === 'gem') {
             giveGem(s.k);
-            toast(`${s.icon} ${s.name} 구매! (영구 소장)`);
+            toast(gemGetMsg(GEM_BY_KEY[s.k]));
           } else {
             party.forEach(m => {
               if (m.down) return;
@@ -2479,6 +2643,7 @@ function openMerchant(p) {
               addSparkle(m.px, m.py, '#ff9eae');
             });
             toast('🧪 회복 물약 — 파티 회복!');
+            sfx('heal');
           }
           addSparkle(leader.px, leader.py, '#ffd75e');
           render();
@@ -2607,6 +2772,8 @@ function openParty(tab) {
     };
 
     const renderGems = () => {
+      // 젬 탭을 봤으면 '새 젬' 알림은 해제 (남은 패시브 포인트는 그대로 뱃지에 남는다)
+      if (state.newGems) { state.newGems = 0; saveDirty = true; updatePartyBadge(); }
       party.forEach(m => {
         const row = document.createElement('div');
         row.className = 'partyRow';
@@ -2712,6 +2879,147 @@ function openParty(tab) {
 
     render();
   });
+}
+
+/* =====================================================================
+ * 리뷰 4차 — 런 정보(❗) / 설정(⚙️) 모달
+ * =================================================================== */
+function openRunInfo() {
+  if (state.transitioning) return;
+  const wld = state.world || {};
+  const dungeon = wld.mode === 'dungeon';
+  openModal(dungeon ? '❗ 런 정보' : '❗ 모험 정보', body => {
+    const rows = [];
+    rows.push(['난이도', `${diff().icon} ${diff().name}`]);
+    if (dungeon) {
+      const run = state.run || { kills: 0, goldGained: 0 };
+      const pk = PATH_KINDS[wld.kind] || PATH_KINDS.safe;
+      rows.push(['현재 층', `지하 ${wld.floor}층${wld.kind && wld.kind !== 'safe' ? ` ${pk.icon} ${pk.name}` : ''}`]);
+      rows.push(['바이옴', floorBiomeLine()]);
+      rows.push(['처치한 몬스터', String(run.kills || 0)]);
+      rows.push(['획득 골드', `+${fmt(run.goldGained || 0)}`]);
+      rows.push(['최고 기록', `지하 ${state.best}층`]);
+    } else {
+      rows.push(['최고 기록', `지하 ${state.best}층`]);
+      rows.push(['레벨', `Lv.${state.lv}`]);
+      rows.push(['보유 골드', fmt(state.gold)]);
+      rows.push(['직업', `${curClass().icon} ${curClass().name}`]);
+    }
+    const wrap = document.createElement('div');
+    wrap.id = 'runInfoBody';
+    wrap.innerHTML = rows.map(([k, v]) => `<div class="sumRow"><span>${k}</span><b>${v}</b></div>`).join('');
+    body.appendChild(wrap);
+
+    const chipList = (title, id, items) => {
+      const h = document.createElement('div');
+      h.className = 'riHead';
+      h.textContent = title;
+      wrap.appendChild(h);
+      const box = document.createElement('div');
+      box.className = 'riChips';
+      box.id = id;
+      if (!items.length) {
+        box.innerHTML = `<span class="riNone">없음</span>`;
+      } else {
+        box.innerHTML = items.map(o =>
+          `<span class="riChip${o.relic ? ' relic' : ''}" data-k="${o.k}">${o.icon} ${o.name}<b>×${o.n}</b></span>`).join('');
+      }
+      wrap.appendChild(box);
+    };
+
+    if (dungeon) {
+      const run = state.run || { buffs: {}, relics: {} };
+      chipList('축복', 'riBuffs', BUFF_POOL
+        .filter(o => (run.buffs && run.buffs[o.k]) > 0)
+        .map(o => ({ k: o.k, icon: o.icon, name: o.name, n: run.buffs[o.k] })));
+      chipList('유물', 'riRelics', RELICS
+        .filter(o => (run.relics && run.relics[o.k]) > 0)
+        .map(o => ({ k: o.k, icon: o.icon, name: o.name, n: run.relics[o.k], relic: true })));
+    } else {
+      // 초원: 영구 강화 요약
+      chipList('영구 강화', 'riMeta', META_DEFS
+        .filter(d => state.meta[d.k] > 0)
+        .map(d => ({ k: d.k, icon: d.icon, name: d.name, n: state.meta[d.k] })));
+      chipList('해금한 직업', 'riClasses', CLASS_KEYS
+        .filter(k => classUnlocked(k))
+        .map(k => ({ k, icon: CLASSES[k].icon, name: CLASSES[k].name, n: 1 })));
+    }
+
+    const hint = document.createElement('p');
+    hint.className = 'sumHint';
+    hint.textContent = dungeon ? '탈출하면 축복·유물은 사라지고 골드와 경험은 남아요.' : '던전에 들어가면 축복과 유물을 모을 수 있어요.';
+    body.appendChild(hint);
+    const close = document.createElement('button');
+    close.className = 'modalBtn';
+    close.id = 'runInfoClose';
+    close.textContent = '닫기';
+    close.addEventListener('click', closeModal);
+    body.appendChild(close);
+  }, { key: 'runinfo' });
+}
+
+// 데이터 초기화 후 새로고침 — 테스트에서 대체할 수 있도록 간접 참조로 둔다
+const RELOAD = { fn: () => location.reload() };
+function wipeSaveData() {
+  try { localStorage.removeItem('dunjeon-save'); localStorage.clear(); } catch (e) { /* 무시 */ }
+  saveDirty = false;
+  RELOAD.fn();
+}
+const SETTING_DEFS = [
+  { k: 'sound',   icon: '🔊', name: '사운드',       desc: '타격·획득·레벨업 효과음' },
+  { k: 'shake',   icon: '📳', name: '화면 흔들림',  desc: '강타/보스 처치 시 카메라 진동' },
+  { k: 'hitstop', icon: '⏸️', name: '히트스톱',     desc: '치명타 순간 아주 짧은 정지' },
+];
+function openSettings() {
+  if (state.transitioning) return;
+  openModal('⚙️ 설정', body => {
+    let armed = false;                       // 데이터 초기화 2단계 확인
+    const render = () => {
+      body.innerHTML = '';
+      SETTING_DEFS.forEach(d => {
+        const on = !!state.settings[d.k];
+        const row = document.createElement('div');
+        row.className = 'setRow';
+        row.innerHTML = `<span class="sIcon">${d.icon}</span>
+          <div class="sInfo"><b>${d.name}</b><small>${d.desc}</small></div>
+          <button class="toggleBtn${on ? ' on' : ''}" id="set-${d.k}" data-set="${d.k}" data-on="${on ? '1' : '0'}">${on ? 'ON' : 'OFF'}</button>`;
+        row.querySelector('.toggleBtn').addEventListener('click', () => {
+          state.settings[d.k] = !state.settings[d.k];
+          if (d.k === 'shake' && !state.settings.shake) { state.shakeT = 0; state.shakeMag = 0; state.shakeX = 0; state.shakeY = 0; }
+          if (d.k === 'hitstop' && !state.settings.hitstop) state.hitStop = 0;
+          if (d.k === 'sound' && state.settings.sound) { initAudio(); sfx('ui'); }
+          saveDirty = true;
+          render();
+        });
+        body.appendChild(row);
+      });
+      const reset = document.createElement('button');
+      reset.className = 'modalBtn danger' + (armed ? ' armed' : '');
+      reset.id = 'resetBtn';
+      reset.dataset.armed = armed ? '1' : '0';
+      reset.textContent = armed ? '⚠️ 정말 삭제할까요? 한 번 더 누르세요' : '🗑️ 데이터 초기화';
+      reset.addEventListener('click', () => {
+        if (!armed) { armed = true; render(); return; }   // 1단계: 확인 요청
+        wipeSaveData();                                    // 2단계: 실제 삭제 + 새로고침
+      });
+      body.appendChild(reset);
+      if (armed) {
+        const cancel = document.createElement('button');
+        cancel.className = 'modalBtn';
+        cancel.id = 'resetCancel';
+        cancel.textContent = '취소';
+        cancel.addEventListener('click', () => { armed = false; render(); });
+        body.appendChild(cancel);
+      }
+      const close = document.createElement('button');
+      close.className = 'modalBtn';
+      close.id = 'settingsClose';
+      close.textContent = '닫기';
+      close.addEventListener('click', closeModal);
+      body.appendChild(close);
+    };
+    render();
+  }, { key: 'settings' });
 }
 
 const META_DEFS = [
@@ -2845,6 +3153,23 @@ function toast(msg) {
     setTimeout(() => toastEl.classList.add('hidden'), 400);
   }, 2200);
 }
+
+/* ---- 온보딩 힌트 — 각 상황에서 딱 한 번만 안내한다 (저장에 기록) ----
+ * delay 를 주면 직전 토스트(층 안내 등)를 덮어쓰지 않고 이어서 표시된다. */
+function hintOnce(key, msg, delay) {
+  if (!state.hints || state.hints[key]) return false;
+  state.hints[key] = true;                 // 먼저 잠가서 재발화를 막는다
+  saveDirty = true;
+  if (delay) setTimeout(() => toast(msg), delay);
+  else toast(msg);
+  return true;
+}
+// 초원에서 300골드를 처음 모았을 때 — 캠프(직업 해금) 안내
+function checkGoldHint() {
+  if (state.world && state.world.mode === 'overworld' && state.gold >= 300) {
+    hintOnce('firstGold', '⚒️ 캠프에서 새 직업을 해금할 수 있어요!');
+  }
+}
 // 탐험 패널 1행: 지하 N층 · (특수 층/웨이브) · 난이도  — 짧게 유지해 줄바꿈을 막는다
 function floorTitle() {
   const w = state.world;
@@ -2884,6 +3209,8 @@ function updateHud() {
   el('dungeonBanner').classList.toggle('hidden', !nearEntrance);
   el('recLv').textContent = 3;
   updateBuffBar();
+  updatePartyBadge();
+  checkGoldHint();
 }
 let buffBarCache = '';
 function updateBuffBar() {
@@ -2905,6 +3232,27 @@ function updateBuffBar() {
     el('buffBar').innerHTML = html;
   }
 }
+
+/* ---- 👤 파티 버튼 알림 뱃지 (미사용 패시브 포인트 + 미장착 새 젬) ---- */
+function unequippedGemCount() {
+  let eq = 0;
+  party.forEach(m => {
+    const lo = loadoutOf(m);
+    if (lo.skill) eq++;
+    if (lo.support) eq++;
+  });
+  return Math.max(0, state.gems.length - eq);
+}
+// '새 젬'은 획득 후 아직 파티 화면에서 확인하지 않은 젬 — 이미 장착했다면 세지 않는다
+function newGemCount() { return clamp(state.newGems || 0, 0, unequippedGemCount()); }
+function partyBadgeCount() { return Math.max(0, state.passivePts || 0) + newGemCount(); }
+function updatePartyBadge() {
+  const b = el('partyBadge');
+  if (!b) return;
+  const n = partyBadgeCount();
+  b.textContent = n > 99 ? '99+' : String(n);
+  b.classList.toggle('hidden', n <= 0);     // 0이면 숨김
+}
 el('escapeBtn').addEventListener('click', escapeDungeon);
 el('upgradeBtn').addEventListener('click', openShop);
 el('autoBtn').addEventListener('click', () => {
@@ -2915,13 +3263,17 @@ el('autoBtn').addEventListener('click', () => {
 });
 document.querySelectorAll('.deco').forEach(btn => {
   btn.addEventListener('click', () => {
-    if (btn.dataset.act === 'map') {
+    const act = btn.dataset.act;
+    if (act === 'map') {
+      sfx('ui');
       state.minimapOn = !state.minimapOn;
       el('minimap').classList.toggle('hidden', !state.minimapOn);
-    } else if (btn.dataset.act === 'party') {
+    } else if (act === 'party') {
       openParty();
-    } else {
-      toast('🔧 준비 중이에요!');
+    } else if (act === 'quest') {
+      openRunInfo();
+    } else if (act === 'settings') {
+      openSettings();
     }
   });
 });
@@ -3947,6 +4299,13 @@ function loadSave() {
         ? clamp(Math.floor(s.passivePts), 0, 999)
         : Math.max(0, state.lv - 1 - passiveSpent());   // 구 세이브 소급 지급
 
+      /* ---- 리뷰 4차: 설정 / 온보딩 힌트 / 새 젬 알림 ---- */
+      if (s.settings) Object.keys(state.settings).forEach(k => {
+        if (typeof s.settings[k] === 'boolean') state.settings[k] = s.settings[k];
+      });
+      state.hints = (s.hints && typeof s.hints === 'object') ? Object.assign({}, s.hints) : {};
+      state.newGems = clamp(Math.floor(s.newGems || 0), 0, 999);
+
       party.forEach(m => { m.hp = maxHp(m); });
     }
   } catch (e) { /* 무시 */ }
@@ -3963,6 +4322,8 @@ setInterval(() => {
       // Phase 3
       classId: state.classId, gems: state.gems, gemLoadout: state.gemLoadout,
       passivePts: state.passivePts, passives: state.passives,
+      // 리뷰 4차
+      newGems: state.newGems, settings: state.settings, hints: state.hints,
     }));
   } catch (e) { /* 무시 */ }
 }, 3000);
@@ -4089,6 +4450,15 @@ window.GAME = {
   // 상태이상
   applySlow, applyStun, addDot, updateMonsterStatus,
   damageMonster, damageMember, dropGem, checkLevelUp,
+  // 리뷰 4차 수정 훅 (뱃지 / 온보딩 힌트 / 런 정보·설정 모달 / 사운드)
+  updatePartyBadge, partyBadgeCount, newGemCount, unequippedGemCount,
+  hintOnce, checkGoldHint,
+  openRunInfo, openSettings, SETTING_DEFS, wipeSaveData, reloadHook: RELOAD,
+  SFX, SFX_MASTER, sfx, initAudio,
+  sfxCount: () => sfxPlayed,
+  audioCtx: () => audioCtx,
+  gemGetMsg, toast,
+  toastText: () => toastEl.textContent,
   // 테스트: 지정 위치에 몬스터 스폰
   spawnMonster: (type, x, y, floor) => {
     const mon = makeMonster(type || 'slime', floor || (state.world.floor || 1), x, y);

@@ -117,6 +117,7 @@ html, body {
   display: flex; flex-direction: column; gap: 10px;
 }
 .deco {
+  position: relative;
   width: 44px; height: 44px;
   background: rgba(8, 32, 40, 0.85);
   border: 2px solid #5ba8a0;
@@ -126,6 +127,21 @@ html, body {
   filter: saturate(.6);
 }
 .deco:active { transform: scale(.94); }
+/* 알림 뱃지 — 미사용 패시브 포인트 + 미장착 새 젬 */
+.deco .badge {
+  position: absolute; top: -6px; right: -6px;
+  min-width: 19px; height: 19px;
+  padding: 0 4px;
+  display: flex; align-items: center; justify-content: center;
+  background: #d8323f;
+  border: 2px solid #ffd7db;
+  border-radius: 10px;
+  color: #fff;
+  font-size: 11px; font-weight: 700; line-height: 1;
+  text-shadow: 0 1px 0 rgba(0,0,0,.5);
+  box-shadow: 0 0 8px rgba(216, 50, 63, .8);
+  pointer-events: none;
+}
 
 #dpad {
   position: absolute; bottom: 24px; left: 50%;
@@ -345,6 +361,36 @@ html, body {
 .sumRow.bad b { color: #ff8a8a; }
 .sumHint { margin-top: 10px; font-size: 12px; color: #a9d8d2; text-align: center; }
 
+/* ---- 리뷰 4차: 런 정보 / 설정 ---- */
+.riHead { font-size: 12px; color: #a9d8d2; margin: 12px 0 4px; }
+.riChips { display: flex; flex-wrap: wrap; gap: 5px; }
+.riChip {
+  background: rgba(20, 50, 60, 0.9);
+  border: 1.5px solid #5ba8a0; border-radius: 12px;
+  color: #d8f3ef; padding: 3px 9px; font-size: 12px;
+}
+.riChip b { font-size: 11px; margin-left: 3px; color: #7ee8d8; }
+.riChip.relic { border-color: #e8b34a; }
+.riChip.relic b { color: #ffd75e; }
+.riNone { font-size: 11px; color: #7fa5a0; padding: 2px; }
+
+.setRow {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 4px;
+  border-bottom: 1px solid rgba(143, 208, 202, 0.2);
+}
+.setRow .sInfo { flex: 1; }
+.toggleBtn {
+  min-width: 66px; padding: 6px 10px;
+  background: #1d4a44;
+  border: 2px solid #5ba8a0; border-radius: 6px;
+  color: #8fb8b2; font-weight: 700; font-size: 12px;
+  cursor: pointer; font-family: inherit;
+}
+.toggleBtn.on { border-color: #7ee8d8; color: #eafffb; box-shadow: 0 0 6px rgba(126, 232, 216, .35); }
+.modalBtn.danger { background: #4a1d22; border-color: #e08a96; color: #ffe3e8; }
+.modalBtn.danger.armed { background: #922632; border-color: #ff6b81; }
+
 #minimap {
   position: absolute; left: 68px; top: 45%;
   transform: translateY(-50%);
@@ -387,4 +433,12 @@ html, body {
   #exploreBiome { font-size: 10px; }
   #exploreCount { font-size: 10px; }
   #exploreBarWrap { height: 8px; }
+  /* 긴 안내(온보딩 힌트 등)가 화면 밖으로 나가지 않게 줄바꿈 허용 */
+  #toast {
+    max-width: calc(100vw - 24px);
+    white-space: normal;
+    word-break: keep-all;
+    text-align: center;
+    font-size: 13px; padding: 8px 14px;
+  }
 }
