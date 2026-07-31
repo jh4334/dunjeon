@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>던전 (DunJeon)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div id="topLeft">
+    <div class="panel" id="lvPanel">Lv. <span id="lvVal">1</span></div>
+    <div class="panel" id="goldPanel"><span class="coin"></span><span id="goldVal">0</span></div>
+  </div>
+
+  <div class="panel" id="explorePanel">
+    <div class="row"><span id="exploreTitle">초원 탐험</span><span id="explorePct">0%</span></div>
+    <div id="exploreBarWrap"><div id="exploreBar"></div></div>
+    <div id="exploreCount">0 / 0</div>
+  </div>
+
+  <div id="dungeonBanner" class="hidden"><span class="gem">◆</span>&nbsp;던전 입장 · Lv.<span id="recLv">3</span></div>
+  <button id="escapeBtn" class="hidden"><span class="gem">◆</span>&nbsp;던전 탈출</button>
+
+  <div id="leftButtons">
+    <button class="deco" data-act="lock">🔒</button>
+    <button class="deco" data-act="party">👤</button>
+    <button class="deco" data-act="quest">❗</button>
+    <button class="deco" data-act="map">🗺️</button>
+    <button class="deco" data-act="settings">⚙️</button>
+  </div>
+
+  <div id="dpad">
+    <span></span><button data-dir="up">↑</button><span></span>
+    <button data-dir="left">←</button><span class="dpad-center">·</span><button data-dir="right">→</button>
+    <span></span><button data-dir="down">↓</button><span></span>
+  </div>
+
+  <button id="autoBtn">⟳<span>자동</span></button>
+
+  <canvas id="minimap" class="hidden" width="180" height="180"></canvas>
+  <div id="toast" class="hidden"></div>
+  <div id="fade"></div>
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>
