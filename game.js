@@ -6,7 +6,7 @@
 
 /* ---------------- 상수 ---------------- */
 const TILE_W = 64, TILE_H = 32;          // 아이소 타일 크기
-const T = { VOID: 0, WATER: 1, GRASS: 2, FLOOR: 3, WALL: 4 };
+const T = { VOID: 0, WATER: 1, GRASS: 2, FLOOR: 3, WALL: 4, LAVA: 5 };
 const STEP_TIME = 0.17;                  // 한 칸 이동 시간(초)
 const MONSTER_STEP = 0.42;
 const SIGHT = 4.4;                       // 시야(밝게 보이는) 반경
@@ -91,7 +91,12 @@ function atkPow(m) {
   return (base + per * (state.lv - 1)) * (1 + 0.08 * state.meta.atk) * (1 + 0.15 * runBuff('atk'));
 }
 function healPow() { return (10 + 3 * (state.lv - 1)) * (1 + 0.10 * state.meta.heal) * (1 + 0.20 * runBuff('heal')); }
-function goldMult() { return 1.3 * (1 + 0.10 * state.meta.gold) * (1 + 0.20 * runBuff('gold')) * (1 + 0.30 * relicCount('charm')) * rewardMult(); }
+// 층 단위 위험 보상 배율 (위험한 경로 / 도전방)
+function floorRisk() {
+  const w = state.world;
+  return (w && w.mode === 'dungeon' && w.riskMult) ? w.riskMult : 1;
+}
+function goldMult() { return 1.3 * (1 + 0.10 * state.meta.gold) * (1 + 0.20 * runBuff('gold')) * (1 + 0.30 * relicCount('charm')) * rewardMult() * floorRisk(); }
 party.forEach(m => { m.hp = maxHp(m); });
 
 /* ---------------- 이펙트 ---------------- */
@@ -122,6 +127,12 @@ function newWorld(mode, w, h) {
     floor: 0, walkTotal: 0, seenCount: 0,
     spawn: { x: 0, y: 0 },
     entrance: null, stairs: null, shrineUsed: false,
+    // Phase 2: 바이옴 / 갈림길
+    biome: null,          // 'catacomb' | 'cave' | 'waterway' | 'lava'
+    kind: 'safe',         // 'safe' | 'risk' | 'treasure' | 'challenge'
+    riskMult: 1,          // 층 단위 보상 배율
+    arena: null,          // 도전방 웨이브 상태
+    maxDist: 0,
   };
 }
 const idx = (wld, x, y) => y * wld.w + x;
@@ -180,118 +191,476 @@ function genOverworld() {
   return wld;
 }
 
-function genDungeon(floor) {
-  const w = 38, h = 38;
-  const wld = newWorld('dungeon', w, h);
-  wld.floor = floor;
+/* =====================================================================
+ * Phase 2 — 바이옴 / 층 생성기
+ * 바이옴은 "데이터 + 레이아웃 알고리즘" 으로 분리되고,
+ * 배치(스폰/계단/샘/제단/아이템/팩)는 걷기 가능한 칸 기준으로 일반화된다.
+ * =================================================================== */
+const BIOMES = {
+  catacomb: {
+    key: 'catacomb', name: '낡은 지하묘지', icon: '⚰️', gen: 'rooms',
+    desc: '방과 복도가 얽힌 표준 구조',
+    theme: { name: '낡은 지하묘지', f1: '#3d4763', f2: '#39425c', wt: '#232a3f', wl: '#12151f', wr: '#0d101a' },
+    weights: { slime: 3, bat: 2, skeleton: 3 },
+    decos: ['bone', 'urn'], decoCount: [8, 14],
+  },
+  cave: {
+    key: 'cave', name: '천연 동굴', icon: '🕳️', gen: 'cave',
+    desc: '유기적인 자연 동굴 · 박쥐 다수',
+    theme: { name: '천연 동굴', f1: '#4d3c27', f2: '#473722', wt: '#3b2d1b', wl: '#1e1710', wr: '#15100a' },
+    weights: { slime: 1, bat: 5, skeleton: 2 },
+    decos: ['crystal', 'mushroom'], decoCount: [12, 20],
+  },
+  waterway: {
+    key: 'waterway', name: '물에 잠긴 수로', icon: '💧', gen: 'waterway',
+    desc: '운하와 좁은 다리 · 슬라임 다수',
+    theme: { name: '물에 잠긴 수로', f1: '#2f4a41', f2: '#2b453c', wt: '#1e3a30', wl: '#0e1f18', wr: '#0a1712' },
+    weights: { slime: 5, bat: 2, skeleton: 1 },
+    decos: ['reed', 'barrel'], decoCount: [8, 14],
+  },
+  lava: {
+    key: 'lava', name: '작열의 심층', icon: '🔥', gen: 'lava',
+    desc: '용암 강과 외길 다리 · 해골 다수',
+    theme: { name: '작열의 심층', f1: '#4a3132', f2: '#452c2d', wt: '#3a2224', wl: '#1f1012', wr: '#170c0e' },
+    weights: { slime: 1, bat: 2, skeleton: 5 },
+    decos: ['lavarock', 'ember'], decoCount: [8, 14],
+  },
+};
+const BIOME_KEYS = Object.keys(BIOMES);
+
+// 기본(갈림길 없이 진입할 때) 층별 바이옴
+function biomeForFloor(floor) {
+  if (floor <= 2) return 'catacomb';
+  if (floor <= 5) return 'waterway';
+  if (floor <= 8) return 'lava';
+  return 'cave';
+}
+function dungeonTheme(floor) { return (BIOMES[biomeForFloor(floor)] || BIOMES.catacomb).theme; }
+
+/* ---- 경로 성격 (갈림길 선택지) ---- */
+const PATH_KINDS = {
+  safe:      { key: 'safe',      name: '안전한 경로', icon: '🛡️', riskMult: 1.0,  desc: '표준 생성' },
+  risk:      { key: 'risk',      name: '위험한 경로', icon: '💀', riskMult: 1.4,  desc: '엘리트 2배 · 팩 +1<br>골드/XP ×1.4' },
+  treasure:  { key: 'treasure',  name: '보물방',     icon: '💰', riskMult: 1.0,  desc: '몬스터 없음 · 보물 다수<br>함정이 촘촘하다' },
+  challenge: { key: 'challenge', name: '도전방',     icon: '⚔️', riskMult: 1.25, desc: '3웨이브 아레나<br>클리어 시 유물' },
+};
+
+/* ---- 저수준 지형 헬퍼 ---- */
+function carveTile(wld, x, y) {
+  if (x > 0 && y > 0 && x < wld.w - 1 && y < wld.h - 1) wld.tiles[idx(wld, x, y)] = T.FLOOR;
+}
+function isOpenTile(wld, x, y) {
+  const t = tileAt(wld, x, y);
+  return t === T.FLOOR || t === T.GRASS;
+}
+// 걷기 가능한 칸들을 4방향 연결 영역으로 분리 (큰 것부터)
+function tileRegions(wld) {
+  const w = wld.w, h = wld.h;
+  const seen = new Uint8Array(w * h);
+  const regs = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i0 = y * w + x;
+    if (seen[i0] || !isOpenTile(wld, x, y)) continue;
+    const q = [i0]; seen[i0] = 1;
+    const cur = [];
+    let head = 0;
+    while (head < q.length) {
+      const c = q[head++], cx = c % w, cy = (c / w) | 0;
+      cur.push({ x: cx, y: cy });
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = cx + dx, ny = cy + dy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const ni = ny * w + nx;
+        if (seen[ni] || !isOpenTile(wld, nx, ny)) continue;
+        seen[ni] = 1; q.push(ni);
+      }
+    }
+    regs.push(cur);
+  }
+  regs.sort((a, b) => b.length - a.length);
+  return regs;
+}
+// 가장 큰 연결 영역만 남기고 나머지는 벽으로 (동굴 연결성 보장)
+function keepLargestRegion(wld) {
+  const regs = tileRegions(wld);
+  if (!regs.length) return 0;
+  for (let i = 1; i < regs.length; i++)
+    regs[i].forEach(c => { wld.tiles[idx(wld, c.x, c.y)] = T.WALL; });
+  return regs[0].length;
+}
+// 물/용암으로 끊긴 영역들을 다리로 이어 준다
+function ensureConnectivity(wld) {
+  for (let iter = 0; iter < 12; iter++) {
+    const regs = tileRegions(wld);
+    if (regs.length <= 1) return;
+    const sample = arr => {
+      if (arr.length <= 240) return arr;
+      const out = [], st = Math.ceil(arr.length / 240);
+      for (let i = 0; i < arr.length; i += st) out.push(arr[i]);
+      return out;
+    };
+    const A = sample(regs[0]), B = sample(regs[1]);
+    let best = null, bd = 1e9;
+    for (const a of A) for (const b of B) {
+      const d = Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+      if (d < bd) { bd = d; best = [a, b]; }
+    }
+    if (!best) return;
+    let x = best[0].x, y = best[0].y;
+    const gx = best[1].x, gy = best[1].y;
+    while (x !== gx) { carveTile(wld, x, y); x += Math.sign(gx - x); }
+    while (y !== gy) { carveTile(wld, x, y); y += Math.sign(gy - y); }
+    carveTile(wld, x, y);
+  }
+}
+// 바닥/물/용암과 맞닿은 빈 칸을 벽으로
+function buildWalls(wld) {
+  for (let y = 0; y < wld.h; y++) for (let x = 0; x < wld.w; x++) {
+    if (wld.tiles[idx(wld, x, y)] !== T.VOID) continue;
+    let near = false;
+    for (let dy = -1; dy <= 1 && !near; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const t = tileAt(wld, x + dx, y + dy);
+      if (t === T.FLOOR || t === T.WATER || t === T.LAVA) { near = true; break; }
+    }
+    if (near) wld.tiles[idx(wld, x, y)] = T.WALL;
+  }
+}
+// 시작점에서의 4방향 거리장 (-1 = 도달 불가)
+function bfsField(wld, sx, sy) {
+  const w = wld.w, h = wld.h;
+  const dist = new Int32Array(w * h).fill(-1);
+  if (!isOpenTile(wld, sx, sy)) return dist;
+  const q = [sy * w + sx];
+  dist[sy * w + sx] = 0;
+  let head = 0;
+  while (head < q.length) {
+    const c = q[head++], cx = c % w, cy = (c / w) | 0;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = cx + dx, ny = cy + dy;
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+      const ni = ny * w + nx;
+      if (dist[ni] >= 0 || !isOpenTile(wld, nx, ny)) continue;
+      dist[ni] = dist[c] + 1;
+      q.push(ni);
+    }
+  }
+  return dist;
+}
+function nearestWalk(wld, cx, cy) {
+  for (let r = 0; r < Math.max(wld.w, wld.h); r++) {
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+      const x = cx + dx, y = cy + dy;
+      if (isOpenTile(wld, x, y)) return { x, y };
+    }
+  }
+  return { x: cx, y: cy };
+}
+// 배치용 빈 칸 뽑기 (거리 밴드 우선, 없으면 아무 빈 칸)
+function takeCell(wld, cells, occ, minD, maxD) {
+  const pool = [];
+  for (const c of cells) {
+    if (occ[c.y * wld.w + c.x]) continue;
+    if (c.d < minD) continue;
+    if (maxD != null && c.d > maxD) continue;
+    pool.push(c);
+  }
+  let c = pool.length ? pick(pool) : null;
+  if (!c) {
+    const alt = cells.filter(q => !occ[q.y * wld.w + q.x]);
+    c = alt.length ? pick(alt) : null;
+  }
+  if (c) occ[c.y * wld.w + c.x] = 1;
+  return c;
+}
+
+/* ---- 레이아웃 알고리즘 ---- */
+// 방 + 복도 (지하묘지 / 수로 / 용암의 기반)
+function layoutRooms(wld, cfg) {
+  const w = wld.w, h = wld.h;
   const rooms = [];
   let guard = 0;
-  while (rooms.length < 8 && guard++ < 300) {
-    const rw = irand(4, 8), rh = irand(4, 8);
-    const rx = irand(2, w - rw - 3), ry = irand(2, h - rh - 3);
+  while (rooms.length < cfg.count && guard++ < 300) {
+    const rw = irand(cfg.min, cfg.max), rh = irand(cfg.min, cfg.max);
+    const rx = irand(2, Math.max(3, w - rw - 3)), ry = irand(2, Math.max(3, h - rh - 3));
     if (rooms.some(r => rx < r.x + r.w + 2 && rx + rw + 2 > r.x && ry < r.y + r.h + 2 && ry + rh + 2 > r.y)) continue;
     rooms.push({ x: rx, y: ry, w: rw, h: rh, cx: rx + (rw >> 1), cy: ry + (rh >> 1) });
   }
-  const carve = (x, y) => { if (x > 0 && y > 0 && x < w - 1 && y < h - 1) wld.tiles[idx(wld, x, y)] = T.FLOOR; };
   rooms.forEach(r => {
-    for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) carve(x, y);
+    for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) carveTile(wld, x, y);
   });
   for (let i = 1; i < rooms.length; i++) {
     const a = rooms[i - 1], b = rooms[i];
     let x = a.cx, y = a.cy;
-    while (x !== b.cx) { carve(x, y); carve(x, y + 1); x += Math.sign(b.cx - x); }
-    while (y !== b.cy) { carve(x, y); carve(x + 1, y); y += Math.sign(b.cy - y); }
-    carve(x, y);
+    while (x !== b.cx) { carveTile(wld, x, y); carveTile(wld, x, y + 1); x += Math.sign(b.cx - x); }
+    while (y !== b.cy) { carveTile(wld, x, y); carveTile(wld, x + 1, y); y += Math.sign(b.cy - y); }
+    carveTile(wld, x, y);
   }
-  // 벽 세우기
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    if (wld.tiles[idx(wld, x, y)] !== T.VOID) continue;
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++)
-      if (tileAt(wld, x + dx, y + dy) === T.FLOOR) wld.tiles[idx(wld, x, y)] = T.WALL;
+  return rooms;
+}
+// 셀룰러 오토마타 동굴 (랜덤 45% 채움 → 4~5회 스무딩 → 최대 영역만 유지)
+function layoutCave(wld) {
+  const w = wld.w, h = wld.h;
+  const area = (w - 4) * (h - 4);
+  for (let attempt = 0; attempt < 6; attempt++) {
+    wld.tiles.fill(T.VOID);
+    let grid = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++)
+      grid[y * w + x] = (x < 2 || y < 2 || x >= w - 2 || y >= h - 2) ? 1 : (Math.random() < 0.45 ? 1 : 0);
+    const passes = irand(4, 5);
+    for (let it = 0; it < passes; it++) {
+      const nxt = new Uint8Array(w * h);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        if (x < 2 || y < 2 || x >= w - 2 || y >= h - 2) { nxt[y * w + x] = 1; continue; }
+        let n = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const nx = x + dx, ny = y + dy;
+          n += (nx < 0 || ny < 0 || nx >= w || ny >= h) ? 1 : grid[ny * w + nx];
+        }
+        nxt[y * w + x] = grid[y * w + x] ? (n >= 4 ? 1 : 0) : (n >= 5 ? 1 : 0);
+      }
+      grid = nxt;
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++)
+      if (!grid[y * w + x]) wld.tiles[idx(wld, x, y)] = T.FLOOR;
+    if (keepLargestRegion(wld) >= area * 0.18) break;
   }
-  wld.spawn = { x: rooms[0].cx, y: rooms[0].cy };
-  const last = rooms[rooms.length - 1];
-  const bossFloor = floor % 3 === 0;
-  if (bossFloor) {
-    // 보스를 잡아야 계단이 열린다
-    wld.stairs = null;
-    wld.stairsPending = { x: last.cx, y: last.cy };
-    wld.monsters.push(makeMonster(floor >= 6 ? 'lich' : 'slimeking', floor, last.cx, last.cy));
-  } else {
-    wld.stairs = { x: last.cx, y: last.cy };
-    wld.props.push({ type: 'stairs', gx: last.cx, gy: last.cy, solid: false });
+  return [];   // 동굴은 '방' 개념이 없다 — 배치는 거리장 기준
+}
+// 도전방 아레나 (모서리를 깎은 큰 방 하나)
+function layoutArena(wld) {
+  const rx = 4, ry = 4, rw = wld.w - 8, rh = wld.h - 8;
+  const cut = 4;
+  for (let y = 0; y < rh; y++) for (let x = 0; x < rw; x++) {
+    if (x + y < cut) continue;
+    if ((rw - 1 - x) + y < cut) continue;
+    if (x + (rh - 1 - y) < cut) continue;
+    if ((rw - 1 - x) + (rh - 1 - y) < cut) continue;
+    carveTile(wld, rx + x, ry + y);
   }
-  const mid = rooms[Math.floor(rooms.length / 2)];
-  wld.props.push({ type: 'shrine', gx: mid.cx, gy: mid.cy, solid: false });
+  return [{ x: rx, y: ry, w: rw, h: rh, cx: rx + (rw >> 1), cy: ry + (rh >> 1) }];
+}
+// 수로: 맵을 가로지르는 물 운하 2~3줄 + 폭 1~2칸 다리 (초크포인트)
+function carveCanals(wld) {
+  const n = irand(2, 3);
+  const used = [];
+  for (let i = 0; i < n; i++) {
+    const vert = Math.random() < 0.5;
+    const span = vert ? wld.w : wld.h;
+    const cross = vert ? wld.h : wld.w;
+    let p = 0, guard = 0;
+    do { p = irand(5, span - 8); guard++; } while (used.some(u => Math.abs(u - p) < 7) && guard < 40);
+    used.push(p);
+    const width = irand(2, 3);
+    for (let a = 1; a < cross - 1; a++) for (let b = p; b < p + width; b++) {
+      const x = vert ? b : a, y = vert ? a : b;
+      if (x < 1 || y < 1 || x >= wld.w - 1 || y >= wld.h - 1) continue;
+      wld.tiles[idx(wld, x, y)] = T.WATER;
+    }
+    // 다리 후보: 운하 양옆이 모두 바닥인 지점
+    const cands = [];
+    for (let a = 2; a < cross - 2; a++) {
+      const bx = vert ? p - 1 : a, by = vert ? a : p - 1;
+      const ax = vert ? p + width : a, ay = vert ? a : p + width;
+      if (isOpenTile(wld, bx, by) && isOpenTile(wld, ax, ay)) cands.push(a);
+    }
+    shuffle(cands);
+    const want = irand(1, 2), chosen = [];
+    for (const a of cands) {
+      if (chosen.length >= want) break;
+      if (chosen.some(c => Math.abs(c - a) < 5)) continue;
+      chosen.push(a);
+      const bw = irand(1, 2);
+      for (let k = 0; k < bw; k++) for (let b = p; b < p + width; b++) {
+        const x = vert ? b : a + k, y = vert ? a + k : b;
+        carveTile(wld, x, y);
+      }
+    }
+  }
+}
+// 용암: 굽이치는 용암 강 1~2줄 + 외길 다리
+function carveLavaRivers(wld) {
+  const n = irand(1, 2);
+  for (let i = 0; i < n; i++) {
+    const vert = Math.random() < 0.5;
+    const len = (vert ? wld.h : wld.w) - 2;
+    const limit = (vert ? wld.w : wld.h) - 4;
+    let drift = irand(6, Math.max(7, limit - 2));
+    const path = [];
+    for (let s = 1; s < len; s++) {
+      drift = clamp(drift + irand(-1, 1), 3, limit);
+      path.push(vert ? { x: drift, y: s } : { x: s, y: drift });
+    }
+    const width = irand(1, 2);
+    path.forEach(pt => {
+      for (let k = 0; k < width; k++) {
+        const x = vert ? pt.x + k : pt.x, y = vert ? pt.y : pt.y + k;
+        if (x < 1 || y < 1 || x >= wld.w - 1 || y >= wld.h - 1) continue;
+        wld.tiles[idx(wld, x, y)] = T.LAVA;
+      }
+    });
+    // 좁은 다리 (강 방향 1칸 폭)
+    const bridges = irand(1, 2);
+    for (let k = 0; k < bridges; k++) {
+      const pt = path[irand(Math.floor(path.length * 0.15), Math.floor(path.length * 0.85))];
+      if (!pt) continue;
+      for (let d = -3; d <= 3 + width; d++) {
+        const x = vert ? pt.x + d : pt.x, y = vert ? pt.y : pt.y + d;
+        carveTile(wld, x, y);
+      }
+    }
+  }
+}
 
-  // 도박 제단 (층마다 0~1개)
-  if (Math.random() < 0.6) {
-    const ar = pick(rooms.slice(1));
-    const ax = irand(ar.x, ar.x + ar.w - 1), ay = irand(ar.y, ar.y + ar.h - 1);
-    if (walkable(wld, ax, ay) && !wld.props.some(p => p.gx === ax && p.gy === ay)) {
-      wld.props.push({ type: 'altar', gx: ax, gy: ay, solid: false, used: false });
-    }
-  }
+/* ---- 층 생성 (바이옴 × 경로 성격) ---- */
+function genFloor(biomeKey, kind, floor) {
+  const biome = BIOMES[biomeKey] || BIOMES.catacomb;
+  kind = PATH_KINDS[kind] ? kind : 'safe';
+  const pk = PATH_KINDS[kind];
+  const size = kind === 'treasure' ? 24 : kind === 'challenge' ? 26 : 38;
+  const wld = newWorld('dungeon', size, size);
+  wld.floor = floor;
+  wld.biome = biome.key;
+  wld.kind = kind;
+  wld.theme = biome.theme;
+  wld.riskMult = pk.riskMult;
 
-  // 몬스터 팩 (3~6마리가 뭉쳐 배치 — 한 마리가 어그로되면 팩 전원이 달려든다)
-  const types = floorMonsterTypes(floor);
-  const packRooms = rooms.slice(1);
-  const packCount = clamp(3 + Math.floor(floor / 3), 3, 5);
-  for (let p = 0; p < packCount && packRooms.length; p++) {
-    const r = pick(packRooms);
-    const ax = irand(r.x, r.x + r.w - 1), ay = irand(r.y, r.y + r.h - 1);
-    if (!walkable(wld, ax, ay)) continue;
-    if (cheb(ax, ay, wld.spawn.x, wld.spawn.y) < 4) continue;
-    // 앵커 주변 1~2칸 안쪽 후보 칸
-    const spots = [];
-    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
-      const x = ax + dx, y = ay + dy;
-      if (!walkable(wld, x, y)) continue;
-      if (wld.monsters.some(m => m.gx === x && m.gy === y)) continue;
-      spots.push({ x, y });
-    }
-    shuffle(spots);
-    const packId = ++packSeq;
-    const size = Math.min(irand(3, 6), spots.length);
-    for (let i = 0; i < size; i++) {
-      const mon = makeMonster(pick(types), floor, spots[i].x, spots[i].y);
-      mon.packId = packId;
-      if (floor >= 2 && Math.random() < 0.12) makeElite(mon, floor);
-      wld.monsters.push(mon);
-    }
+  // 1) 레이아웃
+  let rooms;
+  if (kind === 'challenge') rooms = layoutArena(wld);
+  else if (kind === 'treasure') rooms = layoutRooms(wld, { count: 4, min: 4, max: 7 });
+  else if (biome.gen === 'cave') rooms = layoutCave(wld);
+  else rooms = layoutRooms(wld, { count: 8, min: 4, max: 8 });
+
+  // 2) 바이옴 지형 (특수 층은 순수 구조 유지)
+  if (kind === 'safe' || kind === 'risk') {
+    if (biome.gen === 'waterway') { carveCanals(wld); ensureConnectivity(wld); }
+    else if (biome.gen === 'lava') { carveLavaRivers(wld); ensureConnectivity(wld); }
   }
-  // 아이템 (골드 / 상자 / 포션)
-  let items = 0; guard = 0;
-  while (items < 11 && guard++ < 500) {
-    const r = pick(rooms.slice(1));
-    const x = irand(r.x, r.x + r.w - 1), y = irand(r.y, r.y + r.h - 1);
-    if (!walkable(wld, x, y)) continue;
-    if (wld.items.some(it => it.gx === x && it.gy === y)) continue;
-    const roll = Math.random();
-    wld.items.push({ type: roll < 0.2 ? 'chest' : roll < 0.32 ? 'potion' : 'gold', gx: x, gy: y });
-    items++;
+  // 3) 연결성 보장 + 벽 세우기
+  keepLargestRegion(wld);
+  buildWalls(wld);
+
+  // 4) 스폰 & 거리장 (모든 배치는 '도달 가능한 걷기 칸' 기준)
+  const anchor = rooms.length ? rooms[0] : { cx: size >> 1, cy: size >> 1 };
+  wld.spawn = nearestWalk(wld, anchor.cx, anchor.cy);
+  const dist = bfsField(wld, wld.spawn.x, wld.spawn.y);
+  const cells = [];
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const d = dist[y * size + x];
+    if (d >= 0) cells.push({ x, y, d });
   }
-  // 가시 함정
-  let traps = 0; guard = 0;
-  while (traps < 3 + Math.min(4, floor) && guard++ < 400) {
-    const x = irand(2, w - 3), y = irand(2, h - 3);
-    if (!walkable(wld, x, y)) continue;
-    if (cheb(x, y, wld.spawn.x, wld.spawn.y) < 4) continue;
-    if (wld.props.some(p => p.gx === x && p.gy === y)) continue;
-    if (wld.items.some(it => it.gx === x && it.gy === y)) continue;
-    wld.props.push({ type: 'trap', gx: x, gy: y, solid: false, armed: true });
-    traps++;
-  }
-  wld.theme = dungeonTheme(floor);
+  cells.sort((a, b) => a.d - b.d);
+  wld.maxDist = cells.length ? cells[cells.length - 1].d : 0;
+
+  // 5) 내용물 배치
+  populateFloor(wld, biome, kind, floor, cells);
   countWalkable(wld);
   return wld;
 }
+// 기존 호출 호환: genDungeon(floor) / genDungeon(floor, {biome, kind})
+function genDungeon(floor, opt) {
+  opt = opt || {};
+  const bk = BIOMES[opt.biome] ? opt.biome : biomeForFloor(floor);
+  return genFloor(bk, opt.kind || 'safe', floor);
+}
 
-function dungeonTheme(floor) {
-  if (floor >= 9) return { name: '심연',        f1: '#3a2c4a', f2: '#352844', wt: '#2b2140', wl: '#171028', wr: '#120c20' };
-  if (floor >= 6) return { name: '작열의 심층', f1: '#4a3132', f2: '#452c2d', wt: '#3a2224', wl: '#1f1012', wr: '#170c0e' };
-  if (floor >= 3) return { name: '이끼 낀 수로', f1: '#2f4a41', f2: '#2b453c', wt: '#1e3a30', wl: '#0e1f18', wr: '#0a1712' };
-  return              { name: '낡은 지하묘지', f1: '#3d4763', f2: '#39425c', wt: '#232a3f', wl: '#12151f', wr: '#0d101a' };
+function populateFloor(wld, biome, kind, floor, cells) {
+  const occ = new Uint8Array(wld.w * wld.h);
+  const maxD = wld.maxDist || 1;
+  const far = cells.length ? cells[cells.length - 1] : { x: wld.spawn.x, y: wld.spawn.y, d: 0 };
+  const normal = (kind === 'safe' || kind === 'risk');
+  const risk = kind === 'risk';
+  const bossFloor = normal && floor % 3 === 0;
+  occ[wld.spawn.y * wld.w + wld.spawn.x] = 1;
+
+  // --- 계단 / 보스 / 아레나 ---
+  occ[far.y * wld.w + far.x] = 1;
+  if (kind === 'challenge') {
+    // 진입하면 입구가 닫힌다 — 웨이브를 전부 정리해야 계단이 나타난다
+    wld.stairs = null;
+    wld.arena = { wave: 0, total: 3, t: 1.6, done: false, stair: { x: far.x, y: far.y } };
+  } else if (bossFloor) {
+    wld.stairs = null;
+    wld.stairsPending = { x: far.x, y: far.y };
+    wld.monsters.push(makeMonster(floor >= 6 ? 'lich' : 'slimeking', floor, far.x, far.y));
+  } else {
+    // 보물방 포함 — 계단은 처음부터 열려 있다
+    wld.stairs = { x: far.x, y: far.y };
+    wld.props.push({ type: 'stairs', gx: far.x, gy: far.y, solid: false });
+  }
+
+  // --- 치유/저주 샘 ---
+  if (kind !== 'challenge') {
+    const s = takeCell(wld, cells, occ, Math.floor(maxD * 0.3), Math.floor(maxD * 0.8));
+    if (s) wld.props.push({ type: 'shrine', gx: s.x, gy: s.y, solid: false });
+  }
+  // --- 도박 제단 (층마다 0~1개) ---
+  if (normal && Math.random() < 0.6) {
+    const a = takeCell(wld, cells, occ, 5, null);
+    if (a) wld.props.push({ type: 'altar', gx: a.x, gy: a.y, solid: false, used: false });
+  }
+  // --- 떠돌이 상인 (일반 층 어디든 20%) ---
+  if (normal && !bossFloor && Math.random() < 0.2) {
+    const m = takeCell(wld, cells, occ, 6, null);
+    if (m) wld.props.push({ type: 'merchant', gx: m.x, gy: m.y, solid: false, stock: null });
+  }
+
+  // --- 몬스터 팩 (뭉쳐 배치 → 한 마리가 어그로되면 팩 전원이 달려든다) ---
+  if (normal) {
+    const types = floorMonsterTypes(floor, biome.key);
+    const eliteP = (floor >= 2 ? 0.12 : 0) * (risk ? 2 : 1);
+    const packCount = clamp(3 + Math.floor(floor / 3), 3, 5) + (risk ? 1 : 0);
+    for (let p = 0; p < packCount; p++) {
+      const anchor = takeCell(wld, cells, occ, 8, null);
+      if (!anchor) break;
+      const spots = [];
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+        const x = anchor.x + dx, y = anchor.y + dy;
+        if (!isOpenTile(wld, x, y)) continue;
+        if (cheb(x, y, wld.spawn.x, wld.spawn.y) < 4) continue;
+        if (wld.monsters.some(m => m.gx === x && m.gy === y)) continue;
+        spots.push({ x, y });
+      }
+      shuffle(spots);
+      const packId = ++packSeq;
+      const size = Math.min(irand(3, 6), spots.length);
+      for (let i = 0; i < size; i++) {
+        const mon = makeMonster(pick(types), floor, spots[i].x, spots[i].y);
+        mon.packId = packId;
+        if (Math.random() < eliteP) makeElite(mon, floor);
+        wld.monsters.push(mon);
+        occ[spots[i].y * wld.w + spots[i].x] = 1;
+      }
+    }
+  }
+
+  // --- 아이템 (골드 / 상자 / 포션) ---
+  const itemCount = kind === 'treasure' ? irand(16, 22) : kind === 'challenge' ? 0 : 11;
+  for (let i = 0; i < itemCount; i++) {
+    const c = takeCell(wld, cells, occ, 2, null);
+    if (!c) break;
+    const roll = Math.random();
+    const type = kind === 'treasure'
+      ? (roll < 0.6 ? 'chest' : roll < 0.72 ? 'potion' : 'gold')
+      : (roll < 0.2 ? 'chest' : roll < 0.32 ? 'potion' : 'gold');
+    wld.items.push({ type, gx: c.x, gy: c.y });
+  }
+  // --- 가시 함정 (보물방은 촘촘하게) ---
+  const trapCount = kind === 'treasure' ? irand(14, 20) : kind === 'challenge' ? 0 : 3 + Math.min(4, floor);
+  for (let i = 0; i < trapCount; i++) {
+    const c = takeCell(wld, cells, occ, 4, null);
+    if (!c) break;
+    wld.props.push({ type: 'trap', gx: c.x, gy: c.y, solid: false, armed: true });
+  }
+  // --- 바이옴 전용 장식 프롭 ---
+  const dn = irand(biome.decoCount[0], biome.decoCount[1]);
+  for (let i = 0; i < dn; i++) {
+    const c = takeCell(wld, cells, occ, 2, null);
+    if (!c) break;
+    wld.props.push({ type: pick(biome.decos), gx: c.x, gy: c.y, solid: false });
+  }
 }
 
 function countWalkable(wld) {
@@ -321,8 +690,16 @@ function reveal(wld, cx, cy) {
 const MONSTER_KO = { slime: '슬라임', bat: '박쥐', skeleton: '해골', slimeking: '슬라임 왕', lich: '리치' };
 let packSeq = 0;   // 팩 식별자 시퀀스
 
-function floorMonsterTypes(floor) {
-  return floor >= 3 ? ['slime', 'bat', 'skeleton'] : floor >= 2 ? ['slime', 'bat'] : ['slime', 'slime', 'bat'];
+// 층에 따라 해금되는 몬스터 × 바이옴 가중치 (가중치만큼 배열에 중복 삽입)
+function floorMonsterTypes(floor, biomeKey) {
+  const allowed = floor >= 3 ? ['slime', 'bat', 'skeleton'] : ['slime', 'bat'];
+  const b = BIOMES[biomeKey];
+  const out = [];
+  allowed.forEach(t => {
+    const n = b ? (b.weights[t] || 1) : (t === 'slime' ? 2 : 1);
+    for (let i = 0; i < n; i++) out.push(t);
+  });
+  return out;
 }
 
 function makeMonster(type, floor, x, y) {
@@ -394,7 +771,7 @@ function spawnAmbush(cx, cy, count, minR, maxR) {
   const wld = state.world;
   if (!wld || wld.mode !== 'dungeon') return 0;
   const floor = wld.floor || 1;
-  const types = floorMonsterTypes(floor);
+  const types = floorMonsterTypes(floor, wld.biome);
   const spots = [];
   for (let dy = -maxR; dy <= maxR; dy++) for (let dx = -maxR; dx <= maxR; dx++) {
     const d = Math.max(Math.abs(dx), Math.abs(dy));
@@ -567,9 +944,11 @@ function onLeaderArrive() {
   }
   if (wld.mode === 'dungeon') {
     if (wld.stairs && leader.gx === wld.stairs.x && leader.gy === wld.stairs.y) {
-      descend();
+      onStairsStep();
       return;
     }
+    const merchant = wld.props.find(p => p.type === 'merchant' && p.gx === leader.gx && p.gy === leader.gy);
+    if (merchant) { openMerchant(merchant); return; }
     const shrine = wld.props.find(p => p.type === 'shrine');
     if (shrine && !wld.shrineUsed && leader.gx === shrine.gx && leader.gy === shrine.gy) {
       wld.shrineUsed = true;
@@ -619,7 +998,7 @@ function damageMonster(mon, dmg, color) {
   addFloater(mon.px, mon.py - 26, (crit ? '💥' : '') + Math.floor(dmg), crit ? '#ffb347' : (color || '#fff'), crit ? 16 : 13);
   if (mon.hp <= 0) {
     const rm = mon.rewardMult || 1;
-    const gainedXp = Math.floor(mon.xp * rewardMult());
+    const gainedXp = Math.floor(mon.xp * rewardMult() * floorRisk());
     state.xp += gainedXp;
     if (state.run) state.run.kills++;
     addFloater(mon.px, mon.py - 40, `+${gainedXp} XP`, '#9be8ff', 12);
@@ -687,9 +1066,41 @@ function damageMember(m, dmg, attacker) {
   }
 }
 
+/* ---- 도전방 아레나: 3웨이브 ---- */
+function updateArena(dt) {
+  const wld = state.world;
+  const ar = wld.arena;
+  if (!ar || ar.done) return;
+  if (wld.monsters.some(m => m.hp > 0)) return;   // 웨이브 정리 전에는 대기
+  ar.t -= dt;
+  if (ar.t > 0) return;
+  if (ar.wave >= ar.total) { finishArena(); return; }
+  ar.wave++;
+  const n = 3 + ar.wave * 2;
+  const spawned = spawnAmbush(leader.gx, leader.gy, n, 3, 7);
+  toast(`⚔️ 웨이브 ${ar.wave} / ${ar.total} — 적 ${spawned}마리!`);
+  addFloater(leader.px, leader.py - 60, `WAVE ${ar.wave}`, '#ff9a5a', 17);
+  ar.t = 1.2;
+  updateHudMode();
+}
+function finishArena() {
+  const wld = state.world, ar = wld.arena;
+  ar.done = true;
+  const c = ar.stair || wld.spawn;
+  wld.stairs = { x: c.x, y: c.y };
+  wld.props.push({ type: 'stairs', gx: c.x, gy: c.y, solid: false });
+  wld.items.push({ type: 'chest', gx: leader.gx, gy: leader.gy });
+  toast('🏆 도전방 클리어! 계단이 나타났습니다');
+  say(leader, '전부 쓸어버렸어! 보상을 챙기자!');
+  addSparkle(leader.px, leader.py, '#ffd75e');
+  updateHudMode();
+  setTimeout(() => openRelicChoice('⚔️ 도전방 보상 — 유물을 선택하세요'), 600);
+}
+
 function updateCombat(dt) {
   const wld = state.world;
   if (wld.mode !== 'dungeon') return;
+  updateArena(dt);
   const mons = wld.monsters;
 
   // 파티 공격
@@ -877,19 +1288,39 @@ function enterDungeon() {
     setTimeout(openBuffChoice, 500);
   });
 }
-function descend() {
+// 갈림길 없이 들어갈 때의 기본 선택지 (보스 층 / 첫 층)
+function defaultChoice(floor) {
+  return { biome: floor <= 1 ? 'catacomb' : pick(BIOME_KEYS), kind: 'safe' };
+}
+// 계단을 밟았을 때 — 보스 층은 고정 진입, 그 외에는 갈림길 모달
+function onStairsStep() {
   const next = state.world.floor + 1;
+  if (next % 3 === 0) {
+    toast('⚠️ 다음은 보스 층 — 갈림길 없이 진입합니다!');
+    descend(defaultChoice(next));
+    return;
+  }
+  openPathChoice();
+}
+function descend(choice) {
+  const next = state.world.floor + 1;
+  const ch = choice || defaultChoice(next);
   transition(() => {
     if (state.run) state.run.floor = next;
-    state.world = genDungeon(next);
+    state.world = genDungeon(next, ch);
     placeParty(state.world, state.world.spawn.x, state.world.spawn.y);
     if (next > state.best) {
       state.best = next;
       saveDirty = true;
       addFloater(leader.px, leader.py - 60, '🏆 최고 기록!', '#ffe88a', 15);
     }
-    toast(`⬇️ 지하 ${next}층 — ${state.world.theme.name}`);
-    if (state.world.stairsPending) say(leader, '보스가 있는 층이야… 조심하자!');
+    const w = state.world;
+    const pk = PATH_KINDS[w.kind] || PATH_KINDS.safe;
+    toast(`⬇️ 지하 ${next}층 — ${pk.icon} ${w.theme.name}`);
+    if (w.stairsPending) say(leader, '보스가 있는 층이야… 조심하자!');
+    else if (w.kind === 'challenge') say(leader, '입구가 닫혔어! 싸워서 뚫는 수밖에!');
+    else if (w.kind === 'treasure') say(party[3], '보물이다! …함정도 잔뜩이지만요.');
+    else if (w.kind === 'risk') say(party[1], '기운이 심상치 않아요… 대신 벌이는 좋겠죠?');
     updateHudMode();
     setTimeout(openBuffChoice, 500);
   });
@@ -1125,10 +1556,10 @@ const RELICS = [
   { k: 'crystal', icon: '🔮', name: '마나 수정',   desc: '마법사 공격 속도 +20%' },
   { k: 'feather', icon: '🪶', name: '불사조 깃털', desc: '전멸 시 1회 부활' },
 ];
-function openRelicChoice() {
+function openRelicChoice(title) {
   if (!state.run) return;
   const opts = [...RELICS].sort(() => Math.random() - .5).slice(0, 3);
-  openModal('👑 보스 전리품 — 유물을 선택하세요', body => {
+  openModal(typeof title === 'string' ? title : '👑 보스 전리품 — 유물을 선택하세요', body => {
     const grid = document.createElement('div');
     grid.className = 'buffGrid';
     opts.forEach(o => {
@@ -1145,6 +1576,107 @@ function openRelicChoice() {
     });
     body.appendChild(grid);
   });
+}
+
+/* ---- 갈림길 (다음 층 선택) ---- */
+// 선택지 2개: 서로 다른 바이옴 + 경로 성격. 각 25% 확률로 특수 층이 뜬다.
+function rollPathOptions(floor) {
+  const bk = shuffle(BIOME_KEYS.slice());
+  const kinds = shuffle(['safe', 'risk']);
+  return kinds.map((k, i) => {
+    let kind = k;
+    if (Math.random() < 0.25) kind = Math.random() < 0.5 ? 'treasure' : 'challenge';
+    return { biome: bk[i % bk.length], kind, floor };
+  });
+}
+function openPathChoice() {
+  const next = state.world.floor + 1;
+  const opts = rollPathOptions(next);
+  openModal(`🚪 지하 ${next}층 — 갈림길`, body => {
+    const grid = document.createElement('div');
+    grid.className = 'buffGrid';
+    opts.forEach((o, i) => {
+      const b = BIOMES[o.biome], k = PATH_KINDS[o.kind];
+      const btn = document.createElement('button');
+      btn.className = 'buffCard' + (o.kind === 'safe' ? '' : ' relic');
+      btn.dataset.path = String(i);
+      btn.dataset.biome = o.biome;
+      btn.dataset.kind = o.kind;
+      btn.innerHTML = `<span class="bIcon">${k.icon}</span><b>${k.name}</b>` +
+        `<small>${b.icon} ${b.name}<br>${k.desc}</small>` +
+        `<em>보상 ×${k.riskMult.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}</em>`;
+      btn.addEventListener('click', () => { closeModal(); descend(o); });
+      grid.appendChild(btn);
+    });
+    body.appendChild(grid);
+    const hint = document.createElement('p');
+    hint.className = 'sumHint';
+    hint.textContent = '길은 하나만 고를 수 있어요. 신중하게!';
+    body.appendChild(hint);
+  });
+}
+
+/* ---- 떠돌이 상인 ---- */
+function merchantPriceMult(floor) { return 1 + 0.3 * (floor - 1); }
+function makeMerchantStock(floor) {
+  const fm = merchantPriceMult(floor);
+  const stock = [];
+  shuffle(RELICS.slice()).slice(0, irand(1, 2)).forEach(r => {
+    stock.push({
+      kind: 'relic', k: r.k, icon: r.icon, name: r.name, desc: r.desc,
+      price: Math.floor(irand(80, 150) * fm), sold: false,
+    });
+  });
+  stock.push({
+    kind: 'potion', icon: '🧪', name: '회복 물약', desc: '파티 전원 30% 회복',
+    price: Math.floor(30 * floor), sold: false,
+  });
+  return stock;
+}
+function openMerchant(p) {
+  const floor = state.world.floor || 1;
+  if (!p.stock) p.stock = makeMerchantStock(floor);
+  openModal('🛒 떠돌이 상인', body => {
+    const render = () => {
+      body.innerHTML = `<div class="shopGold"><span class="coin"></span>${fmt(state.gold)}</div>`;
+      p.stock.forEach((s, i) => {
+        const row = document.createElement('div');
+        row.className = 'shopRow';
+        row.innerHTML = `<span class="sIcon">${s.icon}</span>
+          <div class="sInfo"><b>${s.name}</b><small>${s.desc}</small></div>
+          <button class="buyBtn" data-item="${i}" ${(s.sold || state.gold < s.price) ? 'disabled' : ''}>${s.sold ? '품절' : fmt(s.price)}</button>`;
+        row.querySelector('.buyBtn').addEventListener('click', () => {
+          if (s.sold || state.gold < s.price) return;
+          if (s.kind === 'relic' && !state.run) return;   // 런 밖에서는 유물을 담을 곳이 없다
+          state.gold -= s.price;
+          s.sold = true;
+          saveDirty = true;
+          if (s.kind === 'relic') {
+            state.run.relics[s.k] = (state.run.relics[s.k] || 0) + 1;
+            toast(`${s.icon} ${s.name} 구매!`);
+          } else {
+            party.forEach(m => {
+              if (m.down) return;
+              m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * 0.3);
+              addSparkle(m.px, m.py, '#ff9eae');
+            });
+            toast('🧪 회복 물약 — 파티 회복!');
+          }
+          addSparkle(leader.px, leader.py, '#ffd75e');
+          render();
+        });
+        body.appendChild(row);
+      });
+      const close = document.createElement('button');
+      close.className = 'modalBtn';
+      close.id = 'merchantClose';
+      close.textContent = '거래 종료';
+      close.addEventListener('click', closeModal);
+      body.appendChild(close);
+    };
+    render();
+  });
+  say(party[3], '상인이다! 뭐 좋은 거 없나요?');
 }
 
 const META_DEFS = [
@@ -1272,13 +1804,20 @@ function toast(msg) {
     setTimeout(() => toastEl.classList.add('hidden'), 400);
   }, 2200);
 }
+// 탐험 패널 제목: 층 · 바이옴 · (특수 층/웨이브) · 난이도
+function floorTitle() {
+  const w = state.world;
+  const k = PATH_KINDS[w.kind] || PATH_KINDS.safe;
+  let s = `지하 ${w.floor}층 · ${(w.theme && w.theme.name) || ''}`;
+  if (w.kind !== 'safe') s += ` ${k.icon}`;      // 성격은 아이콘만 (진입 토스트/갈림길 카드에 이름 표기)
+  if (w.arena && !w.arena.done) s += ` · 웨이브 ${w.arena.wave}/${w.arena.total}`;
+  return `${s} · ${diff().name}`;
+}
 function updateHudMode() {
   const dungeon = state.world.mode === 'dungeon';
   el('escapeBtn').classList.toggle('hidden', !dungeon);
   el('upgradeBtn').classList.toggle('hidden', dungeon);
-  el('exploreTitle').textContent = dungeon
-    ? `지하 ${state.world.floor}층 탐험 · ${diff().name}`
-    : '초원 탐험';
+  el('exploreTitle').textContent = dungeon ? floorTitle() : '초원 탐험';
   autoPath = null;
 }
 function updateHud() {
@@ -1347,12 +1886,21 @@ function drawMinimap() {
     if (wld.mode === 'dungeon' && !wld.seen[idx(wld, x, y)]) continue;
     const t = tileAt(wld, x, y);
     let c = null;
+    const th = wld.theme;
     if (t === T.GRASS) c = '#5c8f3a';
-    else if (t === T.FLOOR) c = '#44506e';
-    else if (t === T.WALL) c = '#1a2030';
-    else if (t === T.WATER) c = '#25507a';
+    else if (t === T.FLOOR) c = (wld.mode === 'dungeon' && th) ? th.f1 : '#44506e';
+    else if (t === T.WALL) c = (wld.mode === 'dungeon' && th) ? th.wt : '#1a2030';
+    else if (t === T.WATER) c = wld.mode === 'dungeon' ? '#1f4f63' : '#25507a';
+    else if (t === T.LAVA) c = '#c2481a';
     if (c) { mctx.fillStyle = c; mctx.fillRect(x * s, y * s, s, s); }
   }
+  // 떠돌이 상인 표시
+  wld.props.forEach(p => {
+    if (p.type !== 'merchant') return;
+    if (wld.mode === 'dungeon' && !wld.seen[idx(wld, p.gx, p.gy)]) return;
+    mctx.fillStyle = '#7ee8d8';
+    mctx.fillRect(p.gx * s - 1, p.gy * s - 1, s + 2, s + 2);
+  });
   if (wld.stairs) { mctx.fillStyle = '#ffd75e'; mctx.fillRect(wld.stairs.x * s - 1, wld.stairs.y * s - 1, s + 2, s + 2); }
   if (wld.entrance) { mctx.fillStyle = '#e0e0e0'; mctx.fillRect(wld.entrance.x * s - 1, wld.entrance.y * s - 1, s + 2, s + 2); }
   mctx.fillStyle = '#ff5f6d';
@@ -1412,8 +1960,38 @@ function drawTiles(offX, offY) {
     const br = tileBrightness(wld, x, y);
 
     if (t === T.WATER) {
+      if (wld.mode === 'dungeon') {
+        // 수로의 물 — 잔물결 + 수면 하이라이트 (이동 불가)
+        const wave = Math.sin(state.time * 1.6 + x * .7 + y * .9) * .07;
+        drawDiamond(sx, sy, shade('#1f4f63', (0.95 + wave) * br));
+        ctx.globalAlpha = 0.22 * br;
+        ctx.strokeStyle = '#9fe6ff';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(sx - TILE_W / 4, sy + 2 + Math.sin(state.time * 2 + x) * 1.5);
+        ctx.lineTo(sx + TILE_W / 4, sy - 2 + Math.sin(state.time * 2 + y) * 1.5);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        continue;
+      }
       const wave = Math.sin(state.time * 1.5 + x * .7 + y * .9) * .04;
       drawDiamond(sx, sy + 12, shade('#2e6da8', .95 + wave));
+      continue;
+    }
+    if (t === T.LAVA) {
+      // 용암 — sin 기반 밝기 흔들림 (이동 불가)
+      const glow = 0.72 + 0.28 * Math.sin(state.time * 2.4 + x * .8 + y * .55);
+      drawDiamond(sx, sy, shade('#b83d12', (0.85 + 0.3 * glow) * br));
+      ctx.globalAlpha = clamp(0.25 + 0.45 * glow, 0, 1) * br;
+      ctx.fillStyle = '#ffb03a';
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - TILE_H / 4);
+      ctx.lineTo(sx + TILE_W / 4, sy);
+      ctx.lineTo(sx, sy + TILE_H / 4);
+      ctx.lineTo(sx - TILE_W / 4, sy);
+      ctx.closePath();
+      ctx.fill();
+      ctx.globalAlpha = 1;
       continue;
     }
     if (t === T.GRASS) {
@@ -1816,6 +2394,135 @@ function drawProp(sx, sy, p) {
       ctx.closePath(); ctx.fill();
       break;
     }
+    /* ---- 바이옴 전용 장식 ---- */
+    case 'bone': {                      // 지하묘지: 뼈 무더기
+      ctx.fillStyle = '#d8d2c2';
+      rr(-9, -6, 14, 3.5, 1.8);
+      rr(-5, -10, 12, 3, 1.5);
+      ctx.fillStyle = '#efe9d9';
+      ctx.beginPath(); ctx.arc(7, -9, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#3a3630';
+      ctx.beginPath(); ctx.arc(6, -10, 1.1, 0, Math.PI * 2); ctx.arc(9, -10, 1.1, 0, Math.PI * 2); ctx.fill();
+      break;
+    }
+    case 'urn': {                       // 지하묘지: 봉납 항아리
+      ctx.fillStyle = '#6d5f4c';
+      ctx.beginPath(); ctx.ellipse(0, -9, 7, 9, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#8a7a62';
+      rr(-4.5, -21, 9, 5, 2);
+      ctx.fillStyle = '#4d4437';
+      ctx.beginPath(); ctx.ellipse(0, -16, 4.5, 2, 0, 0, Math.PI * 2); ctx.fill();
+      break;
+    }
+    case 'crystal': {                   // 동굴: 발광 수정
+      const glow = .55 + Math.sin(state.time * 2 + p.gx) * .25;
+      ctx.fillStyle = `rgba(120, 220, 255, ${glow * 0.35})`;
+      ctx.beginPath(); ctx.ellipse(0, -6, 14, 7, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#67c9ec';
+      ctx.beginPath(); ctx.moveTo(0, -26); ctx.lineTo(6, -8); ctx.lineTo(-5, -8); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#a5e8ff';
+      ctx.beginPath(); ctx.moveTo(-1, -24); ctx.lineTo(2, -9); ctx.lineTo(-4, -9); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#4aa9cc';
+      ctx.beginPath(); ctx.moveTo(8, -17); ctx.lineTo(12, -5); ctx.lineTo(4, -5); ctx.closePath(); ctx.fill();
+      break;
+    }
+    case 'mushroom': {                  // 동굴: 발광 버섯
+      ctx.fillStyle = '#e8dcc4';
+      rr(-1.6, -11, 3.2, 10, 1.4);
+      rr(5, -8, 2.6, 7, 1.2);
+      ctx.fillStyle = '#c96fb0';
+      ctx.beginPath(); ctx.ellipse(0, -12, 8, 5, 0, Math.PI, 0); ctx.fill();
+      ctx.fillStyle = '#a2508e';
+      ctx.beginPath(); ctx.ellipse(6.3, -9, 5, 3.4, 0, Math.PI, 0); ctx.fill();
+      ctx.fillStyle = 'rgba(255,220,255,0.75)';
+      ctx.beginPath(); ctx.arc(-3, -13, 1.3, 0, Math.PI * 2); ctx.arc(3, -14, 1.1, 0, Math.PI * 2); ctx.fill();
+      break;
+    }
+    case 'reed': {                      // 수로: 갈대
+      ctx.strokeStyle = '#4f8f6a'; ctx.lineWidth = 2;
+      for (let i = -1; i <= 1; i++) {
+        const sway = Math.sin(state.time * 1.6 + p.gx + i) * 3;
+        ctx.beginPath();
+        ctx.moveTo(i * 5, -1);
+        ctx.quadraticCurveTo(i * 5 + sway * .5, -12, i * 5 + sway, -22 + Math.abs(i) * 5);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#7a5f3a';
+      ctx.beginPath(); ctx.ellipse(0, -22, 2.2, 5, 0, 0, Math.PI * 2); ctx.fill();
+      break;
+    }
+    case 'barrel': {                    // 수로: 떠내려온 나무통
+      ctx.fillStyle = '#7a5230';
+      rr(-8, -18, 16, 18, 4);
+      ctx.fillStyle = '#5d3d22';
+      rr(-8, -14, 16, 2.5, 1);
+      rr(-8, -6, 16, 2.5, 1);
+      ctx.fillStyle = '#96683d';
+      ctx.beginPath(); ctx.ellipse(0, -18, 8, 3.4, 0, 0, Math.PI * 2); ctx.fill();
+      break;
+    }
+    case 'lavarock': {                  // 용암: 달궈진 바위
+      const glow = .5 + Math.sin(state.time * 3 + p.gy) * .3;
+      ctx.fillStyle = '#3a2c28';
+      ctx.beginPath(); ctx.ellipse(-4, -6, 9, 7, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#4a3730';
+      ctx.beginPath(); ctx.ellipse(5, -9, 7, 6, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = `rgba(255, 130, 40, ${glow})`; ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(-9, -6); ctx.lineTo(-2, -9); ctx.lineTo(3, -5);
+      ctx.stroke();
+      break;
+    }
+    case 'ember': {                      // 용암: 불티 분출구
+      const glow = .45 + Math.sin(state.time * 4 + p.gx) * .35;
+      ctx.fillStyle = `rgba(255, 120, 30, ${glow * 0.4})`;
+      ctx.beginPath(); ctx.ellipse(0, -3, 12, 6, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#2e2220';
+      ctx.beginPath(); ctx.ellipse(0, -3, 7, 4, 0, 0, Math.PI * 2); ctx.fill();
+      for (let i = 0; i < 3; i++) {
+        const t2 = (state.time * 1.4 + i * .33 + p.gx * .17) % 1;
+        ctx.fillStyle = `rgba(255, ${150 + i * 25}, 60, ${(1 - t2) * 0.9})`;
+        ctx.beginPath();
+        ctx.arc((i - 1) * 4 + Math.sin(t2 * 6 + i) * 2, -6 - t2 * 22, 2.2 - t2 * 1.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      break;
+    }
+    case 'merchant': {                   // 떠돌이 상인 (포장마차)
+      // 수레
+      ctx.fillStyle = '#6b4a2c';
+      rr(-18, -20, 36, 14, 3);
+      ctx.fillStyle = '#4a331e';
+      ctx.beginPath(); ctx.arc(-11, -4, 5.5, 0, Math.PI * 2); ctx.arc(11, -4, 5.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#8a6b45';
+      ctx.beginPath(); ctx.arc(-11, -4, 2.2, 0, Math.PI * 2); ctx.arc(11, -4, 2.2, 0, Math.PI * 2); ctx.fill();
+      // 줄무늬 차양
+      for (let i = 0; i < 6; i++) {
+        ctx.fillStyle = i % 2 ? '#e8e2d2' : '#c94f4f';
+        ctx.beginPath();
+        ctx.moveTo(-21 + i * 7, -20);
+        ctx.lineTo(-21 + i * 7 + 7, -20);
+        ctx.lineTo(-21 + i * 7 + 7, -28 - Math.sin(i) * 2);
+        ctx.lineTo(-21 + i * 7, -28 - Math.sin(i + 1) * 2);
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.fillStyle = '#7a5433';
+      rr(-22, -32, 44, 5, 2);
+      // 상인
+      ctx.fillStyle = '#3f5a7a';
+      rr(-6, -16, 12, 10, 3);
+      ctx.fillStyle = '#ffe3c9';
+      rr(-6, -27, 12, 11, 5);
+      ctx.fillStyle = '#2b2b33';
+      ctx.beginPath(); ctx.arc(-2.5, -22, 1.3, 0, Math.PI * 2); ctx.arc(2.5, -22, 1.3, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#c9a44a';
+      rr(-9, -31, 18, 5, 2);
+      // 골드 반짝임
+      const g = .5 + Math.sin(state.time * 3.4) * .4;
+      ctx.fillStyle = `rgba(255, 215, 94, ${g})`;
+      ctx.beginPath(); ctx.arc(16, -24, 3, 0, Math.PI * 2); ctx.fill();
+      break;
+    }
     case 'altar': {
       const glow = .5 + Math.sin(state.time * 2.4) * .3;
       drawDiamond(0, -2, p.used ? '#3a3540' : '#4b3a5c');
@@ -2057,4 +2764,21 @@ window.GAME = {
   telegraphs: () => state.world.telegraphs,
   openAltar,
   place: (x, y) => placeParty(state.world, x, y),
+  // Phase 2 (맵 다양성) 훅
+  BIOMES, BIOME_KEYS, PATH_KINDS, T,
+  genFloor, biomeForFloor, floorMonsterTypes,
+  tileRegions, bfsField, isOpenTile, walkable: (x, y) => walkable(state.world, x, y),
+  bfsPath: (goalFn) => bfsPath(state.world, leader.gx, leader.gy, goalFn),
+  pathTo: (x, y) => bfsPath(state.world, leader.gx, leader.gy, (px, py) => px === x && py === y),
+  openPathChoice, rollPathOptions, defaultChoice, onStairsStep,
+  openMerchant, makeMerchantStock,
+  arena: () => state.world.arena,
+  finishArena,
+  // 바이옴/특수 층을 강제로 불러온다 (테스트용)
+  loadFloor: (biome, kind, floor) => {
+    state.world = genFloor(biome, kind, floor || state.world.floor || 1);
+    placeParty(state.world, state.world.spawn.x, state.world.spawn.y);
+    updateHudMode();
+    return state.world;
+  },
 };
