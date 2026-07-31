@@ -23,6 +23,13 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const cheb = (ax, ay, bx, by) => Math.max(Math.abs(ax - bx), Math.abs(ay - by));
 const fmt = n => Math.floor(n).toLocaleString('ko-KR');
 const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+  }
+  return arr;
+}
 
 function isoX(x, y) { return (x - y) * (TILE_W / 2); }
 function isoY(x, y) { return (x + y) * (TILE_H / 2); }
@@ -40,8 +47,19 @@ const state = {
   time: 0,
   transitioning: false,
   minimapOn: false,
+  difficulty: 'normal',   // 'casual' | 'normal' | 'hard'
+  difficultyPicked: false, // 최초 던전 입장 시 1회 선택
 };
 function xpNeed(lv) { return Math.floor(30 * Math.pow(lv, 1.35)); }
+
+/* ---------------- 난이도 ---------------- */
+const DIFFS = {
+  casual: { name: '캐주얼', icon: '🌱', dmg: 0.75, reward: 0.8, wipeLoss: 0.10, desc: '받는 피해 -25%<br>보상 -20%' },
+  normal: { name: '노말',   icon: '⚔️', dmg: 1.00, reward: 1.0, wipeLoss: 0.10, desc: '기본 균형' },
+  hard:   { name: '하드',   icon: '💀', dmg: 1.35, reward: 1.5, wipeLoss: 0.25, desc: '받는 피해 +35%<br>보상 +50%<br>전멸 시 골드 -25%' },
+};
+function diff() { return DIFFS[state.difficulty] || DIFFS.normal; }
+function rewardMult() { return diff().reward; }
 
 /* ---------------- 파티 ---------------- */
 function makeMember(spec) {
@@ -73,7 +91,7 @@ function atkPow(m) {
   return (base + per * (state.lv - 1)) * (1 + 0.08 * state.meta.atk) * (1 + 0.15 * runBuff('atk'));
 }
 function healPow() { return (10 + 3 * (state.lv - 1)) * (1 + 0.10 * state.meta.heal) * (1 + 0.20 * runBuff('heal')); }
-function goldMult() { return 1.3 * (1 + 0.10 * state.meta.gold) * (1 + 0.20 * runBuff('gold')) * (1 + 0.30 * relicCount('charm')); }
+function goldMult() { return 1.3 * (1 + 0.10 * state.meta.gold) * (1 + 0.20 * runBuff('gold')) * (1 + 0.30 * relicCount('charm')) * rewardMult(); }
 party.forEach(m => { m.hp = maxHp(m); });
 
 /* ---------------- 이펙트 ---------------- */
@@ -100,6 +118,7 @@ function newWorld(mode, w, h) {
     tiles: new Uint8Array(w * h),
     seen: new Uint8Array(w * h),
     props: [], monsters: [], items: [],
+    telegraphs: [],       // 강공격 예고 장판
     floor: 0, walkTotal: 0, seenCount: 0,
     spawn: { x: 0, y: 0 },
     entrance: null, stairs: null, shrineUsed: false,
@@ -205,25 +224,42 @@ function genDungeon(floor) {
   const mid = rooms[Math.floor(rooms.length / 2)];
   wld.props.push({ type: 'shrine', gx: mid.cx, gy: mid.cy, solid: false });
 
-  // 몬스터 (2층부터 일부는 엘리트로 강화)
-  const types = floor >= 3 ? ['slime', 'bat', 'skeleton'] : floor >= 2 ? ['slime', 'bat'] : ['slime', 'slime', 'bat'];
-  rooms.slice(1).forEach(r => {
-    const n = irand(1, 2 + Math.min(2, floor));
-    for (let i = 0; i < n; i++) {
-      const x = irand(r.x, r.x + r.w - 1), y = irand(r.y, r.y + r.h - 1);
+  // 도박 제단 (층마다 0~1개)
+  if (Math.random() < 0.6) {
+    const ar = pick(rooms.slice(1));
+    const ax = irand(ar.x, ar.x + ar.w - 1), ay = irand(ar.y, ar.y + ar.h - 1);
+    if (walkable(wld, ax, ay) && !wld.props.some(p => p.gx === ax && p.gy === ay)) {
+      wld.props.push({ type: 'altar', gx: ax, gy: ay, solid: false, used: false });
+    }
+  }
+
+  // 몬스터 팩 (3~6마리가 뭉쳐 배치 — 한 마리가 어그로되면 팩 전원이 달려든다)
+  const types = floorMonsterTypes(floor);
+  const packRooms = rooms.slice(1);
+  const packCount = clamp(3 + Math.floor(floor / 3), 3, 5);
+  for (let p = 0; p < packCount && packRooms.length; p++) {
+    const r = pick(packRooms);
+    const ax = irand(r.x, r.x + r.w - 1), ay = irand(r.y, r.y + r.h - 1);
+    if (!walkable(wld, ax, ay)) continue;
+    if (cheb(ax, ay, wld.spawn.x, wld.spawn.y) < 4) continue;
+    // 앵커 주변 1~2칸 안쪽 후보 칸
+    const spots = [];
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+      const x = ax + dx, y = ay + dy;
       if (!walkable(wld, x, y)) continue;
       if (wld.monsters.some(m => m.gx === x && m.gy === y)) continue;
-      const mon = makeMonster(pick(types), floor, x, y);
-      if (floor >= 2 && Math.random() < 0.12) {
-        mon.elite = true;
-        mon.scale = 1.25;
-        mon.hp = mon.maxHp = Math.floor(mon.hp * 2.2);
-        mon.atk *= 1.5;
-        mon.xp = Math.floor(mon.xp * 2.5);
-      }
+      spots.push({ x, y });
+    }
+    shuffle(spots);
+    const packId = ++packSeq;
+    const size = Math.min(irand(3, 6), spots.length);
+    for (let i = 0; i < size; i++) {
+      const mon = makeMonster(pick(types), floor, spots[i].x, spots[i].y);
+      mon.packId = packId;
+      if (floor >= 2 && Math.random() < 0.12) makeElite(mon, floor);
       wld.monsters.push(mon);
     }
-  });
+  }
   // 아이템 (골드 / 상자 / 포션)
   let items = 0; guard = 0;
   while (items < 11 && guard++ < 500) {
@@ -232,7 +268,7 @@ function genDungeon(floor) {
     if (!walkable(wld, x, y)) continue;
     if (wld.items.some(it => it.gx === x && it.gy === y)) continue;
     const roll = Math.random();
-    wld.items.push({ type: roll < 0.2 ? 'chest' : roll < 0.4 ? 'potion' : 'gold', gx: x, gy: y });
+    wld.items.push({ type: roll < 0.2 ? 'chest' : roll < 0.32 ? 'potion' : 'gold', gx: x, gy: y });
     items++;
   }
   // 가시 함정
@@ -282,24 +318,176 @@ function reveal(wld, cx, cy) {
 }
 
 /* ---------------- 몬스터 ---------------- */
+const MONSTER_KO = { slime: '슬라임', bat: '박쥐', skeleton: '해골', slimeking: '슬라임 왕', lich: '리치' };
+let packSeq = 0;   // 팩 식별자 시퀀스
+
+function floorMonsterTypes(floor) {
+  return floor >= 3 ? ['slime', 'bat', 'skeleton'] : floor >= 2 ? ['slime', 'bat'] : ['slime', 'slime', 'bat'];
+}
+
 function makeMonster(type, floor, x, y) {
   const defs = {
-    slime:     { hp: 18 + 10 * floor, atk: 3 + 2 * floor, xp: 6 + 4 * floor, step: 0.55 },
-    bat:       { hp: 12 + 8 * floor,  atk: 4 + 2.5 * floor, xp: 7 + 4 * floor, step: 0.34 },
-    skeleton:  { hp: 30 + 14 * floor, atk: 6 + 3 * floor, xp: 12 + 6 * floor, step: 0.5 },
-    slimeking: { hp: 140 + 60 * floor, atk: 7 + 3 * floor, xp: 60 + 20 * floor, step: 0.7, boss: true, scale: 1.8 },
-    lich:      { hp: 180 + 70 * floor, atk: 9 + 3.5 * floor, xp: 90 + 25 * floor, step: 0.6, boss: true, scale: 1.7 },
+    // 층 계수는 기존보다 약 25% 가파르게 (긴장감 상향)
+    slime:     { hp: 18 + 10 * floor, atk: 3 + 2.5 * floor, xp: 6 + 4 * floor, step: 0.55 },
+    bat:       { hp: 12 + 8 * floor,  atk: 4 + 3.1 * floor, xp: 7 + 4 * floor, step: 0.34 },
+    skeleton:  { hp: 30 + 14 * floor, atk: 6 + 3.75 * floor, xp: 12 + 6 * floor, step: 0.5 },
+    slimeking: { hp: 140 + 60 * floor, atk: 7 + 3.75 * floor, xp: 60 + 20 * floor, step: 0.7, boss: true, scale: 1.8 },
+    lich:      { hp: 180 + 70 * floor, atk: 9 + 4.4 * floor, xp: 90 + 25 * floor, step: 0.6, boss: true, scale: 1.7 },
   };
   const d = defs[type];
-  return {
+  const mon = {
     type, gx: x, gy: y, px: isoX(x, y), py: isoY(x, y),
     fromX: x, fromY: y, moveT: 1, moving: false,
     hp: d.hp, maxHp: d.hp, atk: d.atk, xp: d.xp,
     boss: !!d.boss, scale: d.scale || 1,
     stepInt: d.step, stepT: rand(0, d.step), atkCd: rand(0, .9), face: 1,
+    packId: null, aggro: false, affixes: null, rewardMult: 1,
   };
+  if (mon.boss) mon.castT = rand(4, 8);   // 보스는 텔레그래프 강공격 사용
+  return mon;
 }
 function monsterAt(wld, x, y) { return wld.monsters.find(m => m.gx === x && m.gy === y && m.hp > 0); }
+
+/* ---- 엘리트 어픽스 (PoE 스타일) ---- */
+const AFFIXES = [
+  { k: 'swift',    name: '신속한',   apply: m => { m.stepInt /= 1.4; m.atkSpeed = 1.4; } },
+  { k: 'regen',    name: '재생하는', apply: m => { m.regen = 0.02; } },
+  { k: 'volatile', name: '폭발하는', apply: m => { m.blast = true; } },
+  { k: 'summoner', name: '소환사',   apply: m => { m.summonT = 6; m.minions = []; } },
+  { k: 'vampiric', name: '흡혈의',   apply: m => { m.leech = 0.5; } },
+  { k: 'tough',    name: '단단한',   apply: m => { m.dr = 0.4; } },
+];
+function rollAffixes(mon, floor) {
+  // 층이 깊을수록 어픽스 개수 증가 (1~3)
+  const n = clamp(1 + Math.floor((floor - 1) / 3) + (Math.random() < 0.3 ? 1 : 0), 1, 3);
+  const chosen = shuffle(AFFIXES.slice()).slice(0, n);
+  mon.affixes = chosen.map(a => a.k);
+  mon.affixNames = chosen.map(a => a.name);
+  chosen.forEach(a => a.apply(mon));
+  mon.rewardMult = 1 + 0.6 * n;              // 어픽스 1개당 보상 +60%
+  mon.xp = Math.floor(mon.xp * mon.rewardMult);
+  return mon;
+}
+function makeElite(mon, floor) {
+  mon.elite = true;
+  mon.scale = (mon.scale || 1) * 1.25;
+  mon.hp = mon.maxHp = Math.floor(mon.maxHp * 2.2);
+  mon.atk *= 1.5;
+  mon.xp = Math.floor(mon.xp * 2.5);
+  mon.castT = rand(4, 8);                     // 엘리트도 텔레그래프 강공격
+  rollAffixes(mon, floor);
+  return mon;
+}
+
+/* ---- 팩 어그로 ---- */
+function aggroPack(wld, mon) {
+  if (mon.aggro) return false;
+  mon.aggro = true;
+  addFloater(mon.px, mon.py - 46, '!', '#ff6b6b', 16);
+  if (mon.packId == null) return true;
+  wld.monsters.forEach(o => { if (o.hp > 0 && o.packId === mon.packId) o.aggro = true; });
+  return true;
+}
+
+/* ---- 매복 소환 (저주받은 샘 / 도박 제단) ---- */
+function spawnAmbush(cx, cy, count, minR, maxR) {
+  const wld = state.world;
+  if (!wld || wld.mode !== 'dungeon') return 0;
+  const floor = wld.floor || 1;
+  const types = floorMonsterTypes(floor);
+  const spots = [];
+  for (let dy = -maxR; dy <= maxR; dy++) for (let dx = -maxR; dx <= maxR; dx++) {
+    const d = Math.max(Math.abs(dx), Math.abs(dy));
+    if (d < minR || d > maxR) continue;
+    const x = cx + dx, y = cy + dy;
+    if (!walkable(wld, x, y)) continue;
+    if (monsterAt(wld, x, y)) continue;
+    if (party.some(p => p.gx === x && p.gy === y)) continue;
+    spots.push({ x, y });
+  }
+  shuffle(spots);
+  const packId = ++packSeq;
+  let n = 0;
+  for (const s of spots) {
+    if (n >= count) break;
+    const mon = makeMonster(pick(types), floor, s.x, s.y);
+    mon.packId = packId;
+    mon.aggro = true;
+    if (floor >= 3 && Math.random() < 0.15) makeElite(mon, floor);
+    wld.monsters.push(mon);
+    addSparkle(isoX(s.x, s.y), isoY(s.x, s.y), '#c07bff');
+    n++;
+  }
+  return n;
+}
+
+/* ---- 소환사 어픽스: 쫄 소환 ---- */
+function summonMinion(mon) {
+  const wld = state.world;
+  if (!wld || wld.mode !== 'dungeon') return null;
+  mon.minions = (mon.minions || []).filter(m => m.hp > 0);
+  if (mon.minions.length >= 3) return null;
+  const dirs = shuffle([[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]);
+  for (const [dx, dy] of dirs) {
+    const x = mon.gx + dx, y = mon.gy + dy;
+    if (!walkable(wld, x, y) || monsterAt(wld, x, y)) continue;
+    if (party.some(p => p.gx === x && p.gy === y)) continue;
+    const kid = makeMonster('slime', wld.floor || 1, x, y);
+    kid.hp = kid.maxHp = Math.floor(kid.maxHp * 0.6);
+    kid.xp = Math.floor(kid.xp * 0.35);
+    kid.scale = 0.75;
+    kid.packId = mon.packId;
+    kid.aggro = true;
+    wld.monsters.push(kid);
+    mon.minions.push(kid);
+    addSparkle(isoX(x, y), isoY(x, y), '#8fe07f');
+    return kid;
+  }
+  return null;
+}
+
+/* ---- 텔레그래프 강공격 ---- */
+function castTelegraph(mon, force) {
+  const wld = state.world;
+  if (!wld || wld.mode !== 'dungeon') return null;
+  const alive = aliveMembers();
+  if (!alive.length) return null;
+  const near = alive.filter(a => cheb(a.gx, a.gy, mon.gx, mon.gy) <= 9);
+  if (!near.length && !force) return null;
+  const tgt = pick(near.length ? near : alive);
+  // 십자(+) 5칸
+  const cells = [{ x: tgt.gx, y: tgt.gy }];
+  [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dx, dy]) => {
+    const x = tgt.gx + dx, y = tgt.gy + dy;
+    const t = tileAt(wld, x, y);
+    if (t === T.FLOOR || t === T.GRASS) cells.push({ x, y });
+  });
+  const tg = { cells, t: 0, delay: 1.0, dmg: mon.atk * 2.2 };
+  wld.telegraphs.push(tg);
+  addFloater(mon.px, mon.py - 52, '⚠️ 강타 준비!', '#ff9a5a', 13);
+  return tg;
+}
+function updateTelegraphs(dt) {
+  const wld = state.world;
+  const tgs = wld.telegraphs;
+  if (!tgs || !tgs.length) return;
+  for (let i = tgs.length - 1; i >= 0; i--) {
+    const tg = tgs[i];
+    tg.t += dt;
+    if (tg.t < tg.delay) continue;
+    tgs.splice(i, 1);
+    tg.cells.forEach(c => addSparkle(isoX(c.x, c.y), isoY(c.x, c.y), '#ff6b6b'));
+    let hit = 0;
+    party.forEach(m => {
+      if (m.down) return;
+      if (!tg.cells.some(c => c.x === m.gx && c.y === m.gy)) return;
+      damageMember(m, tg.dmg);
+      hit++;
+    });
+    const c0 = tg.cells[0];
+    addFloater(isoX(c0.x, c0.y), isoY(c0.x, c0.y) - 24, hit ? '💥 강타!' : '회피!', hit ? '#ff5a5a' : '#8dffb0', 15);
+  }
+}
 
 /* ---------------- 이동 ---------------- */
 function beginStep(e, tx, ty) {
@@ -352,7 +540,7 @@ function onLeaderArrive() {
         addFloater(isoX(it.gx, it.gy), isoY(it.gx, it.gy) - 18, '💗 회복!', '#ff9eae', 13);
       } else {
         let g = it.type === 'chest' ? irand(30, 80) : irand(5, 15);
-        g = Math.floor(g * goldMult());
+        g = Math.floor(g * goldMult() * (it.mult || 1));
         state.gold += g;
         if (state.run) state.run.goldGained += g;
         addFloater(isoX(it.gx, it.gy), isoY(it.gx, it.gy) - 18, `+${g}`, '#ffd75e', 14);
@@ -391,9 +579,19 @@ function onLeaderArrive() {
           addSparkle(isoX(m.gx, m.gy), isoY(m.gx, m.gy), '#8dffb0');
         }
       });
-      say(party[2], '치유의 샘이에요! 다들 이리로!');
-      toast('✨ 치유의 샘 — 파티 회복!');
+      // 40% 확률로 저주받은 샘 — 회복은 되지만 매복이 튀어나온다
+      if (Math.random() < 0.4) {
+        shrine.cursed = true;
+        spawnAmbush(leader.gx, leader.gy, irand(5, 8), 3, 5);
+        say(party[2], '이 샘… 뭔가 이상해요!');
+        toast('💀 저주받은 샘! 매복이다!');
+      } else {
+        say(party[2], '치유의 샘이에요! 다들 이리로!');
+        toast('✨ 치유의 샘 — 파티 회복!');
+      }
     }
+    const altar = wld.props.find(p => p.type === 'altar' && !p.used && p.gx === leader.gx && p.gy === leader.gy);
+    if (altar) openAltar(altar);
   }
 }
 
@@ -416,18 +614,29 @@ function aliveMembers() { return party.filter(m => !m.down); }
 function damageMonster(mon, dmg, color) {
   const crit = Math.random() < 0.08 * runBuff('crit');
   if (crit) dmg *= 2;
+  if (mon.dr) dmg *= (1 - mon.dr);           // '단단한' 어픽스
   mon.hp -= dmg;
   addFloater(mon.px, mon.py - 26, (crit ? '💥' : '') + Math.floor(dmg), crit ? '#ffb347' : (color || '#fff'), crit ? 16 : 13);
   if (mon.hp <= 0) {
-    state.xp += mon.xp;
+    const rm = mon.rewardMult || 1;
+    const gainedXp = Math.floor(mon.xp * rewardMult());
+    state.xp += gainedXp;
     if (state.run) state.run.kills++;
-    addFloater(mon.px, mon.py - 40, `+${mon.xp} XP`, '#9be8ff', 12);
+    addFloater(mon.px, mon.py - 40, `+${gainedXp} XP`, '#9be8ff', 12);
     addSparkle(mon.px, mon.py, '#ffb0c0');
-    if (Math.random() < .3) state.world.items.push({ type: 'gold', gx: mon.gx, gy: mon.gy });
+    if (Math.random() < .3) state.world.items.push({ type: 'gold', gx: mon.gx, gy: mon.gy, mult: rm });
     if (mon.elite) {
-      state.world.items.push({ type: 'gold', gx: mon.gx, gy: mon.gy });
+      state.world.items.push({ type: 'gold', gx: mon.gx, gy: mon.gy, mult: rm });
       if (Math.random() < .4) state.world.items.push({ type: 'potion', gx: mon.gx, gy: mon.gy });
       addFloater(mon.px, mon.py - 54, '엘리트 처치!', '#d8a4ff', 13);
+    }
+    // '폭발하는' 어픽스: 죽을 때 주변 1칸 광역 피해
+    if (mon.blast) {
+      addFloater(mon.px, mon.py - 16, '💥 폭발!', '#ff8a4a', 15);
+      addSparkle(mon.px, mon.py, '#ff9a5a');
+      party.forEach(p => {
+        if (!p.down && cheb(p.gx, p.gy, mon.gx, mon.gy) <= 1) damageMember(p, mon.atk * 1.8);
+      });
     }
     if (mon.boss) onBossDefeated(mon);
     checkLevelUp();
@@ -462,6 +671,7 @@ function checkLevelUp() {
 function damageMember(m, dmg, attacker) {
   if (m.down) return;
   dmg *= Math.max(0.4, 1 - 0.08 * runBuff('def'));
+  dmg *= diff().dmg;                          // 난이도 보정
   m.hp -= dmg;
   addFloater(m.px, m.py - 30, String(Math.floor(dmg)), '#ff7a7a', 12);
   // 가시 갑옷: 받은 피해 일부 반사
@@ -496,7 +706,7 @@ function updateCombat(dt) {
         addFloater(hurt.px, hurt.py - 34, `+${Math.floor(h)}`, '#8dffb0', 12);
         addSparkle(hurt.px, hurt.py, '#8dffb0');
         if (Math.random() < .3) say(m, '잠깐만요, 다친 곳부터 볼게요!');
-        m.atkCd = 2.8;
+        m.atkCd = 3.4;
       }
       return;
     }
@@ -520,17 +730,45 @@ function updateCombat(dt) {
     }
   });
 
+  // 예고 장판 갱신 (경고 → 내리침)
+  updateTelegraphs(dt);
+
   // 몬스터 처리
   for (let i = mons.length - 1; i >= 0; i--) {
     const mon = mons[i];
     if (mon.hp <= 0) { mons.splice(i, 1); continue; }
     updateEntityMove(mon, dt, MONSTER_STEP);
     mon.atkCd -= dt;
+
+    const dToLeader = cheb(mon.gx, mon.gy, leader.gx, leader.gy);
+    // 팩 어그로: 한 마리라도 리더를 발견하면 팩 전원이 달려든다 (해제 없음)
+    if (!mon.aggro && dToLeader <= 5) aggroPack(wld, mon);
+
+    // '재생하는' 어픽스
+    if (mon.regen && mon.hp < mon.maxHp) mon.hp = Math.min(mon.maxHp, mon.hp + mon.maxHp * mon.regen * dt);
+    // '소환사' 어픽스
+    if (mon.summonT !== undefined && mon.aggro) {
+      mon.summonT -= dt;
+      if (mon.summonT <= 0) { mon.summonT = 6; summonMinion(mon); }
+    }
+    // 텔레그래프 강공격 (엘리트 / 보스)
+    if (mon.castT !== undefined) {
+      mon.castT -= dt;
+      if (mon.castT <= 0) { mon.castT = 8 + rand(-2, 2); castTelegraph(mon); }
+    }
+
     // 인접 파티원 공격
     const targets = aliveMembers().filter(a => cheb(a.gx, a.gy, mon.gx, mon.gy) <= 1);
     if (targets.length && mon.atkCd <= 0) {
-      damageMember(pick(targets), mon.atk * rand(0.8, 1.15), mon);
-      mon.atkCd = 0.95;
+      const raw = mon.atk * rand(0.8, 1.15);
+      damageMember(pick(targets), raw, mon);
+      // '흡혈의' 어픽스
+      if (mon.leech && mon.hp > 0) {
+        const heal = raw * mon.leech;
+        mon.hp = Math.min(mon.maxHp, mon.hp + heal);
+        addFloater(mon.px, mon.py - 34, `+${Math.floor(heal)}`, '#ff6b9d', 11);
+      }
+      mon.atkCd = 0.95 / (mon.atkSpeed || 1);
       continue;
     }
     // 이동
@@ -538,21 +776,27 @@ function updateCombat(dt) {
     mon.stepT -= dt;
     if (mon.stepT > 0) continue;
     mon.stepT = mon.stepInt;
-    const dToLeader = cheb(mon.gx, mon.gy, leader.gx, leader.gy);
     let dx = 0, dy = 0;
-    if (dToLeader <= 5 && dToLeader > 1) {
+    if (mon.aggro && dToLeader > 1) {
       dx = Math.sign(leader.gx - mon.gx); dy = Math.sign(leader.gy - mon.gy);
       if (dx && dy) (Math.random() < .5) ? dx = 0 : dy = 0;
-    } else if (dToLeader > 5 && Math.random() < .6) {
+    } else if (!mon.aggro && Math.random() < .5) {
       const dir = pick([[1, 0], [-1, 0], [0, 1], [0, -1]]);
       dx = dir[0]; dy = dir[1];
     }
     if (dx || dy) {
-      const tx = mon.gx + dx, ty = mon.gy + dy;
-      if (walkable(wld, tx, ty) && !monsterAt(wld, tx, ty) &&
-          !party.some(p => p.gx === tx && p.gy === ty)) {
-        beginStep(mon, tx, ty);
+      const blocked = (x, y) => !walkable(wld, x, y) || monsterAt(wld, x, y) ||
+        party.some(p => p.gx === x && p.gy === y);
+      let tx = mon.gx + dx, ty = mon.gy + dy;
+      if (blocked(tx, ty) && mon.aggro) {
+        // 막히면 다른 축/옆으로 우회 (끝까지 쫓아오게)
+        const alts = [[Math.sign(leader.gx - mon.gx), 0], [0, Math.sign(leader.gy - mon.gy)], [dy, dx], [-dy, -dx]];
+        for (const [ax, ay] of alts) {
+          if (!ax && !ay) continue;
+          if (!blocked(mon.gx + ax, mon.gy + ay)) { tx = mon.gx + ax; ty = mon.gy + ay; break; }
+        }
       }
+      if (!blocked(tx, ty)) beginStep(mon, tx, ty);
     }
   }
 
@@ -620,6 +864,8 @@ function gotoOverworld() {
   updateHudMode();
 }
 function enterDungeon() {
+  // 최초 1회만 난이도 선택 (이후엔 기억된 난이도로 바로 입장)
+  if (!state.difficultyPicked) { openDifficulty(enterDungeon); return; }
   transition(() => {
     state.run = { floor: 1, buffs: { atk: 0, hp: 0, heal: 0, gold: 0, crit: 0, def: 0 }, relics: {}, kills: 0, goldGained: 0 };
     state.world = genDungeon(1);
@@ -655,7 +901,7 @@ function escapeDungeon() {
 function showRunSummary(escaped) {
   const run = state.run || { floor: state.world.floor || 1, kills: 0, goldGained: 0 };
   state.run = null;
-  const lost = escaped ? 0 : Math.floor(state.gold * 0.1);
+  const lost = escaped ? 0 : Math.floor(state.gold * diff().wipeLoss);
   openModal(escaped ? '🏃 던전 탈출!' : '💀 파티 전멸…', body => {
     body.innerHTML = `
       <div class="sumRow"><span>도달 층</span><b>지하 ${run.floor}층</b></div>
@@ -715,6 +961,18 @@ function bfsPath(wld, sx, sy, goalFn) {
 function updateAuto() {
   if (!state.auto || leader.moving || state.transitioning) return;
   const wld = state.world;
+  // 예고 장판 위면 인접한 안전 칸으로 한 스텝 회피
+  if (wld.mode === 'dungeon' && wld.telegraphs.length) {
+    const danger = (x, y) => wld.telegraphs.some(tg => tg.cells.some(c => c.x === x && c.y === y));
+    if (danger(leader.gx, leader.gy)) {
+      const dirs = shuffle([[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]);
+      for (const [dx, dy] of dirs) {
+        const nx = leader.gx + dx, ny = leader.gy + dy;
+        if (!walkable(wld, nx, ny) || danger(nx, ny) || monsterAt(wld, nx, ny)) continue;
+        if (tryLeaderStep(dx, dy)) { autoPath = null; return; }
+      }
+    }
+  }
   // 근처 몬스터와 교전 중이면 대기
   if (wld.mode === 'dungeon' &&
       wld.monsters.some(m => m.hp > 0 && cheb(m.gx, m.gy, leader.gx, leader.gy) <= 1.9)) {
@@ -790,6 +1048,75 @@ function openBuffChoice() {
   });
 }
 
+/* ---- 난이도 선택 ---- */
+function openDifficulty(after) {
+  openModal('⚖️ 난이도를 선택하세요', body => {
+    const grid = document.createElement('div');
+    grid.className = 'buffGrid';
+    Object.keys(DIFFS).forEach(k => {
+      const d = DIFFS[k];
+      const btn = document.createElement('button');
+      btn.className = 'buffCard' + (state.difficulty === k ? ' relic' : '');
+      btn.dataset.diff = k;
+      btn.innerHTML = `<span class="bIcon">${d.icon}</span><b>${d.name}</b><small>${d.desc}</small>`;
+      btn.addEventListener('click', () => {
+        state.difficulty = k;
+        state.difficultyPicked = true;
+        saveDirty = true;
+        closeModal();
+        updateHudMode();
+        toast(`${d.icon} 난이도: ${d.name}`);
+        if (after) after();
+      });
+      grid.appendChild(btn);
+    });
+    body.appendChild(grid);
+  });
+}
+
+/* ---- 도박 제단 ---- */
+function openAltar(altar) {
+  const wld = state.world;
+  const cost = 30 * (wld.floor || 1);
+  if (state.gold < cost) {
+    toast(`🎲 도박 제단 — 골드가 부족해요 (${fmt(cost)} 필요)`);
+    say(party[3], '지갑이 텅 비었는데요…');
+    return;
+  }
+  openModal('🎲 도박 제단', body => {
+    body.innerHTML = `
+      <p class="sumHint">제단이 속삭인다… "운을 시험해 보겠는가?"</p>
+      <div class="sumRow"><span>바칠 골드</span><b>${fmt(cost)}</b></div>
+      <div class="sumRow"><span>성공 (50%)</span><b>랜덤 축복 +1</b></div>
+      <div class="sumRow bad"><span>실패 (50%)</span><b>골드 소실 + 매복!</b></div>
+      <button class="modalBtn" id="altarYes">바친다</button>
+      <button class="modalBtn" id="altarNo">그만둔다</button>`;
+    body.querySelector('#altarNo').addEventListener('click', closeModal);
+    body.querySelector('#altarYes').addEventListener('click', () => {
+      altar.used = true;
+      state.gold -= cost;
+      saveDirty = true;
+      closeModal();
+      if (Math.random() < 0.5) {
+        const o = pick(BUFF_POOL);
+        if (state.run) {
+          const before = party.map(m => maxHp(m));
+          state.run.buffs[o.k]++;
+          if (o.k === 'hp') party.forEach((m, i) => { if (!m.down) m.hp += maxHp(m) - before[i]; });
+        }
+        addSparkle(leader.px, leader.py, '#ffe88a');
+        addFloater(leader.px, leader.py - 56, `${o.icon} ${o.name}!`, '#ffe88a', 15);
+        toast(`✨ 제단의 축복 — ${o.name} 획득!`);
+        say(leader, '운이 좋았어!');
+      } else {
+        spawnAmbush(leader.gx, leader.gy, irand(4, 7), 2, 4);
+        toast('💀 제단의 함정! 매복이다!');
+        say(party[1], '속았어요! 몬스터가…!');
+      }
+    });
+  });
+}
+
 const RELICS = [
   { k: 'fang',    icon: '🗡️', name: '흡혈 송곳니', desc: '가한 피해의 8% 회복' },
   { k: 'thorn',   icon: '🌵', name: '가시 갑옷',   desc: '받은 피해 20% 반사' },
@@ -853,6 +1180,12 @@ function openShop() {
         });
         body.appendChild(row);
       });
+      const dbtn = document.createElement('button');
+      dbtn.className = 'modalBtn';
+      dbtn.id = 'diffBtn';
+      dbtn.textContent = `⚖️ 난이도 변경 (현재: ${diff().name})`;
+      dbtn.addEventListener('click', () => { closeModal(); openDifficulty(openShop); });
+      body.appendChild(dbtn);
       const close = document.createElement('button');
       close.className = 'modalBtn';
       close.textContent = '닫기';
@@ -943,7 +1276,9 @@ function updateHudMode() {
   const dungeon = state.world.mode === 'dungeon';
   el('escapeBtn').classList.toggle('hidden', !dungeon);
   el('upgradeBtn').classList.toggle('hidden', dungeon);
-  el('exploreTitle').textContent = dungeon ? `지하 ${state.world.floor}층 탐험` : '초원 탐험';
+  el('exploreTitle').textContent = dungeon
+    ? `지하 ${state.world.floor}층 탐험 · ${diff().name}`
+    : '초원 탐험';
   autoPath = null;
 }
 function updateHud() {
@@ -1138,6 +1473,36 @@ function drawTiles(offX, offY) {
   }
 }
 
+/* ---- 예고 장판 그리기 ---- */
+function drawTelegraphs(offX, offY) {
+  const wld = state.world;
+  if (!wld.telegraphs || !wld.telegraphs.length) return;
+  ctx.save();
+  wld.telegraphs.forEach(tg => {
+    const p = clamp(tg.t / tg.delay, 0, 1);
+    const a = 0.16 + 0.52 * p;                       // 시간이 갈수록 진해진다
+    const pulse = 0.7 + 0.3 * Math.sin(state.time * 18);
+    tg.cells.forEach(c => {
+      if (wld.mode === 'dungeon' && !wld.seen[idx(wld, c.x, c.y)]) return;
+      const sx = isoX(c.x, c.y) + offX, sy = isoY(c.x, c.y) + offY;
+      ctx.globalAlpha = a;
+      drawDiamond(sx, sy, '#e02b2b');
+      ctx.globalAlpha = a * pulse;
+      ctx.strokeStyle = '#ffdc6b';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - TILE_H / 2);
+      ctx.lineTo(sx + TILE_W / 2, sy);
+      ctx.lineTo(sx, sy + TILE_H / 2);
+      ctx.lineTo(sx - TILE_W / 2, sy);
+      ctx.closePath();
+      ctx.stroke();
+    });
+  });
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
 /* ---- 캐릭터 그리기 ---- */
 function rr(x, y, w, h, r) {
   ctx.beginPath();
@@ -1299,6 +1664,19 @@ function drawMonster(sx, sy, mon) {
     ctx.fillStyle = mon.boss ? '#ffb347' : '#f06a6a';
     ctx.fillRect(sx - w / 2 + 1, by + 1, (w - 2) * ratio, 2.5);
   }
+  // 엘리트 어픽스 라벨 (예: "신속한·폭발하는 슬라임")
+  if (mon.elite && mon.affixNames && mon.affixNames.length) {
+    const label = `${mon.affixNames.join('·')} ${MONSTER_KO[mon.type] || ''}`.trim();
+    const ly = sy - 44 - (mon.scale - 1) * 30;
+    ctx.save();
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.strokeStyle = 'rgba(0,0,0,0.8)'; ctx.lineWidth = 3;
+    ctx.strokeText(label, sx, ly);
+    ctx.fillStyle = '#e8bcff';
+    ctx.fillText(label, sx, ly);
+    ctx.restore();
+  }
 }
 
 /* ---- 소품 그리기 ---- */
@@ -1430,12 +1808,28 @@ function drawProp(sx, sy, p) {
     case 'shrine': {
       const glow = .6 + Math.sin(state.time * 3) * .25;
       ctx.fillStyle = '#8f8f96';
-      drawDiamond(0, -2, '#7d8577');
-      ctx.fillStyle = `rgba(120, 240, 140, ${glow})`;
+      drawDiamond(0, -2, p.cursed ? '#5a4258' : '#7d8577');
+      ctx.fillStyle = p.cursed ? `rgba(200, 80, 200, ${glow})` : `rgba(120, 240, 140, ${glow})`;
       ctx.beginPath();
       ctx.moveTo(0, -TILE_H / 2 + 4); ctx.lineTo(TILE_W / 2 - 14, -2);
       ctx.lineTo(0, TILE_H / 2 - 8); ctx.lineTo(-TILE_W / 2 + 14, -2);
       ctx.closePath(); ctx.fill();
+      break;
+    }
+    case 'altar': {
+      const glow = .5 + Math.sin(state.time * 2.4) * .3;
+      drawDiamond(0, -2, p.used ? '#3a3540' : '#4b3a5c');
+      // 제단 기둥
+      ctx.fillStyle = '#6b5a44';
+      rr(-9, -20, 18, 17, 3);
+      ctx.fillStyle = '#8a7554';
+      rr(-12, -25, 24, 7, 2);
+      // 떠 있는 주사위 빛
+      ctx.fillStyle = p.used ? 'rgba(120,120,130,0.45)' : `rgba(255, 205, 90, ${glow})`;
+      ctx.beginPath(); ctx.arc(0, -33, 6, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = p.used ? '#7a7a86' : '#fff4c8';
+      ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('?', 0, -30);
       break;
     }
   }
@@ -1522,6 +1916,7 @@ function render() {
   const offY = H / 2 - state.cam.y + 40;
 
   drawTiles(offX, offY);
+  drawTelegraphs(offX, offY);
 
   // 그릴 것들 수집 → 아이소 순서 정렬
   const drawList = [];
@@ -1585,6 +1980,8 @@ function loadSave() {
       state.gold = s.gold || 0;
       if (s.meta) for (const k of Object.keys(state.meta)) state.meta[k] = clamp(s.meta[k] || 0, 0, 99);
       state.best = clamp(s.best || 0, 0, 999);
+      if (s.difficulty && DIFFS[s.difficulty]) state.difficulty = s.difficulty;
+      state.difficultyPicked = !!s.difficultyPicked;
       party.forEach(m => { m.hp = maxHp(m); });
     }
   } catch (e) { /* 무시 */ }
@@ -1593,7 +1990,10 @@ setInterval(() => {
   if (!saveDirty) return;
   saveDirty = false;
   try {
-    localStorage.setItem('dunjeon-save', JSON.stringify({ lv: state.lv, xp: state.xp, gold: state.gold, meta: state.meta, best: state.best }));
+    localStorage.setItem('dunjeon-save', JSON.stringify({
+      lv: state.lv, xp: state.xp, gold: state.gold, meta: state.meta, best: state.best,
+      difficulty: state.difficulty, difficultyPicked: state.difficultyPicked,
+    }));
   } catch (e) { /* 무시 */ }
 }, 3000);
 
@@ -1647,4 +2047,14 @@ window.GAME = {
   enterDungeon: () => { state.cameFromDungeon = false; enterDungeon(); },
   escapeDungeon, descend, openBuffChoice, openShop, openRelicChoice, closeModal, tryLeaderStep,
   toggleAuto: () => el('autoBtn').click(),
+  // Phase 1 (전투 긴장감) 훅
+  DIFFS, AFFIXES, diff,
+  openDifficulty,
+  setDifficulty: k => { if (DIFFS[k]) { state.difficulty = k; state.difficultyPicked = true; updateHudMode(); } },
+  genDungeon, makeMonster, makeElite, rollAffixes,
+  spawnAmbush, summonMinion, aggroPack,
+  castTelegraph: mon => castTelegraph(mon || state.world.monsters[0], true),
+  telegraphs: () => state.world.telegraphs,
+  openAltar,
+  place: (x, y) => placeParty(state.world, x, y),
 };
