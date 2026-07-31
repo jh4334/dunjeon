@@ -63,8 +63,17 @@ html, body {
 #explorePanel {
   position: absolute; top: 12px; right: 12px;
   width: 190px; font-size: 12px;
+  word-break: keep-all;            /* 한글 단어 중간에서 줄바꿈되지 않게 */
+  overflow-wrap: break-word;
 }
-#explorePanel .row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+#explorePanel .row { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; margin-bottom: 3px; }
+#exploreTitle { white-space: nowrap; }
+#explorePct { flex: none; }
+/* 2행: 바이옴 이름 (아이콘 포함) — 작은 글씨 */
+#exploreBiome {
+  font-size: 11px; color: #a9d8d2; margin-bottom: 4px;
+  word-break: keep-all; line-height: 1.25;
+}
 #exploreBarWrap {
   height: 10px; background: #0a1a20;
   border: 1px solid #467e78; border-radius: 3px; overflow: hidden;

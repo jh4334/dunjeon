@@ -272,7 +272,7 @@ function makeMember(spec) {
   return Object.assign({
     gx: 0, gy: 0, px: 0, py: 0,
     fromX: 0, fromY: 0, moveT: 1, moving: false,
-    face: 1, hp: 1, atkCd: 0, down: false, reviveT: 0,
+    face: 1, hp: 1, atkCd: 0, down: false, reviveT: 0, invulnT: 0,
   }, spec);
 }
 const party = [
@@ -444,7 +444,44 @@ function biomeForFloor(floor) {
   if (floor <= 8) return 'lava';
   return 'cave';
 }
-function dungeonTheme(floor) { return (BIOMES[biomeForFloor(floor)] || BIOMES.catacomb).theme; }
+
+/* ---- 심연(9층+) 팔레트 변형 ----
+ * 바이옴 4종 체계는 유지하되, 깊은 층에서는 어느 바이옴이든
+ * 팔레트를 어둡게 눌러 보랏빛으로 물들이고 이름에 ' · 심연'을 붙인다. */
+const ABYSS_FLOOR = 9;
+const ABYSS_SUFFIX = ' · 심연';
+// 채널별 곱연산(초록을 가장 크게 눌러 보랏빛) + 아주 옅은 보라 바닥값
+const ABYSS_MUL = [0.62, 0.45, 0.80];
+const ABYSS_LIFT = [6, 2, 14];
+function hexToRgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function rgbToHex(r, g, b) {
+  const c = v => clamp(Math.round(v), 0, 255).toString(16).padStart(2, '0');
+  return `#${c(r)}${c(g)}${c(b)}`;
+}
+function abyssColor(hex) {
+  const rgb = hexToRgb(hex);
+  return rgbToHex(
+    rgb[0] * ABYSS_MUL[0] + ABYSS_LIFT[0],
+    rgb[1] * ABYSS_MUL[1] + ABYSS_LIFT[1],
+    rgb[2] * ABYSS_MUL[2] + ABYSS_LIFT[2]);
+}
+function abyssTheme(theme) {
+  const out = { name: theme.name + ABYSS_SUFFIX, abyss: true };
+  ['f1', 'f2', 'wt', 'wl', 'wr'].forEach(k => { out[k] = abyssColor(theme[k]); });
+  return out;
+}
+const abyssCache = {};
+// 층에 맞는 최종 테마 (9층부터 심연 변형)
+function themeForFloor(theme, floor) {
+  if (!theme || floor < ABYSS_FLOOR) return theme;
+  return abyssCache[theme.name] || (abyssCache[theme.name] = abyssTheme(theme));
+}
+function dungeonTheme(floor) {
+  return themeForFloor((BIOMES[biomeForFloor(floor)] || BIOMES.catacomb).theme, floor);
+}
 
 /* ---- 경로 성격 (갈림길 선택지) ---- */
 const PATH_KINDS = {
@@ -732,7 +769,7 @@ function genFloor(biomeKey, kind, floor) {
   wld.floor = floor;
   wld.biome = biome.key;
   wld.kind = kind;
-  wld.theme = biome.theme;
+  wld.theme = themeForFloor(biome.theme, floor);   // 9층+ = 심연 변형
   wld.riskMult = pk.riskMult;
 
   // 1) 레이아웃
@@ -1188,6 +1225,8 @@ function onLeaderArrive() {
     }
     const altar = wld.props.find(p => p.type === 'altar' && !p.used && p.gx === leader.gx && p.gy === leader.gy);
     if (altar) openAltar(altar);
+    // 도착 즉시 장판 재평가 (이동 중에 장판이 깔린 경우 한 프레임도 지체하지 않는다)
+    if (!state.paused) autoDodgeStep();
   }
 }
 
@@ -1289,6 +1328,10 @@ function checkLevelUp() {
 }
 function damageMember(m, dmg, attacker) {
   if (m.down) return;
+  if (m.invulnT > 0) {                          // 부활 직후 무적
+    addFloater(m.px, m.py - 30, '무적', '#8fe0ff', 11);
+    return;
+  }
   dmg *= Math.max(0.4, 1 - 0.08 * runBuff('def'));
   dmg *= (1 - passiveDR());                   // 패시브 '방벽'
   dmg *= diff().dmg;                          // 난이도 보정
@@ -1349,12 +1392,14 @@ function minionList() { const w = state.world; return (w && w.minions) || []; }
 function mineList() { const w = state.world; return (w && w.mines) || []; }
 function minionAt(wld, x, y) { return (wld.minions || []).find(k => k.hp > 0 && k.gx === x && k.gy === y); }
 
+const MINION_HP_RATIO = 0.5;    // 리더 최대 HP 대비 미니언 HP
+const MINION_LEASH = 6;         // 리더에게서 이만큼 벗어나면 전투를 포기하고 복귀
 function makeMinion(x, y) {
-  const hp = Math.max(8, Math.floor(maxHp(leader) * 0.35));
+  const hp = Math.max(8, Math.floor(maxHp(leader) * MINION_HP_RATIO));
   return {
     gx: x, gy: y, px: isoX(x, y), py: isoY(x, y),
     fromX: x, fromY: y, moveT: 1, moving: false, face: 1,
-    hp, maxHp: hp, atkCd: rand(0, .4), stepT: rand(0, .3), stepInt: 0.4, born: 0,
+    hp, maxHp: hp, atkCd: rand(0, .4), stepT: rand(0, .3), stepInt: 0.4, born: 0, returning: false,
   };
 }
 // 리더 주변 빈 칸에 해골을 세운다
@@ -1398,6 +1443,10 @@ function updateMinions(dt) {
     k.born += dt;
     updateEntityMove(k, dt, 0.4);
     k.atkCd -= dt;
+    // 리더와의 거리(리쉬): 6칸을 벗어나면 복귀 모드 (2칸 안으로 들어오면 해제)
+    const leash = cheb(k.gx, k.gy, leader.gx, leader.gy);
+    if (leash > MINION_LEASH) k.returning = true;
+    else if (leash <= 2) k.returning = false;
     // 가장 가까운 몬스터
     let tgt = null, bd = 99;
     mons.forEach(mon => {
@@ -1405,8 +1454,8 @@ function updateMinions(dt) {
       const d = cheb(k.gx, k.gy, mon.gx, mon.gy);
       if (d < bd) { bd = d; tgt = mon; }
     });
-    // 인접 몬스터 자동 공격
-    if (tgt && bd <= 1) {
+    // 인접 몬스터 자동 공격 (복귀 중에는 교전하지 않는다)
+    if (tgt && bd <= 1 && !k.returning) {
       if (k.atkCd <= 0) {
         damageMonster(tgt, atkPow(leader) * 0.55 * rand(0.85, 1.15), '#9be8a0');
         k.face = (tgt.gx > k.gx || tgt.gy < k.gy) ? 1 : -1;
@@ -1419,9 +1468,9 @@ function updateMinions(dt) {
     k.stepT -= dt;
     if (k.stepT > 0) continue;
     k.stepT = k.stepInt;
-    // 목표: 6칸 내 몬스터 → 없으면 리더 곁을 지킨다
-    const goal = (tgt && bd <= 6) ? tgt : leader;
-    if (goal === leader && cheb(k.gx, k.gy, leader.gx, leader.gy) <= 2) continue;
+    // 목표: 리쉬 안이면 6칸 내 몬스터 → 아니면 리더 곁으로 복귀
+    const goal = (!k.returning && tgt && bd <= 6) ? tgt : leader;
+    if (goal === leader && leash <= 2) continue;
     let dx = Math.sign(goal.gx - k.gx), dy = Math.sign(goal.gy - k.gy);
     if (dx && dy) (Math.random() < .5) ? dx = 0 : dy = 0;
     const blocked = (x, y) => !walkable(wld, x, y) || monsterAt(wld, x, y) ||
@@ -1627,9 +1676,10 @@ function updateClassAbilities(dt) {
   updateMines(dt);
 }
 // 주변 8칸 회전 칼날
+const BLADE_AURA_TICK = 0.32;    // 틱당 공격력 계수 (다수전 과강 완화)
 function bladeAura(mods) {
   const wld = state.world;
-  const dmg = atkPow(leader) * 0.45 * mods.dmg;
+  const dmg = atkPow(leader) * BLADE_AURA_TICK * mods.dmg;
   let hit = 0;
   wld.monsters.forEach(mon => {
     if (mon.hp <= 0) return;
@@ -1643,6 +1693,10 @@ function bladeAura(mods) {
   return hit;
 }
 
+/* ---- 부활 규칙 ---- */
+const REVIVE_BLOCK_R = 3;    // 이 반경 안에 몬스터가 있으면 '전투 중'(절반 속도)
+const REVIVE_INVULN = 2;     // 부활 직후 무적 시간(초)
+
 function updateCombat(dt) {
   const wld = state.world;
   if (wld.mode !== 'dungeon') return;
@@ -1652,6 +1706,7 @@ function updateCombat(dt) {
 
   // 파티 공격
   party.forEach(m => {
+    if (m.invulnT > 0) m.invulnT = Math.max(0, m.invulnT - dt);
     if (m.down) return;
     const mods = gemMods(m);
     m.atkCd -= dt;
@@ -1769,20 +1824,31 @@ function updateCombat(dt) {
     }
   }
 
-  // 쓰러진 파티원 부활 (전투 중이 아닐 때 사제가)
-  const combatNear = mons.some(mon => cheb(mon.gx, mon.gy, leader.gx, leader.gy) <= 5);
-  party.forEach(m => {
-    if (!m.down) return;
-    if (combatNear || party[2].down) { m.reviveT = 0; return; }
-    m.reviveT += dt;
-    if (m.reviveT >= Math.max(3, 6 - 0.5 * state.meta.revive)) {
+  // 쓰러진 파티원 부활 — 전투 중에도 멈추지 않고 '절반 속도'로 진행한다.
+  // (팩 어그로 이후 리더가 다운되면 런이 정지하던 문제 대응)
+  const downed = party.filter(m => m.down);
+  if (downed.length) {
+    const combatNear = mons.some(mon => mon.hp > 0 && cheb(mon.gx, mon.gy, leader.gx, leader.gy) <= REVIVE_BLOCK_R);
+    const priestOk = !party[2].down;
+    // 우선순위: 리더 최우선 → 나머지는 파티 순서대로 한 명씩
+    const m = leader.down ? leader : downed[0];
+    let rate = 1;
+    if (combatNear) rate *= 0.5;      // 전투 중에는 느리게 (리셋하지 않는다)
+    if (!priestOk) rate *= 0.5;       // 사제도 쓰러졌다면 자력 회복이라 더 느리다
+    m.reviveT += dt * rate;
+    let need = Math.max(3, 6 - 0.5 * state.meta.revive);
+    if (m === leader && priestOk) need *= 0.5;   // 사제는 리더부터 일으킨다
+    if (m.reviveT >= need) {
       m.down = false;
+      m.reviveT = 0;
       m.hp = maxHp(m) * 0.4;
+      m.invulnT = REVIVE_INVULN;      // 부활 직후 무적 (즉시 재다운 방지)
       m.gx = leader.gx; m.gy = leader.gy; m.moving = false;
       addSparkle(isoX(m.gx, m.gy), isoY(m.gx, m.gy), '#8dffb0');
-      say(party[2], '휴… 이제 괜찮을 거예요.');
+      addFloater(isoX(m.gx, m.gy), isoY(m.gx, m.gy) - 40, '✨ 부활!', '#8dffb0', 13);
+      say(priestOk ? party[2] : m, priestOk ? '휴… 이제 괜찮을 거예요.' : '아직… 쓰러질 순 없어…');
     }
-  });
+  }
 }
 
 function partyWipe() {
@@ -1822,7 +1888,7 @@ function placeParty(wld, x, y) {
   trail = [];
   party.forEach((m, i) => {
     m.gx = x; m.gy = y + Math.min(i, 0);
-    m.moving = false; m.moveT = 1;
+    m.moving = false; m.moveT = 1; m.invulnT = 0;
     m.px = isoX(m.gx, m.gy); m.py = isoY(m.gx, m.gy);
   });
   for (let i = 0; i < 12; i++) trail.push({ x, y });
@@ -1959,41 +2025,69 @@ function bfsPath(wld, sx, sy, goalFn) {
   }
   return null;
 }
+/* ---- 자동 탐험 회피 ----
+ * 예고 장판 위에 서 있으면 인접 8칸 중 '겹친 장판이 가장 적은' 칸으로 한 스텝.
+ * 완전히 안전한 칸이 없어도 피해가 덜한 쪽으로 움직인다(막다른 길이면 실패). */
+function telegraphCount(wld, x, y) {
+  const tgs = wld.telegraphs;
+  if (!tgs || !tgs.length) return 0;
+  let n = 0;
+  for (const tg of tgs) if (tg.cells.some(c => c.x === x && c.y === y)) n++;
+  return n;
+}
+function autoDodgeStep() {
+  if (!state.auto || leader.moving || state.transitioning) return false;
+  const wld = state.world;
+  if (wld.mode !== 'dungeon' || !wld.telegraphs || !wld.telegraphs.length) return false;
+  const cur = telegraphCount(wld, leader.gx, leader.gy);
+  if (cur <= 0) return false;
+  let best = null, bestN = cur;
+  for (const [dx, dy] of shuffle(DIRS8.slice())) {
+    const nx = leader.gx + dx, ny = leader.gy + dy;
+    if (!walkable(wld, nx, ny) || monsterAt(wld, nx, ny)) continue;
+    // 대각은 모서리 통과 금지 규칙을 미리 반영 (헛스텝 방지)
+    if (dx && dy && !walkable(wld, nx, leader.gy) && !walkable(wld, leader.gx, ny)) continue;
+    const n = telegraphCount(wld, nx, ny);
+    if (n < bestN) { bestN = n; best = [dx, dy]; if (!n) break; }
+  }
+  if (!best) return false;
+  if (!tryLeaderStep(best[0], best[1])) return false;
+  autoPath = null;
+  return true;
+}
+// 탐험률이 이만큼을 넘으면 남은 frontier 대신 계단(보스)으로 향한다
+const AUTO_RUSH_PCT = 0.92;
+function autoDest(wld) {
+  if (wld.mode !== 'dungeon') return wld.entrance;
+  const boss = wld.monsters.find(m => m.boss && m.hp > 0);
+  return wld.stairs || (boss && { x: boss.gx, y: boss.gy }) || null;
+}
 function updateAuto() {
   if (!state.auto || leader.moving || state.transitioning) return;
   const wld = state.world;
-  // 예고 장판 위면 인접한 안전 칸으로 한 스텝 회피
-  if (wld.mode === 'dungeon' && wld.telegraphs.length) {
-    const danger = (x, y) => wld.telegraphs.some(tg => tg.cells.some(c => c.x === x && c.y === y));
-    if (danger(leader.gx, leader.gy)) {
-      const dirs = shuffle([[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]);
-      for (const [dx, dy] of dirs) {
-        const nx = leader.gx + dx, ny = leader.gy + dy;
-        if (!walkable(wld, nx, ny) || danger(nx, ny) || monsterAt(wld, nx, ny)) continue;
-        if (tryLeaderStep(dx, dy)) { autoPath = null; return; }
-      }
-    }
-  }
-  // 근처 몬스터와 교전 중이면 대기
-  if (wld.mode === 'dungeon' &&
+  if (autoDodgeStep()) return;
+  // 근처 몬스터와 교전 중이면 대기 (리더가 다운되면 멈추지 않고 계속 진행)
+  if (wld.mode === 'dungeon' && !leader.down &&
       wld.monsters.some(m => m.hp > 0 && cheb(m.gx, m.gy, leader.gx, leader.gy) <= 1.9)) {
     autoPath = null;
     return;
   }
   if (!autoPath || !autoPath.length) {
-    const frontier = (x, y) => !wld.seen[idx(wld, x, y)];
-    autoPath = bfsPath(wld, leader.gx, leader.gy, frontier);
+    autoPath = null;                       // 빈 배열도 '경로 없음'으로 취급
+    const dest = autoDest(wld);
+    // 이미 목적지 칸에 서 있으면 빈 경로가 나오므로 null 로 정규화한다
+    const ok = p => (p && p.length ? p : null);
+    const pathTo = d => ok(bfsPath(wld, leader.gx, leader.gy, (x, y) => x === d.x && y === d.y));
+    // 템포: 던전을 92% 이상 봤으면 남은 구석 대신 계단/보스로 (보물방은 100% 회수)
+    const pct = wld.walkTotal ? wld.seenCount / wld.walkTotal : 0;
+    const rush = wld.mode === 'dungeon' && wld.kind !== 'treasure' && pct >= AUTO_RUSH_PCT;
+    if (rush && dest) autoPath = pathTo(dest);
     if (!autoPath) {
-      // 다 봤으면 목적지로 (던전: 계단 또는 보스 / 초원: 입구)
-      let dest;
-      if (wld.mode === 'dungeon') {
-        const boss = wld.monsters.find(m => m.boss && m.hp > 0);
-        dest = wld.stairs || (boss && { x: boss.gx, y: boss.gy });
-      } else {
-        dest = wld.entrance;
-      }
-      if (dest) autoPath = bfsPath(wld, leader.gx, leader.gy, (x, y) => x === dest.x && y === dest.y);
+      const frontier = (x, y) => !wld.seen[idx(wld, x, y)];
+      autoPath = ok(bfsPath(wld, leader.gx, leader.gy, frontier));
     }
+    // 다 봤으면 목적지로 (던전: 계단 또는 보스 / 초원: 입구)
+    if (!autoPath && dest) autoPath = pathTo(dest);
     if (!autoPath) return;
   }
   const next = autoPath[0];
@@ -2173,7 +2267,7 @@ function openPathChoice() {
       btn.dataset.biome = o.biome;
       btn.dataset.kind = o.kind;
       btn.innerHTML = `<span class="bIcon">${k.icon}</span><b>${k.name}</b>` +
-        `<small>${b.icon} ${b.name}<br>${k.desc}</small>` +
+        `<small>${b.icon} ${b.name}${next >= ABYSS_FLOOR ? ABYSS_SUFFIX : ''}<br>${k.desc}</small>` +
         `<em>보상 ×${k.riskMult.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}</em>`;
       btn.addEventListener('click', () => { closeModal(); descend(o); });
       grid.appendChild(btn);
@@ -2609,20 +2703,29 @@ function toast(msg) {
     setTimeout(() => toastEl.classList.add('hidden'), 400);
   }, 2200);
 }
-// 탐험 패널 제목: 층 · 바이옴 · (특수 층/웨이브) · 난이도
+// 탐험 패널 1행: 지하 N층 · (특수 층/웨이브) · 난이도  — 짧게 유지해 줄바꿈을 막는다
 function floorTitle() {
   const w = state.world;
   const k = PATH_KINDS[w.kind] || PATH_KINDS.safe;
-  let s = `지하 ${w.floor}층 · ${(w.theme && w.theme.name) || ''}`;
+  let s = `지하 ${w.floor}층`;
   if (w.kind !== 'safe') s += ` ${k.icon}`;      // 성격은 아이콘만 (진입 토스트/갈림길 카드에 이름 표기)
   if (w.arena && !w.arena.done) s += ` · 웨이브 ${w.arena.wave}/${w.arena.total}`;
   return `${s} · ${diff().name}`;
+}
+// 탐험 패널 2행(작은 글씨): 바이옴 아이콘 + 이름 (9층+는 ' · 심연' 포함)
+function floorBiomeLine() {
+  const w = state.world;
+  const b = BIOMES[w.biome] || BIOMES.catacomb;
+  return `${b.icon} ${(w.theme && w.theme.name) || b.name}`;
 }
 function updateHudMode() {
   const dungeon = state.world.mode === 'dungeon';
   el('escapeBtn').classList.toggle('hidden', !dungeon);
   el('upgradeBtn').classList.toggle('hidden', dungeon);
   el('exploreTitle').textContent = dungeon ? floorTitle() : '초원 탐험';
+  const bio = el('exploreBiome');
+  bio.textContent = dungeon ? floorBiomeLine() : '';
+  bio.classList.toggle('hidden', !dungeon);
   autoPath = null;
 }
 function updateHud() {
@@ -3783,6 +3886,8 @@ window.GAME = {
   // Phase 2 (맵 다양성) 훅
   BIOMES, BIOME_KEYS, PATH_KINDS, T,
   genFloor, biomeForFloor, floorMonsterTypes,
+  ABYSS_FLOOR, ABYSS_SUFFIX, abyssTheme, themeForFloor, dungeonTheme,
+  floorTitle, floorBiomeLine, updateHudMode,
   tileRegions, bfsField, isOpenTile, walkable: (x, y) => walkable(state.world, x, y),
   bfsPath: (goalFn) => bfsPath(state.world, leader.gx, leader.gy, goalFn),
   pathTo: (x, y) => bfsPath(state.world, leader.gx, leader.gy, (px, py) => px === x && py === y),
@@ -3803,7 +3908,12 @@ window.GAME = {
   hasExecute, hasUnyielding, passiveSpeedMult, passiveSight, sightRadius, revealRadius,
   maxHp, atkPow, healPow, goldMult, leaderStepTime,
   // 직업 능력
-  summonSkeleton, minions: () => minionList(), damageMinion,
+  summonSkeleton, minions: () => minionList(), damageMinion, updateMinions,
+  MINION_HP_RATIO, MINION_LEASH, BLADE_AURA_TICK,
+  // 리뷰 1차 수정 훅 (부활 / 자동 탐험 템포 / 회피)
+  REVIVE_BLOCK_R, REVIVE_INVULN, AUTO_RUSH_PCT,
+  autoDodgeStep, telegraphCount, updateAuto, autoDest: () => autoDest(state.world),
+  autoPath: () => autoPath,
   placeMine, explodeMine, mines: () => mineList(),
   bladeAura: () => bladeAura(gemMods(leader)),
   updateClassAbilities,
