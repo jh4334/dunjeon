@@ -41,6 +41,25 @@ html, body {
   vertical-align: -1px;
 }
 
+#buffBar {
+  position: absolute; top: 52px; left: 12px;
+  display: flex; flex-wrap: wrap; gap: 5px;
+  max-width: 50vw;
+}
+#buffBar .chip {
+  background: rgba(8, 32, 40, 0.85);
+  border: 1.5px solid #5ba8a0;
+  border-radius: 12px;
+  color: #d8f3ef;
+  padding: 2px 8px;
+  font-size: 12px;
+  text-shadow: 0 1px 0 #000;
+}
+#buffBar .chip b { font-size: 11px; margin-left: 2px; color: #7ee8d8; }
+#buffBar .chip.relic { border-color: #e8b34a; }
+#buffBar .chip.relic b { color: #ffd75e; }
+#buffBar .chip.best { border-color: #e8b34a; color: #ffe9c0; }
+
 #explorePanel {
   position: absolute; top: 12px; right: 12px;
   width: 190px; font-size: 12px;
@@ -116,6 +135,11 @@ html, body {
   cursor: pointer;
 }
 #dpad button:active { background: rgba(90, 140, 100, 0.6); }
+#dpad button.diag {
+  font-size: 16px;
+  background: rgba(40, 70, 50, 0.32);
+  color: rgba(235, 255, 240, 0.55);
+}
 .dpad-center {
   display: flex; align-items: center; justify-content: center;
   background: rgba(40, 70, 50, 0.35);
@@ -187,6 +211,7 @@ html, body {
   font-family: inherit;
 }
 .buffCard:hover, .buffCard:active { border-color: #ffe88a; transform: translateY(-2px); }
+.buffCard.relic { border-color: #e8b34a; background: rgba(60, 45, 20, 0.9); }
 .buffCard .bIcon { font-size: 26px; }
 .buffCard b { font-size: 13px; }
 .buffCard small { font-size: 11px; color: #a9d8d2; }

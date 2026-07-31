@@ -14,6 +14,7 @@
     <div class="panel" id="lvPanel">Lv. <span id="lvVal">1</span></div>
     <div class="panel" id="goldPanel"><span class="coin"></span><span id="goldVal">0</span></div>
   </div>
+  <div id="buffBar"></div>
 
   <div class="panel" id="explorePanel">
     <div class="row"><span id="exploreTitle">초원 탐험</span><span id="explorePct">0%</span></div>
@@ -33,9 +34,9 @@
   </div>
 
   <div id="dpad">
-    <span></span><button data-dir="up">↑</button><span></span>
+    <button class="diag" data-dirs="up,left">↖</button><button data-dir="up">↑</button><button class="diag" data-dirs="up,right">↗</button>
     <button data-dir="left">←</button><span class="dpad-center">·</span><button data-dir="right">→</button>
-    <span></span><button data-dir="down">↓</button><span></span>
+    <button class="diag" data-dirs="down,left">↙</button><button data-dir="down">↓</button><button class="diag" data-dirs="down,right">↘</button>
   </div>
 
   <button id="autoBtn">⟳<span>자동</span></button>
