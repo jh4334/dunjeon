@@ -46,6 +46,9 @@ const state = {
   cam: { x: 0, y: 0 },
   time: 0,
   transitioning: false,
+  // 타격감 (화면 흔들림 / 히트스톱)
+  shakeT: 0, shakeMag: 0, shakeX: 0, shakeY: 0,
+  hitStop: 0,
   minimapOn: false,
   difficulty: 'normal',   // 'casual' | 'normal' | 'hard'
   difficultyPicked: false, // 최초 던전 입장 시 1회 선택
@@ -304,6 +307,21 @@ function floorRisk() {
 }
 function goldMult() { return 1.3 * (1 + 0.10 * state.meta.gold) * (1 + 0.20 * runBuff('gold')) * (1 + 0.30 * relicCount('charm')) * rewardMult() * floorRisk() * passiveGoldMult(); }
 party.forEach(m => { m.hp = maxHp(m); });
+
+/* ---------------- 타격감 (플래시 / 화면 흔들림 / 히트스톱) ----------------
+ * 상수만 만지면 강도를 조절할 수 있다. 과하지 않게 짧고 얕게. */
+const HIT_FLASH_TIME  = 0.10;   // 몬스터 피격 흰색 플래시 지속(초)
+const SHAKE_TIME      = 0.25;   // 화면 흔들림 감쇠 시간(초)
+const SHAKE_MAG_SMASH = 5;      // 텔레그래프 강타 명중 시 진폭(px)
+const SHAKE_MAG_BOSS  = 9;      // 보스 사망 시 진폭(px)
+const HIT_STOP_TIME   = 0.06;   // 치명타 히트스톱(초) — 전투/이동만 정지, 렌더는 유지
+function addShake(mag) {
+  state.shakeT = SHAKE_TIME;
+  state.shakeMag = Math.max(state.shakeMag || 0, mag);
+}
+function addHitStop(t) {
+  state.hitStop = Math.max(state.hitStop || 0, t === undefined ? HIT_STOP_TIME : t);
+}
 
 /* ---------------- 이펙트 ---------------- */
 const floaters = []; // {wx, wy, txt, color, t, life, size}
@@ -968,6 +986,7 @@ function makeMonster(type, floor, x, y) {
     packId: null, aggro: false, affixes: null, rewardMult: 1,
     // Phase 3: 상태이상 (빙결 슬로우 / 스턴 / 도트)
     slowT: 0, stunT: 0, dots: [], dotAcc: 0, dotT: 0,
+    flashT: 0,                              // 피격 플래시 잔여 시간
   };
   if (mon.boss) mon.castT = rand(4, 8);   // 보스는 텔레그래프 강공격 사용
   return mon;
@@ -1111,6 +1130,7 @@ function updateTelegraphs(dt) {
       hit++;
     });
     const c0 = tg.cells[0];
+    if (hit) addShake(SHAKE_MAG_SMASH);        // 강타 명중 — 화면 흔들림
     addFloater(isoX(c0.x, c0.y), isoY(c0.x, c0.y) - 24, hit ? '💥 강타!' : '회피!', hit ? '#ff5a5a' : '#8dffb0', 15);
   }
 }
@@ -1250,11 +1270,13 @@ function damageMonster(mon, dmg, color, opt) {
   if (mon.hp <= 0) return;
   opt = opt || {};
   const crit = !opt.noCrit && Math.random() < (0.08 * runBuff('crit') + passiveCrit());
-  if (crit) dmg *= 2;
+  if (crit) { dmg *= 2; addHitStop(); }      // 치명타 히트스톱
   if (mon.dr) dmg *= (1 - mon.dr);           // '단단한' 어픽스
   mon.hp -= dmg;
-  if (!opt.silent)
+  if (!opt.silent) {
+    mon.flashT = HIT_FLASH_TIME;              // 피격 흰색 플래시
     addFloater(mon.px, mon.py - 26, (crit ? '💥' : '') + Math.floor(dmg), crit ? '#ffb347' : (color || '#fff'), crit ? 16 : 13);
+  }
   // 패시브 '처형' — 빈사 상태의 적을 즉시 끝낸다
   if (mon.hp > 0 && hasExecute() && mon.hp <= mon.maxHp * 0.1) {
     mon.hp = 0;
@@ -1309,7 +1331,8 @@ function onBossDefeated(mon) {
   }
   addSparkle(mon.px, mon.py, '#ffd75e');
   say(leader, '해냈어! 더 깊이 가보자!');
-  setTimeout(openRelicChoice, 700);
+  addShake(SHAKE_MAG_BOSS);
+  scheduleModal('relic', 700, () => openRelicChoice());
 }
 function checkLevelUp() {
   let need = xpNeed(state.lv);
@@ -1378,7 +1401,7 @@ function finishArena() {
   say(leader, '전부 쓸어버렸어! 보상을 챙기자!');
   addSparkle(leader.px, leader.py, '#ffd75e');
   updateHudMode();
-  setTimeout(() => openRelicChoice('⚔️ 도전방 보상 — 유물을 선택하세요'), 600);
+  scheduleModal('relic', 600, () => openRelicChoice('⚔️ 도전방 보상 — 유물을 선택하세요'));
 }
 
 /* =====================================================================
@@ -1394,12 +1417,15 @@ function minionAt(wld, x, y) { return (wld.minions || []).find(k => k.hp > 0 && 
 
 const MINION_HP_RATIO = 0.5;    // 리더 최대 HP 대비 미니언 HP
 const MINION_LEASH = 6;         // 리더에게서 이만큼 벗어나면 전투를 포기하고 복귀
+const MINION_STEP = 0.4;        // 기본 이동 간격(초)
+const MINION_RETURN_MUL = 0.5;  // 복귀 중에는 간격 절반 → 리더 곁으로 빠르게 붙는다
+function minionStepInt(k) { return k.stepInt * (k.returning ? MINION_RETURN_MUL : 1); }
 function makeMinion(x, y) {
   const hp = Math.max(8, Math.floor(maxHp(leader) * MINION_HP_RATIO));
   return {
     gx: x, gy: y, px: isoX(x, y), py: isoY(x, y),
     fromX: x, fromY: y, moveT: 1, moving: false, face: 1,
-    hp, maxHp: hp, atkCd: rand(0, .4), stepT: rand(0, .3), stepInt: 0.4, born: 0, returning: false,
+    hp, maxHp: hp, atkCd: rand(0, .4), stepT: rand(0, .3), stepInt: MINION_STEP, born: 0, returning: false,
   };
 }
 // 리더 주변 빈 칸에 해골을 세운다
@@ -1441,7 +1467,7 @@ function updateMinions(dt) {
     const k = list[i];
     if (k.hp <= 0) { list.splice(i, 1); continue; }   // 죽으면 제거 → 6초 뒤 재소환
     k.born += dt;
-    updateEntityMove(k, dt, 0.4);
+    updateEntityMove(k, dt, minionStepInt(k));   // 복귀 중에는 걸음 애니메이션도 2배 빠르게
     k.atkCd -= dt;
     // 리더와의 거리(리쉬): 6칸을 벗어나면 복귀 모드 (2칸 안으로 들어오면 해제)
     const leash = cheb(k.gx, k.gy, leader.gx, leader.gy);
@@ -1467,7 +1493,7 @@ function updateMinions(dt) {
     if (k.moving) continue;
     k.stepT -= dt;
     if (k.stepT > 0) continue;
-    k.stepT = k.stepInt;
+    k.stepT = minionStepInt(k);
     // 목표: 리쉬 안이면 6칸 내 몬스터 → 아니면 리더 곁으로 복귀
     const goal = (!k.returning && tgt && bd <= 6) ? tgt : leader;
     if (goal === leader && leash <= 2) continue;
@@ -1549,6 +1575,7 @@ function addDot(mon, dps, dur, k) {
   else { mon.dots.push({ k, dps, t: dur }); addFloater(mon.px, mon.py - 44, '🧪 중독!', '#8fe07f', 12); }
 }
 function updateMonsterStatus(mon, dt) {
+  if (mon.flashT > 0) mon.flashT = Math.max(0, mon.flashT - dt);
   if (mon.slowT > 0) mon.slowT = Math.max(0, mon.slowT - dt);
   if (mon.stunT > 0) mon.stunT = Math.max(0, mon.stunT - dt);
   if (!mon.dots || !mon.dots.length) return;
@@ -1885,6 +1912,9 @@ function transition(fn) {
   }, 450);
 }
 function placeParty(wld, x, y) {
+  // 층이 바뀌면 이전 층에서 예약된 모달을 정리한다
+  // (보스/도전방 유물은 취소하지 않고 즉시 발화 → 모달 큐로 넘어가 반드시 표시된다)
+  cancelPendingModals(true);
   trail = [];
   party.forEach((m, i) => {
     m.gx = x; m.gy = y + Math.min(i, 0);
@@ -1921,7 +1951,7 @@ function enterDungeon() {
     toast(`🗝️ 지하 1층 — ${state.world.theme.name}`);
     if (Math.random() < .7) say(pick(party.slice(1)), pick(['으스스해요…', '조심해서 가요!', '몬스터 냄새가 나요…']));
     updateHudMode();
-    setTimeout(openBuffChoice, 500);
+    scheduleModal('buff', 500, openBuffChoice);
   });
 }
 // 갈림길 없이 들어갈 때의 기본 선택지 (보스 층 / 첫 층)
@@ -1958,7 +1988,7 @@ function descend(choice) {
     else if (w.kind === 'treasure') say(party[3], '보물이다! …함정도 잔뜩이지만요.');
     else if (w.kind === 'risk') say(party[1], '기운이 심상치 않아요… 대신 벌이는 좋겠죠?');
     updateHudMode();
-    setTimeout(openBuffChoice, 500);
+    scheduleModal('buff', 500, openBuffChoice);
   });
 }
 function escapeDungeon() {
@@ -1968,6 +1998,8 @@ function escapeDungeon() {
 function showRunSummary(escaped) {
   const run = state.run || { floor: state.world.floor || 1, kills: 0, goldGained: 0 };
   state.run = null;
+  // 런이 끝났으므로 예약된 축복/유물 모달은 의미가 없다 — 전부 취소하고 정산을 최우선으로 띄운다
+  cancelPendingModals(false);
   const lost = escaped ? 0 : Math.floor(state.gold * diff().wipeLoss);
   openModal(escaped ? '🏃 던전 탈출!' : '💀 파티 전멸…', body => {
     body.innerHTML = `
@@ -1989,7 +2021,7 @@ function showRunSummary(escaped) {
         gotoOverworld();
       });
     });
-  });
+  }, { key: 'summary', priority: true });
   saveDirty = true;
 }
 
@@ -2062,12 +2094,27 @@ function autoDest(wld) {
   const boss = wld.monsters.find(m => m.boss && m.hp > 0);
   return wld.stairs || (boss && { x: boss.gx, y: boss.gy }) || null;
 }
+/* 계단 직행(92% 러시) 중에도 맵에 남은 보상은 챙긴다.
+ * 대상: 남은 아이템 · 아직 안 들른 도박 제단(골드가 있을 때) · 아직 안 들른 상인 */
+function rushRewards(wld) {
+  const goals = [];
+  wld.items.forEach(it => goals.push({ x: it.gx, y: it.gy }));
+  const altarCost = 30 * (wld.floor || 1);
+  wld.props.forEach(p => {
+    if (p.type === 'altar' && !p.used && !p.seen && state.gold >= altarCost) goals.push({ x: p.gx, y: p.gy });
+    else if (p.type === 'merchant' && !p.visited) goals.push({ x: p.gx, y: p.gy });
+  });
+  return goals;
+}
 function updateAuto() {
   if (!state.auto || leader.moving || state.transitioning) return;
   const wld = state.world;
+  // 리더가 쓰러져 있으면 자동 탐험을 멈춘다 (쓰러진 리더가 걸어가는 연출 제거).
+  // 부활 타이머는 전투 중에도 절반 속도로 계속 진행되므로 교착은 없다.
+  if (leader.down) { autoPath = null; return; }
   if (autoDodgeStep()) return;
-  // 근처 몬스터와 교전 중이면 대기 (리더가 다운되면 멈추지 않고 계속 진행)
-  if (wld.mode === 'dungeon' && !leader.down &&
+  // 근처 몬스터와 교전 중이면 대기
+  if (wld.mode === 'dungeon' &&
       wld.monsters.some(m => m.hp > 0 && cheb(m.gx, m.gy, leader.gx, leader.gy) <= 1.9)) {
     autoPath = null;
     return;
@@ -2081,7 +2128,15 @@ function updateAuto() {
     // 템포: 던전을 92% 이상 봤으면 남은 구석 대신 계단/보스로 (보물방은 100% 회수)
     const pct = wld.walkTotal ? wld.seenCount / wld.walkTotal : 0;
     const rush = wld.mode === 'dungeon' && wld.kind !== 'treasure' && pct >= AUTO_RUSH_PCT;
-    if (rush && dest) autoPath = pathTo(dest);
+    if (rush) {
+      // 계단으로 직행하기 전에 가장 가까운 남은 보상부터 회수한다 (도달 불가면 그냥 계단행)
+      const goals = rushRewards(wld);
+      if (goals.length) {
+        const set = new Set(goals.map(g => g.y * wld.w + g.x));
+        autoPath = ok(bfsPath(wld, leader.gx, leader.gy, (x, y) => set.has(y * wld.w + x)));
+      }
+      if (!autoPath && dest) autoPath = pathTo(dest);
+    }
     if (!autoPath) {
       const frontier = (x, y) => !wld.seen[idx(wld, x, y)];
       autoPath = ok(bfsPath(wld, leader.gx, leader.gy, frontier));
@@ -2097,19 +2152,73 @@ function updateAuto() {
   else autoPath = null;
 }
 
-/* ---------------- 모달 (버프 선택 / 캠프 강화 / 정산) ---------------- */
-function openModal(title, build) {
+/* ---------------- 모달 (버프 선택 / 캠프 강화 / 정산) ----------------
+ * 모달은 한 번에 하나만 뜬다. 이미 열려 있는데 다른 모달이 요청되면
+ * 큐에 쌓아 두었다가 닫힐 때 순서대로 표시한다.
+ * (지연 예약된 축복/유물 모달이 갈림길·정산·제단을 덮어써 파괴하던 문제 대응)
+ */
+const MODAL_QUEUE_MAX = 6;
+let modalQueue = [];
+let modalCur = null;                 // 열려 있는 모달의 키 (없으면 null)
+function modalIsOpen() { return modalCur !== null; }
+function showModalNow(m) {
+  modalCur = m.key;
   state.paused = true;
-  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalTitle').textContent = m.title;
   const body = document.getElementById('modalBody');
   body.innerHTML = '';
-  build(body);
+  m.build(body);
   document.getElementById('modalWrap').classList.remove('hidden');
+}
+// opt: { key: '종류(중복 방지용)', priority: true(큐를 비우고 즉시 표시) }
+function openModal(title, build, opt) {
+  opt = opt || {};
+  const m = { title, build, key: opt.key || 'modal' };
+  if (opt.priority) {                       // 정산 — 런이 끝나므로 대기 중인 건 모두 버린다
+    modalQueue.length = 0;
+    showModalNow(m);
+    return true;
+  }
+  if (modalIsOpen()) {
+    if (m.key !== 'modal' && modalQueue.some(q => q.key === m.key)) return false;  // 같은 종류 중복 방지
+    if (modalQueue.length < MODAL_QUEUE_MAX) modalQueue.push(m);
+    return false;
+  }
+  showModalNow(m);
+  return true;
 }
 function closeModal() {
   document.getElementById('modalWrap').classList.add('hidden');
+  modalCur = null;
   state.paused = false;
   autoPath = null;
+  const next = modalQueue.shift();
+  if (next) showModalNow(next);              // 대기 중인 모달을 이어서 표시
+}
+
+/* ---- 지연 예약 모달 (층 전환 시 이전 층 예약을 정리한다) ----
+ * tag 'relic'(보스/도전방 보상)은 반드시 한 번은 표시해야 하므로,
+ * 층이 바뀌면 취소 대신 즉시 발화시켜 큐로 넘긴다.
+ * tag 'buff'(층 진입 축복)는 새 층에서 다시 예약되므로 그냥 취소한다. */
+let pendingModals = [];
+function scheduleModal(tag, ms, fn) {
+  const e = { tag, fn, id: 0 };
+  e.id = setTimeout(() => {
+    pendingModals = pendingModals.filter(p => p !== e);
+    fn();
+  }, ms);
+  pendingModals.push(e);
+  return e.id;
+}
+function cancelPendingModals(keepGuaranteed) {
+  const list = pendingModals;
+  pendingModals = [];
+  // 이전 층에 묶인 대기 모달(축복/갈림길)은 큐에서도 버린다. 유물은 남긴다.
+  modalQueue = modalQueue.filter(m => m.key !== 'buff' && m.key !== 'path');
+  list.forEach(e => {
+    clearTimeout(e.id);
+    if (keepGuaranteed && e.tag === 'relic') e.fn();
+  });
 }
 
 const BUFF_POOL = [
@@ -2140,7 +2249,7 @@ function openBuffChoice() {
       grid.appendChild(btn);
     });
     body.appendChild(grid);
-  });
+  }, { key: 'buff' });
 }
 
 /* ---- 난이도 선택 ---- */
@@ -2178,6 +2287,7 @@ function openAltar(altar) {
     say(party[3], '지갑이 텅 비었는데요…');
     return;
   }
+  altar.seen = true;                 // 자동 탐험이 같은 제단을 다시 목표로 삼지 않도록
   openModal('🎲 도박 제단', body => {
     body.innerHTML = `
       <p class="sumHint">제단이 속삭인다… "운을 시험해 보겠는가?"</p>
@@ -2239,7 +2349,7 @@ function openRelicChoice(title) {
       grid.appendChild(btn);
     });
     body.appendChild(grid);
-  });
+  }, { key: 'relic' });
 }
 
 /* ---- 갈림길 (다음 층 선택) ---- */
@@ -2277,7 +2387,7 @@ function openPathChoice() {
     hint.className = 'sumHint';
     hint.textContent = '길은 하나만 고를 수 있어요. 신중하게!';
     body.appendChild(hint);
-  });
+  }, { key: 'path' });
 }
 
 /* ---- 떠돌이 상인 ---- */
@@ -2309,6 +2419,7 @@ function makeMerchantStock(floor) {
 function openMerchant(p) {
   const floor = state.world.floor || 1;
   if (!p.stock) p.stock = makeMerchantStock(floor);
+  p.visited = true;                  // 자동 탐험 목표에서 제외
   openModal('🛒 떠돌이 상인', body => {
     const render = () => {
       body.innerHTML = `<div class="shopGold"><span class="coin"></span>${fmt(state.gold)}</div>`;
@@ -3207,6 +3318,8 @@ function drawMonster(sx, sy, mon) {
   ctx.save();
   ctx.translate(sx, sy);
   ctx.scale(mon.scale, mon.scale);
+  // 피격 플래시 — 0.1초간 몸통을 하얗게 (ctx.restore()에서 원래대로)
+  if (mon.flashT > 0) ctx.filter = 'brightness(2.6) saturate(0.25)';
   // 빙결(슬로우) — 파란 틴트 원
   if (mon.slowT > 0) {
     ctx.fillStyle = `rgba(120, 200, 255, ${0.25 + 0.1 * Math.sin(t * 5)})`;
@@ -3692,8 +3805,8 @@ function render() {
     }
   }
 
-  const offX = W / 2 - state.cam.x;
-  const offY = H / 2 - state.cam.y + 40;
+  const offX = W / 2 - state.cam.x + state.shakeX;
+  const offY = H / 2 - state.cam.y + 40 + state.shakeY;
 
   drawTiles(offX, offY);
   drawTelegraphs(offX, offY);
@@ -3831,7 +3944,10 @@ function frame(now) {
   lastT = now;
   state.time += dt;
 
-  if (!state.paused) {
+  // 히트스톱: 전투/이동 업데이트만 잠깐 멈춘다 (렌더·이펙트는 계속 흐른다)
+  if (state.hitStop > 0) state.hitStop = Math.max(0, state.hitStop - dt);
+
+  if (!state.paused && state.hitStop <= 0) {
     updateInput();
     updateAuto();
     const wasMoving = leader.moving;
@@ -3845,6 +3961,14 @@ function frame(now) {
   // 카메라
   state.cam.x = lerp(state.cam.x, leader.px, 1 - Math.pow(0.001, dt));
   state.cam.y = lerp(state.cam.y, leader.py, 1 - Math.pow(0.001, dt));
+  // 화면 흔들림 (0.25초 감쇠)
+  if (state.shakeT > 0) {
+    state.shakeT = Math.max(0, state.shakeT - dt);
+    const k = state.shakeT / SHAKE_TIME;
+    state.shakeX = Math.sin(state.time * 47) * state.shakeMag * k;
+    state.shakeY = Math.cos(state.time * 61) * state.shakeMag * k * 0.6;
+    if (state.shakeT === 0) { state.shakeMag = 0; state.shakeX = 0; state.shakeY = 0; }
+  }
 
   // 이펙트 수명
   for (let i = floaters.length - 1; i >= 0; i--) { floaters[i].t += dt; if (floaters[i].t > floaters[i].life) floaters.splice(i, 1); }
@@ -3912,6 +4036,15 @@ window.GAME = {
   MINION_HP_RATIO, MINION_LEASH, BLADE_AURA_TICK,
   // 리뷰 1차 수정 훅 (부활 / 자동 탐험 템포 / 회피)
   REVIVE_BLOCK_R, REVIVE_INVULN, AUTO_RUSH_PCT,
+  // 리뷰 2차 수정 훅 (모달 큐 / 러시 보상 / 미니언 복귀 / 타격감)
+  openModal, modalIsOpen, showRunSummary,
+  modalQueue: () => modalQueue.map(m => m.key),
+  scheduleModal, cancelPendingModals,
+  pendingModals: () => pendingModals.map(p => p.tag),
+  rushRewards: () => rushRewards(state.world),
+  MINION_STEP, MINION_RETURN_MUL, minionStepInt,
+  HIT_FLASH_TIME, SHAKE_TIME, SHAKE_MAG_SMASH, SHAKE_MAG_BOSS, HIT_STOP_TIME,
+  addShake, addHitStop,
   autoDodgeStep, telegraphCount, updateAuto, autoDest: () => autoDest(state.world),
   autoPath: () => autoPath,
   placeMine, explodeMine, mines: () => mineList(),
