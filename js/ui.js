@@ -255,6 +255,17 @@ function makeMerchantStock(floor) {
       price: Math.floor(irand(80, 150) * fm), sold: false,
     });
   });
+  // M2 장비 1~2개 (깊이 스케일 · 마법~희귀) — 영구 소장
+  const eqN = irand(1, 2);
+  for (let i = 0; i < eqN; i++) {
+    const it = rollItem(floor + 1, { rarity: Math.random() < 0.35 ? 'rare' : 'magic' });
+    stock.push({
+      kind: 'equip', item: it, icon: itemIcon(it), name: itemLabel(it),
+      desc: `${SLOTS[it.slot].name} · ilvl ${it.ilvl} · ` +
+            (it.affixes.map(affixText).join(' / ') || '접사 없음'),
+      price: buyPrice(it), sold: false, rarity: it.rarity,   // ilvl 이 이미 깊이 스케일
+    });
+  }
   // 스킬 젬 1개 확률 등장 (영구 소장 아이템)
   if (Math.random() < 0.5) {
     const g = pick(GEMS);
@@ -279,7 +290,8 @@ function openMerchant(p) {
       body.innerHTML = `<div class="shopGold"><span class="coin"></span>${fmt(state.gold)}</div>`;
       p.stock.forEach((s, i) => {
         const row = document.createElement('div');
-        row.className = 'shopRow';
+        row.className = 'shopRow' + (s.kind === 'equip' ? ` eqShopRow r-${s.rarity}` : '');
+        row.dataset.kind = s.kind;
         row.innerHTML = `<span class="sIcon">${s.icon}</span>
           <div class="sInfo"><b>${s.name}</b><small>${s.desc}</small></div>
           <button class="buyBtn" data-item="${i}" ${(s.sold || state.gold < s.price) ? 'disabled' : ''}>${s.sold ? '품절' : fmt(s.price)}</button>`;
@@ -295,6 +307,10 @@ function openMerchant(p) {
           } else if (s.kind === 'gem') {
             giveGem(s.k);
             toast(gemGetMsg(GEM_BY_KEY[s.k]));
+          } else if (s.kind === 'equip') {
+            giveItem(s.item);
+            sfx(RARITY[s.item.rarity].sfx);
+            toast(`${s.icon} ${s.name} 구매 — 👤 장비 탭에서 장착!`);
           } else {
             party.forEach(m => {
               if (m.down) return;
@@ -376,34 +392,223 @@ function openClassChoice() {
   });
 }
 
-/* ---- 파티 모달 (젬 장착 / 패시브 트리) ---- */
+/* ---- 파티 모달 (장비 / 젬 장착 / 패시브 트리) ---- */
 let partyTab = 'gem';
+const PARTY_TABS = ['gem', 'equip', 'passive'];
+const TAB_ID = { gem: 'tabGem', equip: 'tabEquip', passive: 'tabPassive' };
 function openParty(tab) {
   if (state.transitioning) return;
-  if (tab) partyTab = tab;
+  if (tab && PARTY_TABS.indexOf(tab) >= 0) partyTab = tab;
   openModal('👤 파티 & 빌드', body => {
-    let picking = null;   // { memberId, slot }
+    let picking = null;   // 젬 선택 { memberId, slot }
+    let eqPick = null;    // 장비 슬롯 선택 { memberId, slot }
+    let eqDetail = null;  // 장비 상세 { itemId, memberId }
     const render = () => {
       body.innerHTML = '';
       // 탭
       const tabs = document.createElement('div');
       tabs.className = 'tabRow';
-      [['gem', '💠 젬'], ['passive', `🌳 패시브 (${state.passivePts})`]].forEach(([k, label]) => {
+      const labels = {
+        gem: '💠 젬',
+        equip: `🗡️ 장비${newItemCount() ? ` (${newItemCount()})` : ''}`,
+        passive: `🌳 패시브 (${state.passivePts})`,
+      };
+      PARTY_TABS.forEach(k => {
         const b = document.createElement('button');
         b.className = 'tabBtn' + (partyTab === k ? ' on' : '');
-        b.id = k === 'gem' ? 'tabGem' : 'tabPassive';
-        b.textContent = label;
-        b.addEventListener('click', () => { partyTab = k; picking = null; render(); });
+        b.id = TAB_ID[k];
+        b.textContent = labels[k];
+        b.addEventListener('click', () => {
+          partyTab = k; picking = null; eqPick = null; eqDetail = null; render();
+        });
         tabs.appendChild(b);
       });
       body.appendChild(tabs);
-      if (partyTab === 'gem') renderGems(); else renderPassives();
+      if (partyTab === 'gem') renderGems();
+      else if (partyTab === 'equip') renderEquip();
+      else renderPassives();
       const close = document.createElement('button');
       close.className = 'modalBtn';
       close.id = 'partyClose';
       close.textContent = '닫기';
       close.addEventListener('click', closeModal);
       body.appendChild(close);
+    };
+
+    /* =============== 🗡️ 장비 탭 =============== */
+    const memberIcon = m => (m === leader ? curClass().icon : { mage: '🔮', priest: '✨', porter: '🎒' }[m.role]);
+    const memberRole = m => ({ knight: curClass().name, mage: '마법사', priest: '사제', porter: '짐꾼' }[m.role]);
+    const detailMember = () => party.find(p => p.id === ((eqDetail && eqDetail.memberId) || (eqPick && eqPick.memberId) || leader.id)) || leader;
+
+    // 인벤토리/픽 목록의 아이템 버튼
+    const invBtn = (it, memberId) => {
+      const r = RARITY[it.rarity];
+      const b = document.createElement('button');
+      b.className = `eqPick r-${it.rarity}` + (eqDetail && eqDetail.itemId === it.id ? ' on' : '');
+      b.dataset.item = it.id;
+      b.dataset.rarity = it.rarity;
+      b.dataset.slot = it.slot;
+      b.style.borderColor = r.color;
+      b.innerHTML = `<span class="gIcon">${itemIcon(it)}</span>` +
+        `<b style="color:${r.color}">${itemLabel(it)}</b>` +
+        `<small>${r.name} ${SLOTS[it.slot].name} · ilvl ${it.ilvl} · 접사 ${it.unique ? '고유' : it.affixes.length}</small>` +
+        `<em>${fmt(sellPrice(it))}g</em>`;
+      b.addEventListener('click', () => {
+        eqDetail = (eqDetail && eqDetail.itemId === it.id)
+          ? null : { itemId: it.id, memberId: memberId || leader.id };
+        render();
+      });
+      return b;
+    };
+
+    const eqSlotBtn = (m, slot) => {
+      const it = equippedItem(m, slot);
+      const on = eqPick && eqPick.memberId === m.id && eqPick.slot === slot;
+      const b = document.createElement('button');
+      b.className = 'eqSlot' + (it ? ` filled r-${it.rarity}` : '') + (on ? ' picking' : '');
+      b.dataset.member = m.id;
+      b.dataset.slot = slot;
+      b.dataset.item = it ? it.id : '';
+      b.dataset.rarity = it ? it.rarity : '';
+      if (it) b.style.borderColor = RARITY[it.rarity].color;
+      b.innerHTML = it
+        ? `<span class="gIcon">${itemIcon(it)}</span><small style="color:${RARITY[it.rarity].color}">${it.name}</small>`
+        : `<span class="gIcon">${SLOTS[slot].icon}</span><small>${SLOTS[slot].name}</small>`;
+      b.addEventListener('click', () => {
+        if (on) { eqPick = null; eqDetail = null; }
+        else {
+          eqPick = { memberId: m.id, slot };
+          eqDetail = it ? { itemId: it.id, memberId: m.id } : null;
+        }
+        render();
+      });
+      return b;
+    };
+
+    // 상세 — 접사 목록 + 현재 장착품과 비교 화살표 ↑↓
+    const buildDetail = () => {
+      const found = findItem(eqDetail.itemId);
+      if (!found) { eqDetail = null; return null; }
+      const it = found.it;
+      const m = detailMember();
+      const equipped = found.where === 'eq';
+      // 비교 대상: 그 파티원이 같은 슬롯에 장착 중인 아이템 (자기 자신이면 비교 없음)
+      const cur = equipped ? null : equippedItem(m, it.slot);
+      const r = RARITY[it.rarity];
+      const wrap = document.createElement('div');
+      wrap.className = `eqDetail r-${it.rarity}`;
+      wrap.id = 'eqDetail';
+      wrap.dataset.item = it.id;
+      wrap.dataset.rarity = it.rarity;
+      wrap.dataset.compare = cur ? cur.id : '';
+      wrap.style.borderColor = r.color;
+
+      const vOf = (item, k) => {
+        if (!item) return 0;
+        const a = item.affixes.find(x => x.k === k);
+        return a ? a.v : 0;
+      };
+      const keys = it.affixes.map(a => a.k);
+      if (cur) cur.affixes.forEach(a => { if (keys.indexOf(a.k) < 0) keys.push(a.k); });
+      const rows = keys.map(k => {
+        const nv = vOf(it, k), cv = vOf(cur, k), d = nv - cv;
+        const cmp = !cur ? 'none' : (d > 1e-6 ? 'up' : d < -1e-6 ? 'down' : 'same');
+        const arrow = cmp === 'up' ? '↑' : cmp === 'down' ? '↓' : cmp === 'same' ? '＝' : '';
+        return `<div class="eqAff" data-k="${k}" data-cmp="${cmp}">` +
+          `<span>${AFFIX_BY_KEY[k].name}</span><b>${affixValueText(k, nv)}</b>` +
+          `<em class="cmp ${cmp}">${arrow}${cur && cmp !== 'same' ? ` ${affixValueText(k, cv)}` : ''}</em></div>`;
+      }).join('');
+
+      wrap.innerHTML = `<div class="eqdHead"><span class="eqdIcon">${itemIcon(it)}</span>
+          <div class="eqdName"><b style="color:${r.color}">${itemLabel(it)}</b>
+          <small>${r.mark} ${r.name} · ${SLOTS[it.slot].name}(${it.baseName}) · ilvl ${it.ilvl}</small></div></div>` +
+        (it.unique ? `<div class="eqdUniq">${UNIQUE_BY_KEY[it.unique].desc}</div>` : '') +
+        `<div class="eqdAffixes">${rows || '<div class="eqAff eqNone">접사 없음</div>'}</div>` +
+        (cur ? `<p class="sumHint" id="eqCmpHint">비교: ${m.name} 장착 중 «${itemLabel(cur)}»</p>`
+             : equipped ? `<p class="sumHint" id="eqCmpHint">${m.name}이(가) 장착 중</p>` : '') +
+        `<div class="eqdBtns">
+          ${equipped
+            ? `<button class="modalBtn eqd" id="eqDoUnequip">✖ 해제</button>`
+            : `<button class="modalBtn eqd" id="eqDoEquip">${m.name}에게 장착</button>`}
+          <button class="modalBtn eqd danger" id="eqDoSell">💰 판매 ${fmt(sellPrice(it))}</button>
+        </div>`;
+      const eq = wrap.querySelector('#eqDoEquip');
+      if (eq) eq.addEventListener('click', () => {
+        if (equipItem(m.id, it.id)) { eqDetail = { itemId: it.id, memberId: m.id }; sfx('ui'); }
+        render();
+      });
+      const un = wrap.querySelector('#eqDoUnequip');
+      if (un) un.addEventListener('click', () => {
+        unequipItem(found.memberId, found.slot);
+        eqDetail = { itemId: it.id, memberId: found.memberId };
+        sfx('ui');
+        render();
+      });
+      wrap.querySelector('#eqDoSell').addEventListener('click', () => {
+        const g = sellItem(it.id);
+        if (g) toast(`💰 ${itemLabel(it)} 판매 — +${fmt(g)} 골드`);
+        eqDetail = null;
+        render();
+      });
+      return wrap;
+    };
+
+    const renderEquip = () => {
+      // 장비 탭을 봤으면 '새 장비' 알림 해제
+      markItemsSeen();
+      party.forEach(m => {
+        const row = document.createElement('div');
+        row.className = 'partyRow eqRow';
+        row.dataset.member = m.id;
+        row.innerHTML = `<div class="pFace">${memberIcon(m)}</div>
+          <div class="pInfo"><b>${m.name}</b><small>${memberRole(m)}</small>
+          <small class="pHp">${m.down ? '쓰러짐' : `HP ${clamp(Math.floor(m.hp), 0, maxHp(m))} / ${maxHp(m)}`}</small></div>`;
+        const slots = document.createElement('div');
+        slots.className = 'pSlots';
+        SLOT_KEYS.forEach(sl => slots.appendChild(eqSlotBtn(m, sl)));
+        row.appendChild(slots);
+        body.appendChild(row);
+        if (eqPick && eqPick.memberId === m.id) {
+          const slot = eqPick.slot;
+          const list = document.createElement('div');
+          list.className = 'eqPickList';
+          list.dataset.slot = slot;
+          const fit = invList().filter(x => x.slot === slot);
+          if (!fit.length) {
+            const e = document.createElement('div');
+            e.className = 'gemEmpty';
+            e.textContent = `가방에 ${SLOTS[slot].name}가 없어요 (몬스터·상자·광맥·상인에게서 획득)`;
+            list.appendChild(e);
+          }
+          fit.forEach(x => list.appendChild(invBtn(x, m.id)));
+          body.appendChild(list);
+        }
+      });
+      if (eqDetail) {
+        const d = buildDetail();
+        if (d) body.appendChild(d);
+      }
+      // 인벤토리
+      const head = document.createElement('div');
+      head.className = 'eqInvHead';
+      head.innerHTML = `<span id="eqInvCount">🎒 ${invList().length} / ${INVENTORY_MAX}</span>`;
+      const junk = invList().filter(x => x.rarity === 'common' || x.rarity === 'magic');
+      const bulk = document.createElement('button');
+      bulk.className = 'eqBulkBtn';
+      bulk.id = 'eqSellBulk';
+      bulk.textContent = `💰 일괄 판매 (일반+마법 ${junk.length})`;
+      bulk.disabled = !junk.length;
+      bulk.addEventListener('click', () => { sellBulk(); eqDetail = null; render(); });
+      head.appendChild(bulk);
+      body.appendChild(head);
+      const list = document.createElement('div');
+      list.className = 'eqInvList';
+      list.id = 'eqInvList';
+      if (!invList().length) {
+        list.innerHTML = '<div class="gemEmpty">가방이 비어 있어요 — 몬스터·상자·광맥에서 장비가 떨어집니다</div>';
+      }
+      invList().forEach(x => list.appendChild(invBtn(x, (eqPick && eqPick.memberId) || leader.id)));
+      body.appendChild(list);
     };
 
     const slotBtn = (m, slot) => {
@@ -994,7 +1199,8 @@ function unequippedGemCount() {
 }
 // '새 젬'은 획득 후 아직 파티 화면에서 확인하지 않은 젬 — 이미 장착했다면 세지 않는다
 function newGemCount() { return clamp(state.newGems || 0, 0, unequippedGemCount()); }
-function partyBadgeCount() { return Math.max(0, state.passivePts || 0) + newGemCount(); }
+// 새로 얻은 장비(newItemCount)도 뱃지에 포함된다 (items.js)
+function partyBadgeCount() { return Math.max(0, state.passivePts || 0) + newGemCount() + newItemCount(); }
 function updatePartyBadge() {
   const b = el('partyBadge');
   if (!b) return;

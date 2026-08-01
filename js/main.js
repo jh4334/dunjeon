@@ -234,6 +234,35 @@ window.GAME = {
   openRecords, recordDepth,
   // 광산 레이아웃
   layoutMine, SOLID_DECOS, blockGridOf, openReachCount,
+  /* ---- M2: 장비 시스템 훅 ---- */
+  SLOTS, SLOT_KEYS, RARITY, RARITY_KEYS, RARITY_RANK, RARITY_BASE_W, RARITY_DIFF_MUL,
+  ITEM_BASES, BASE_BY_KEY, AFFIX_POOL, AFFIX_BY_KEY, AFFIX_KEYS, AFFIX_CAP,
+  UNIQUES, UNIQUE_BY_KEY, UNIQUE_KEYS, INVENTORY_MAX, DROP_P,
+  rarityWeights, rollRarity, rollItem, makeUnique, rollAffixValue,
+  itemLabel, itemIcon, itemAutoName, affixText, affixValueText, rarityRGBA,
+  sellPrice, buyPrice,
+  // 인벤토리 / 장착
+  equipOf, equippedItem, inventory: () => invList(), findItem, allOwnedItems,
+  giveItem, equipItem, unequipItem, sellItem, sellBulk, trimInventory, resetEquipment,
+  // 스탯 합산 (캐시 포함)
+  equipStat, equipStatParty, equipBonus, equipMul, bumpEquip,
+  equipCalcCount: () => equipCalcCount,
+  equipHpMul, equipAtkMul, equipHealMul, equipGoldMul, equipAzMul, equipSpeedMul,
+  equipSight, equipCrit, equipCritDmg, equipCdMul, equipDR, equipTgCut, equipLeech,
+  equipGemMul, equipReviveMul, equipDarkRes,
+  // 고유 아이템
+  uniqueHolder, hasUnique, anyUnique, uniqueMap,
+  hungryStacks, hungryMult, addHungryStack, updateHungry, guardShare, gamblerMult,
+  minionMax, mineMax, mineBlastR, bladeAuraR, lightRadius, darkRecoverMul,
+  UNIQ_MINION_BONUS, UNIQ_OATH_ATK, UNIQ_MINE_R_BONUS, UNIQ_MINE_MAX_BONUS,
+  UNIQ_AURA_R_BONUS, UNIQ_AURA_MOVE_MUL, GUARDIAN_SHARE,
+  HUNGRY_MAX, HUNGRY_DUR, HUNGRY_ATK, UNIQ_LIGHT_BONUS, UNIQ_DARK_RECOVER_MUL, GAMBLER_RANGE,
+  // 드랍
+  monsterDropChance, dropOptFor, dropItemAt, pickupDrop,
+  rollMonsterDrop, rollChestDrop, rollVeinDrop,
+  floorDrops: () => (state.world.items || []).filter(i => i.type === 'equip'),
+  // 저장 / 뱃지
+  saveItemsPayload, loadItemsSave, sanitizeItem, newItemCount, markItemsSeen,
   // 바이옴/특수 층을 강제로 불러온다 (테스트용)
   loadFloor: (biome, kind, floor) => {
     state.world = genFloor(biome, kind, floor || state.world.floor || 1);

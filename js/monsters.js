@@ -188,7 +188,7 @@ function updateTelegraphs(dt) {
     party.forEach(m => {
       if (m.down) return;
       if (!tg.cells.some(c => c.x === m.gx && c.y === m.gy)) return;
-      damageMember(m, tg.dmg, null, { capFrac: TELEGRAPH_CAP });
+      damageMember(m, tg.dmg, null, { capFrac: TELEGRAPH_CAP, telegraph: true });
       hit++;
     });
     const c0 = tg.cells[0];

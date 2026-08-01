@@ -82,6 +82,10 @@ const state = {
   // 리뷰 4차 — 설정 / 온보딩 힌트 (둘 다 저장에 포함)
   settings: { sound: true, shake: true, hitstop: true },
   hints: {},                               // { firstDungeon, firstLevel, firstGold } — 각 1회만
+  // M2 — 장비 (영구 소장 · 저장 포함). 골격은 items.js 가 resetEquipment() 로 채운다.
+  equipment: {},                           // { memberId: { weapon, armor, trinket } }
+  inventory: [],                           // 미장착 보관 (상한 INVENTORY_MAX)
+  newItems: 0,                             // 획득 후 아직 장비 탭에서 확인하지 않은 수 (뱃지용)
 };
 function xpNeed(lv) { return Math.floor(30 * Math.pow(lv, 1.35)); }
 
@@ -224,10 +228,12 @@ function gemMods(m) {
   const lo = loadoutOf(m);
   const skill = lo.skill;
   const sup = supportUnlocked() ? lo.support : null;
+  // 장비 '스킬 젬 효과 +%'는 연결된 스킬 젬이 있을 때만 곱해진다
+  const gemUp = skill ? equipGemMul(m) : 1;
   return {
     skill,
-    dmg: (sup === 'amp' && skill) ? 1.3 : 1,     // 증폭은 '연결된 스킬'이 있어야 발동
-    cd: sup === 'haste' ? 0.75 : 1,
+    dmg: ((sup === 'amp' && skill) ? 1.3 : 1) * gemUp,   // 증폭은 '연결된 스킬'이 있어야 발동
+    cd: (sup === 'haste' ? 0.75 : 1) * equipCdMul(m),    // 장비 '공격 속도 +%' 반영
     spread: sup === 'spread' ? 1 : 0,
   };
 }
@@ -284,7 +290,8 @@ function passiveSpeedMult(){ return passiveN('util') >= 3 ? 1.08 : 1; }
 function passiveSight()    { return passiveN('util') >= 5 ? 1 : 0; }
 // 광부의 헬멧 램프(아주라이트 강화) — 레벨당 시야 +0.5
 function lampSight()       { return 0.5 * mineLv('lamp'); }
-function sightRadius()     { return SIGHT + passiveSight() + lampSight(); }
+// 장비 '시야 +' 접사는 파티 전원 합산 (items.js)
+function sightRadius()     { return SIGHT + passiveSight() + lampSight() + equipSight(); }
 function revealRadius()    { return REVEAL + passiveSight(); }
 // 순서 강제: 다음 노드만 찍을 수 있고, 포인트가 있어야 한다
 function canTakePassive(tree) {
@@ -321,29 +328,36 @@ let trail = [];   // 리더가 지나온 칸 (팔로워용)
 
 function runBuff(k) { return state.run ? state.run.buffs[k] : 0; }
 function relicCount(k) { return (state.run && state.run.relics[k]) || 0; }
+/* 아래 스탯 함수들의 마지막 항 equip*Mul() 은 items.js 가 제공한다.
+ * 장비를 하나도 착용하지 않았다면 전부 정확히 1이므로 기존 밸런스는 그대로다. */
 function maxHp(m) {
   const base = { knight: 60, mage: 40, priest: 42, porter: 50 }[m.role];
   const per  = { knight: 12, mage: 8,  priest: 8,  porter: 10 }[m.role];
-  return Math.floor((base + per * (state.lv - 1)) * (1 + 0.08 * state.meta.hp) * (1 + 0.12 * runBuff('hp')) * passiveHpMult());
+  return Math.floor((base + per * (state.lv - 1)) * (1 + 0.08 * state.meta.hp) * (1 + 0.12 * runBuff('hp')) * passiveHpMult() * equipHpMul(m));
 }
 function atkPow(m) {
   const base = { knight: 6, mage: 5, priest: 0, porter: 3 }[m.role];
   const per  = { knight: 2.2, mage: 2.0, priest: 0, porter: 1.1 }[m.role];
-  return (base + per * (state.lv - 1)) * (1 + 0.08 * state.meta.atk) * (1 + 0.15 * runBuff('atk')) * passiveDmgMult();
+  return (base + per * (state.lv - 1)) * (1 + 0.08 * state.meta.atk) * (1 + 0.15 * runBuff('atk')) * passiveDmgMult() * equipAtkMul(m);
 }
-function healPow() { return (10 + 3 * (state.lv - 1)) * (1 + 0.10 * state.meta.heal) * (1 + 0.20 * runBuff('heal')); }
+// m 을 주면 그 파티원의 '치유량 +%' 장비 접사를 반영한다 (기본: 사제)
+function healPow(m) {
+  return (10 + 3 * (state.lv - 1)) * (1 + 0.10 * state.meta.heal) * (1 + 0.20 * runBuff('heal')) * equipHealMul(m || party[2]);
+}
 // 층 단위 위험 보상 배율 (위험한 경로 / 도전방)
 function floorRisk() {
   const w = state.world;
   return (w && w.mode === 'dungeon' && w.riskMult) ? w.riskMult : 1;
 }
-function goldMult() { return 1.3 * (1 + 0.10 * state.meta.gold) * (1 + 0.20 * runBuff('gold')) * (1 + 0.30 * relicCount('charm')) * rewardMult() * floorRisk() * passiveGoldMult(); }
+// equipGoldMul() = 장비 '골드 획득 +%' × 「도박꾼의 동전」(획득마다 0.5~1.5배 랜덤)
+function goldMult() { return 1.3 * (1 + 0.10 * state.meta.gold) * (1 + 0.20 * runBuff('gold')) * (1 + 0.30 * relicCount('charm')) * rewardMult() * floorRisk() * passiveGoldMult() * equipGoldMul(); }
 
 /* ---- ◆ 아주라이트 (광산 전용 화폐) ----
  * 골드와 완전히 분리된 자원. 광맥 채굴과 '아주라이트가 깃든' 몬스터에서만 나오고,
  * 캠프의 ◆ 광산 장비(시야/채굴/플레어/탐지기)를 사는 데만 쓴다. */
 function addAzurite(n) {
-  const v = Math.max(0, Math.floor(n) || 0);
+  // 장비 '아주라이트 획득 +%' (파티 합산) 반영
+  const v = Math.max(0, Math.floor((Number(n) || 0) * equipAzMul()) || 0);
   if (!v) return 0;
   state.azurite += v;
   if (state.run) state.run.azuriteGained = (state.run.azuriteGained || 0) + v;
@@ -358,7 +372,9 @@ function spendAzurite(n) {
   saveDirty = true;
   return true;
 }
-party.forEach(m => { m.hp = maxHp(m); });
+/* 파티 HP 초기화는 loadSave() 끝에서 한다.
+ * maxHp() 가 items.js 의 장비 배율을 참조하는데, core.js 는 로드 순서 1번이라
+ * 이 시점에는 items.js(2번)가 아직 실행되지 않았기 때문이다. */
 
 /* ---------------- 타격감 (플래시 / 화면 흔들림 / 히트스톱) ----------------
  * 상수만 만지면 강도를 조절할 수 있다. 과하지 않게 짧고 얕게. */
@@ -397,8 +413,10 @@ function addSparkle(wx, wy, color) {
 /* ---------------- 저장 ---------------- */
 let saveDirty = false;
 function loadSave() {
+  let sv = null;
   try {
     const s = JSON.parse(localStorage.getItem('dunjeon-save'));
+    sv = s;
     if (s && typeof s.lv === 'number') {
       state.lv = clamp(s.lv, 1, 99);
       state.xp = s.xp || 0;
@@ -464,18 +482,20 @@ function loadSave() {
       });
       state.hints = (s.hints && typeof s.hints === 'object') ? Object.assign({}, s.hints) : {};
       state.newGems = clamp(Math.floor(s.newGems || 0), 0, 999);
-
-      party.forEach(m => { m.hp = maxHp(m); });
     }
-  } catch (e) { /* 무시 */ }
+  } catch (e) { sv = null; }
   // 세이브 유무와 무관하게 로드아웃 골격을 보장
   party.forEach(m => { loadoutOf(m); });
+  // M2 장비 — 구 세이브(equipment/inventory 없음)면 빈 상태로 초기화된다
+  loadItemsSave(sv);
+  // 장비까지 반영한 뒤에야 최대 체력이 확정되므로 HP 초기화는 마지막에 한다
+  party.forEach(m => { m.hp = maxHp(m); });
 }
 setInterval(() => {
   if (!saveDirty) return;
   saveDirty = false;
   try {
-    localStorage.setItem('dunjeon-save', JSON.stringify({
+    localStorage.setItem('dunjeon-save', JSON.stringify(Object.assign({
       lv: state.lv, xp: state.xp, gold: state.gold, meta: state.meta, best: state.best,
       lastDepth: state.lastDepth,
       // M1 후속 — 아주라이트 / 플레어 / 깊이 기록
@@ -486,6 +506,7 @@ setInterval(() => {
       passivePts: state.passivePts, passives: state.passives,
       // 리뷰 4차
       newGems: state.newGems, settings: state.settings, hints: state.hints,
-    }));
+    // M2 — 장비 / 인벤토리 (영구 소장)
+    }, saveItemsPayload())));
   } catch (e) { /* 무시 */ }
 }, 3000);

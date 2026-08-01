@@ -20,7 +20,8 @@ function updateEntityMove(e, dt, stepTime) {
   e.px = isoX(fx, fy); e.py = isoY(fx, fy);
 }
 
-function leaderStepTime() { return STEP_TIME / (1 + 0.12 * relicCount('boots')) / passiveSpeedMult(); }
+// 장비 '이동 속도 +%'(리더 장비)도 걸음 간격을 줄인다
+function leaderStepTime() { return STEP_TIME / (1 + 0.12 * relicCount('boots')) / passiveSpeedMult() / equipSpeedMul(); }
 
 function tryLeaderStep(dx, dy) {
   if (leader.moving || state.transitioning) return false;
@@ -50,7 +51,9 @@ function onLeaderArrive() {
   for (let i = wld.items.length - 1; i >= 0; i--) {
     const it = wld.items[i];
     if (cheb(it.gx, it.gy, leader.gx, leader.gy) <= 1) {
-      if (it.type === 'potion') {
+      if (it.type === 'equip') {
+        pickupDrop(it);                                    // M2 장비 — 인벤토리로
+      } else if (it.type === 'potion') {
         party.forEach(m => {
           if (!m.down) {
             m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * 0.25);
@@ -68,6 +71,8 @@ function onLeaderArrive() {
         addSparkle(isoX(it.gx, it.gy), isoY(it.gx, it.gy), '#ffd75e');
         sfx('gold');
         if (it.type === 'chest' && Math.random() < .5) say(party[3], '오늘 벌이가 쏠쏠한데요?');
+        // 상자 25% — 장비가 함께 튀어나온다 (바닥 드랍이므로 한 칸 더 움직이면 줍는다)
+        if (it.type === 'chest' && wld.mode === 'dungeon') rollChestDrop(it.gx, it.gy, wld.floor);
       }
       wld.items.splice(i, 1);
       saveDirty = true;
@@ -148,11 +153,14 @@ function updateFollowers(dt) {
 /* ---------------- 전투 ---------------- */
 function aliveMembers() { return party.filter(m => !m.down); }
 
+// opt: { silent, noCrit, src(공격한 파티원 — 장비 치명타/흡혈/굶주린 검 판정용) }
 function damageMonster(mon, dmg, color, opt) {
   if (mon.hp <= 0) return;
   opt = opt || {};
-  const crit = !opt.noCrit && Math.random() < (0.08 * runBuff('crit') + passiveCrit());
-  if (crit) { dmg *= 2; addHitStop(); }      // 치명타 히트스톱
+  const src = opt.src || null;
+  const crit = !opt.noCrit && Math.random() < (0.08 * runBuff('crit') + passiveCrit() + equipCrit(src));
+  // 장비 '치명타 피해 +%' 는 기본 2배에 곱해진다
+  if (crit) { dmg *= 2 * (1 + equipCritDmg(src)); addHitStop(); }      // 치명타 히트스톱
   if (mon.dr) dmg *= (1 - mon.dr);           // '단단한' 어픽스
   mon.hp -= dmg;
   if (!opt.silent) {
@@ -190,6 +198,10 @@ function damageMonster(mon, dmg, color, opt) {
       if (Math.random() < 0.2) dropGem(mon);          // 엘리트 20% 스킬 젬
     }
     if (mon.boss) dropGem(mon);                       // 보스 100% 스킬 젬
+    // M2 장비 드랍 (일반 8% / 엘리트 40%+어픽스 / 보스 100% 희귀 이상)
+    rollMonsterDrop(mon, state.world.floor);
+    // 「굶주린 검」 — 처치 시 공격력 중첩
+    addHungryStack(src);
     // '폭발하는' 어픽스: 죽을 때 주변 1칸 광역 피해
     if (mon.blast) {
       addFloater(mon.px, mon.py - 16, '💥 폭발!', '#ff8a4a', 15);
@@ -250,16 +262,31 @@ function checkLevelUp() {
   hintOnce('firstLevel', '🎯 패시브 포인트 +1 — 👤에서 사용하세요!', 900);
 }
 // opt: { capFrac } — 최종 피해를 대상 최대 HP의 capFrac 배로 상한 (텔레그래프 강타 전용)
+//      { telegraph } — 장비 '텔레그래프 피해 감소' 적용 대상임을 표시
+//      { noGuard }  — 「수호자의 맹세」 재전가 방지 (내부용)
 function damageMember(m, dmg, attacker, opt) {
   if (m.down) return;
   if (m.invulnT > 0) {                          // 부활 직후 무적
     addFloater(m.px, m.py - 30, '무적', '#8fe0ff', 11);
     return;
   }
+  opt = opt || {};
+  // 「수호자의 맹세」 — 받을 피해의 30%를 리더가 대신 받는다 (리더가 착용하면 무효)
+  if (!opt.noGuard) {
+    const share = guardShare(m);
+    if (share > 0) {
+      const part = dmg * share;
+      dmg -= part;
+      addFloater(m.px, m.py - 46, '🕊️ 수호', '#9be8ff', 12);
+      damageMember(leader, part, attacker, Object.assign({}, opt, { noGuard: true }));
+    }
+  }
   dmg *= Math.max(0.4, 1 - 0.08 * runBuff('def'));
   dmg *= (1 - passiveDR());                   // 패시브 '방벽'
+  dmg *= (1 - equipDR(m));                    // 장비 '피해 감소 %'
+  if (opt.telegraph) dmg *= (1 - equipTgCut(m));   // 장비 '텔레그래프 피해 감소 %'
   dmg *= diff().dmg;                          // 난이도 보정
-  if (opt && opt.capFrac) dmg = Math.min(dmg, maxHp(m) * opt.capFrac);   // 원샷 방지 상한
+  if (opt.capFrac) dmg = Math.min(dmg, maxHp(m) * opt.capFrac);   // 원샷 방지 상한
   m.hp -= dmg;
   addFloater(m.px, m.py - 30, String(Math.floor(dmg)), '#ff7a7a', 12);
   // 가시 갑옷: 받은 피해 일부 반사
@@ -312,6 +339,11 @@ function finishArena() {
  * =================================================================== */
 const MINION_MAX = 3, MINE_MAX = 8;
 const DIRS8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+/* 고유 장비 보정 (미착용이면 기본값 그대로) */
+function minionMax()  { return MINION_MAX + (hasUnique(leader, 'oathdead') ? UNIQ_MINION_BONUS : 0); }
+function mineMax()    { return MINE_MAX + (hasUnique(leader, 'firework') ? UNIQ_MINE_MAX_BONUS : 0); }
+function mineBlastR() { return 1 + (hasUnique(leader, 'firework') ? UNIQ_MINE_R_BONUS : 0); }
+function bladeAuraR() { return 1 + (hasUnique(leader, 'carousel') ? UNIQ_AURA_R_BONUS : 0); }
 
 function minionList() { const w = state.world; return (w && w.minions) || []; }
 function mineList() { const w = state.world; return (w && w.mines) || []; }
@@ -336,7 +368,7 @@ function summonSkeleton() {
   if (!wld || wld.mode !== 'dungeon') return null;
   if (!wld.minions) wld.minions = [];
   wld.minions = wld.minions.filter(k => k.hp > 0);
-  if (wld.minions.length >= MINION_MAX) return null;
+  if (wld.minions.length >= minionMax()) return null;
   for (const [dx, dy] of shuffle(DIRS8.slice())) {
     const x = leader.gx + dx, y = leader.gy + dy;
     if (!walkable(wld, x, y) || monsterAt(wld, x, y)) continue;
@@ -385,7 +417,7 @@ function updateMinions(dt) {
     // 인접 몬스터 자동 공격 (복귀 중에는 교전하지 않는다)
     if (tgt && bd <= 1 && !k.returning) {
       if (k.atkCd <= 0) {
-        damageMonster(tgt, atkPow(leader) * 0.55 * rand(0.85, 1.15), '#9be8a0');
+        damageMonster(tgt, atkPow(leader) * 0.55 * rand(0.85, 1.15), '#9be8a0', { src: leader });
         k.face = (tgt.gx > k.gx || tgt.gy < k.gy) ? 1 : -1;
         k.atkCd = 0.9;
         if (!tgt.aggro) aggroPack(wld, tgt);
@@ -423,20 +455,21 @@ function placeMine(x, y) {
   if (wld.mines.some(m => m.gx === x && m.gy === y)) return null;
   const mine = { gx: x, gy: y, t: 0 };
   wld.mines.push(mine);
-  while (wld.mines.length > MINE_MAX) wld.mines.shift();   // 오래된 것부터 회수
+  while (wld.mines.length > mineMax()) wld.mines.shift();   // 오래된 것부터 회수
   addSparkle(isoX(x, y), isoY(x, y), '#ffa23a');
   return mine;
 }
 function explodeMine(mine) {
   const wld = state.world;
   const dmg = atkPow(leader) * 1.8;
+  const R = mineBlastR();                                     // 「폭죽 심장」이면 반경 +1
   addFloater(isoX(mine.gx, mine.gy), isoY(mine.gx, mine.gy) - 20, '💥 폭발!', '#ff8a4a', 15);
   addSparkle(isoX(mine.gx, mine.gy), isoY(mine.gx, mine.gy), '#ff9a5a');
   let hit = 0;
   wld.monsters.forEach(mon => {
     if (mon.hp <= 0) return;
-    if (cheb(mon.gx, mon.gy, mine.gx, mine.gy) > 1) return;   // 주변 1칸 광역
-    damageMonster(mon, dmg * rand(0.9, 1.1), '#ff9a5a');
+    if (cheb(mon.gx, mon.gy, mine.gx, mine.gy) > R) return;   // 주변 R칸 광역
+    damageMonster(mon, dmg * rand(0.9, 1.1), '#ff9a5a', { src: leader });
     if (!mon.aggro) aggroPack(wld, mon);
     hit++;
   });
@@ -519,7 +552,7 @@ function mageAttack(m, best, mons, mods) {
     mons.forEach(mon => {
       if (mon.hp <= 0) return;
       if (cheb(mon.gx, mon.gy, best.gx, best.gy) > R) return;
-      damageMonster(mon, base * rand(0.85, 1.2) * (mon === best ? 1 : 0.6), '#ff9a5a');
+      damageMonster(mon, base * rand(0.85, 1.2) * (mon === best ? 1 : 0.6), '#ff9a5a', { src: m });
       onHit(mon);
       n++;
     });
@@ -531,7 +564,7 @@ function mageAttack(m, best, mons, mods) {
     const hitList = [];
     let cur = best, mult = 1;
     while (cur && hitList.length < maxT) {
-      damageMonster(cur, base * rand(0.85, 1.2) * mult, '#9be8ff');
+      damageMonster(cur, base * rand(0.85, 1.2) * mult, '#9be8ff', { src: m });
       onHit(cur);
       hitList.push(cur);
       mult *= 0.7;                              // 연쇄마다 70%
@@ -546,7 +579,7 @@ function mageAttack(m, best, mons, mods) {
     if (hitList.length > 1) addFloater(best.px, best.py - 54, `⚡ 연쇄 ×${hitList.length}`, '#9be8ff', 13);
     return hitList.length;
   }
-  damageMonster(best, base * rand(0.85, 1.2), '#c9a4ff');
+  damageMonster(best, base * rand(0.85, 1.2), '#c9a4ff', { src: m });
   onHit(best);
   return 1;
 }
@@ -557,7 +590,7 @@ function priestHeal(m, mods) {
   const hurt = alive.filter(a => a.hp < maxHp(a) * 0.85)
     .sort((a, b) => a.hp / maxHp(a) - b.hp / maxHp(b))[0];
   if (!hurt || cheb(m.gx, m.gy, hurt.gx, hurt.gy) > 4) return 0;
-  const h = healPow() * mods.dmg;
+  const h = healPow(m) * mods.dmg;
   const heal = a => {
     a.hp = Math.min(maxHp(a), a.hp + h);
     addFloater(a.px, a.py - 34, `+${Math.floor(h)}`, '#8dffb0', 12);
@@ -608,12 +641,15 @@ function updateClassAbilities(dt) {
 const BLADE_AURA_TICK = 0.65;    // 틱당 공격력 계수 (근접 공격이 없는 만큼 다수전 정리 속도로 생존)
 function bladeAura(mods) {
   const wld = state.world;
-  const dmg = atkPow(leader) * BLADE_AURA_TICK * mods.dmg;
+  // 「회전목마」 — 반경 +1, 이동 중이면 피해 +50%
+  const R = bladeAuraR();
+  const moveUp = (hasUnique(leader, 'carousel') && leader.moving) ? UNIQ_AURA_MOVE_MUL : 1;
+  const dmg = atkPow(leader) * BLADE_AURA_TICK * mods.dmg * moveUp;
   let hit = 0;
   wld.monsters.forEach(mon => {
     if (mon.hp <= 0) return;
-    if (cheb(mon.gx, mon.gy, leader.gx, leader.gy) > 1) return;
-    damageMonster(mon, dmg * rand(0.9, 1.1), '#7ee8d8');
+    if (cheb(mon.gx, mon.gy, leader.gx, leader.gy) > R) return;
+    damageMonster(mon, dmg * rand(0.9, 1.1), '#7ee8d8', { src: leader });
     applyLeaderGems(mon, dmg, mods);
     if (!mon.aggro) aggroPack(wld, mon);
     hit++;
@@ -636,7 +672,7 @@ function knightSplash(best, dmg) {
     if (d <= 1 && d < bd) { tgt = mon; bd = d; }
   });
   if (!tgt) return null;
-  damageMonster(tgt, dmg * KNIGHT_SPLASH * rand(0.85, 1.2), '#ffd7a0');
+  damageMonster(tgt, dmg * KNIGHT_SPLASH * rand(0.85, 1.2), '#ffd7a0', { src: leader });
   if (!tgt.aggro) aggroPack(wld, tgt);
   addSparkle(tgt.px, tgt.py, '#ffd7a0');
   return tgt;
@@ -651,6 +687,7 @@ function updateCombat(dt) {
   if (wld.mode !== 'dungeon') return;
   updateArena(dt);
   updateClassAbilities(dt);
+  updateHungry(dt);                 // 「굶주린 검」 중첩 만료 (items.js)
   const mons = wld.monsters;
 
   // 파티 공격
@@ -678,16 +715,17 @@ function updateCombat(dt) {
         mageAttack(m, best, mons, mods);
       } else {
         dmg = atkPow(m) * meleeMult * mods.dmg;
-        damageMonster(best, dmg * rand(0.85, 1.2), '#fff');
+        damageMonster(best, dmg * rand(0.85, 1.2), '#fff', { src: m });
         if (m === leader) {
           applyLeaderGems(best, dmg, mods);
           // 기사: 주 대상 인접 1마리에게 50% 스플래시
           if (curClass().k === 'knight' && knightSplash(best, dmg)) splash = dmg * KNIGHT_SPLASH;
         }
       }
-      // 흡혈 송곳니: 가한 피해의 일부 회복 (스플래시 포함)
-      if (relicCount('fang')) {
-        m.hp = Math.min(maxHp(m), m.hp + (dmg + splash) * 0.08 * relicCount('fang'));
+      // 흡혈 송곳니 + 장비 '흡혈 %': 가한 피해의 일부 회복 (스플래시 포함)
+      const leechRate = 0.08 * relicCount('fang') + equipLeech(m);
+      if (leechRate > 0) {
+        m.hp = Math.min(maxHp(m), m.hp + (dmg + splash) * leechRate);
       }
       m.face = (best.gx > m.gx || best.gy < m.gy) ? 1 : -1;
       m.atkCd = { knight: 0.55, mage: 1.1 / (1 + 0.2 * relicCount('crystal')), porter: 0.9 }[m.role] * mods.cd;
@@ -788,6 +826,7 @@ function updateCombat(dt) {
     let rate = 1;
     if (combatNear) rate *= 0.5;      // 전투 중에는 느리게 (리셋하지 않는다)
     if (!priestOk) rate *= 0.5;       // 사제도 쓰러졌다면 자력 회복이라 더 느리다
+    rate *= equipReviveMul();         // 장비 '부활 속도 +%' (파티 합산)
     m.reviveT += dt * rate;
     let need = Math.max(3, 6 - 0.5 * state.meta.revive);
     if (m === leader && priestOk) need *= 0.5;   // 사제는 리더부터 일으킨다

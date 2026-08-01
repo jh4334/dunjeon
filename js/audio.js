@@ -64,6 +64,22 @@ const SFX = {
   // 👁 어둠 경고 — 낮게 깔리는 불협 2음 (스택 5 진입 시 1회)
   dark:    { notes: [{ w: 'sine', f: 138, f2: 96, t: 0, d: 0.55, v: 0.34 },
                      { w: 'sine', f: 196, f2: 132, t: 0.05, d: 0.50, v: 0.24 }] },
+  /* ---- M2 장비 줍기 — 레어리티가 올라갈수록 음이 늘고 화려해진다 ---- */
+  // 일반 — 툭 하는 단음
+  loot:       { notes: [{ w: 'triangle', f: 520, f2: 620, t: 0, d: 0.07, v: 0.26 }] },
+  // 마법 — 파란 2음 상승
+  lootMagic:  { notes: [{ w: 'triangle', f: 587.33, t: 0, d: 0.09, v: 0.30 },
+                        { w: 'sine',     f: 880.00, t: 0.07, d: 0.16, v: 0.28 }] },
+  // 희귀 — 노란 3음 아르페지오 + 잔향
+  lootRare:   { notes: [{ w: 'triangle', f: 659.25, t: 0,    d: 0.10, v: 0.34 },
+                        { w: 'triangle', f: 987.77, t: 0.08, d: 0.10, v: 0.34 },
+                        { w: 'sine',     f: 1318.5, t: 0.16, d: 0.28, v: 0.32 }] },
+  // 고유 — 주황 4음 팡파레 + 바람 소리
+  lootUnique: { noise: { t: 0, d: 0.5, v: 0.20, cut: 1200 },
+                notes: [{ w: 'square',   f: 523.25, t: 0,    d: 0.11, v: 0.30 },
+                        { w: 'square',   f: 783.99, t: 0.10, d: 0.11, v: 0.32 },
+                        { w: 'square',   f: 1046.5, t: 0.20, d: 0.12, v: 0.34 },
+                        { w: 'triangle', f: 1567.98, t: 0.31, d: 0.40, v: 0.36 }] },
 };
 
 let audioCtx = null, sfxBus = null, sfxNoiseBuf = null;
