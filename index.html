@@ -64,6 +64,36 @@
   <div id="fade"></div>
 </div>
 
-<script src="game.js"></script>
+<!-- ===================================================================
+     스크립트 로드 순서 (ES 모듈 아님 — file:// 로 직접 열어도 돌아가야 하고
+     빌드 단계도 없으므로, 일반 <script> 를 의존 순서대로 나열해 전역을 공유한다)
+
+       1. core.js     상수 · 유틸 · state/party · 직업/젬/패시브 · 스탯 · 세이브
+       2. audio.js    WebAudio SFX 신스
+       3. mapgen.js   바이옴 · 레이아웃 알고리즘 · 층 생성/배치
+       4. monsters.js 몬스터 · 어픽스 · 팩 · 텔레그래프
+       5. combat.js   이동 · 전투 · 직업 능력(미니언/지뢰/오라)
+       6. delve.js    광맥 채굴 · 어둠 게이지 · 플레어
+       7. world.js    맵 전환(진입/하강/탈출/정산) · 자동 탐험
+       8. ui.js       모달 · HUD · 토스트 · 힌트
+       9. draw.js     미니맵 · 렌더링
+      10. main.js     입력 · 잡담 · 메인 루프 · 부트 · window.GAME
+
+     함수 선언은 파일 안에서만 호이스팅되므로, "로드 시점에 즉시 평가되는"
+     참조만 순서를 지키면 된다. 실제로 걸리는 곳은 두 군데:
+       · ui.js 가 로드 중 escapeDungeon(world.js) 을 버튼에 바인딩 → world.js 가 먼저
+       · draw.js 가 로드 중 resize() 실행, el()(ui.js) 사용 → ui.js 가 먼저
+     그 외 상수 테이블/state 는 전부 core.js 에 모여 있어 1번이면 충분하다.
+     =================================================================== -->
+<script src="js/core.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/mapgen.js"></script>
+<script src="js/monsters.js"></script>
+<script src="js/combat.js"></script>
+<script src="js/delve.js"></script>
+<script src="js/world.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/draw.js"></script>
+<script src="js/main.js"></script>
 </body>
 </html>
