@@ -1,0 +1,357 @@
+/* =====================================================================
+ * 던전 (DunJeon) — 맵 전환(초원/광산 진입·하강·탈출·정산) · 자동 탐험
+ * 로드 순서 7번. ui.js 가 로드 시점에 escapeDungeon 을 버튼에 바인딩하므로
+ * ui.js 보다 반드시 먼저 로드되어야 한다.
+ * =================================================================== */
+'use strict';
+
+/* ---------------- 맵 전환 ---------------- */
+const fadeEl = document.getElementById('fade');
+function transition(fn) {
+  if (state.transitioning) return;
+  state.transitioning = true;
+  fadeEl.style.opacity = 1;
+  setTimeout(() => {
+    fn();
+    fadeEl.style.opacity = 0;
+    setTimeout(() => { state.transitioning = false; }, 400);
+  }, 450);
+}
+function placeParty(wld, x, y) {
+  // 층이 바뀌면 이전 층에서 예약된 모달을 정리한다
+  // (보스/도전방 유물은 취소하지 않고 즉시 발화 → 모달 큐로 넘어가 반드시 표시된다)
+  cancelPendingModals(true);
+  trail = [];
+  party.forEach((m, i) => {
+    m.gx = x; m.gy = y + Math.min(i, 0);
+    m.moving = false; m.moveT = 1; m.invulnT = 0;
+    m.px = isoX(m.gx, m.gy); m.py = isoY(m.gx, m.gy);
+  });
+  for (let i = 0; i < 12; i++) trail.push({ x, y });
+  // 직업 능력 상태 초기화 (미니언/지뢰는 층을 넘어가지 않는다)
+  leader.summonT = 0; leader.auraT = 0; leader.mineCd = 0;
+  wld.minions = []; wld.mines = [];
+  // 어둠 게이지는 층마다 초기화 · 광산 층에 들어서면 플레어 자동 보충
+  resetDarkness();
+  if (wld.mode === 'dungeon' && wld.biome === 'mine') refillFlares();
+  reveal(wld, x, y);
+  state.cam.x = isoX(x, y);
+  state.cam.y = isoY(x, y);
+}
+let overworld = null;
+function gotoOverworld() {
+  if (!overworld) overworld = genOverworld();
+  state.world = overworld;
+  const e = overworld.entrance;
+  const sx = state.cameFromDungeon ? e.x : overworld.spawn.x;
+  const sy = state.cameFromDungeon ? e.y + 1 : overworld.spawn.y;
+  state.cameFromDungeon = false;
+  placeParty(overworld, sx, sy);
+  updateHudMode();
+}
+/* ---- 깊이(체크포인트) ----
+ * 광산은 한 번 내려간 깊이까지 되짚어 들어갈 수 있다.
+ * 최고 깊이(best)가 2 이상일 때만 선택할 거리가 생기므로 그때부터 모달을 띄운다. */
+function maxDepth() { return Math.max(1, state.best || 0); }
+function depthChoiceAvailable() { return maxDepth() >= 2; }
+function recLvForDepth(d) { return Math.max(1, d * 2); }        // 권장 레벨 ≈ 깊이 × 2
+function depthTooDeep(d) { return recLvForDepth(d) > state.lv + 2; }
+function setLastDepth(d) {
+  const v = clamp(Math.floor(d) || 1, 1, 999);
+  if (state.lastDepth !== v) { state.lastDepth = v; saveDirty = true; }
+}
+/* ---- 깊이 기록 갱신 (전체 최고 + 직업별 최고) — 런 진행 중 자동으로 불린다 ---- */
+function recordDepth(d) {
+  const v = clamp(Math.floor(d) || 1, 1, 999);
+  let changed = false;
+  if (v > (state.best || 0)) { state.best = v; changed = true; }
+  const cb = state.records.classBest || (state.records.classBest = {});
+  if (v > (cb[state.classId] || 0)) { cb[state.classId] = v; changed = true; }
+  if (changed) saveDirty = true;
+  return changed;
+}
+
+function enterDungeon(depth) {
+  // 최초 1회만 난이도 선택 (이후엔 기억된 난이도로 바로 입장)
+  if (!state.difficultyPicked) { openDifficulty(() => enterDungeon(depth)); return; }
+  // 난이도 다음 — 시작 깊이 선택 (되짚어 갈 곳이 있을 때만)
+  if (depth == null && depthChoiceAvailable()) { openDepthChoice(d => enterDungeon(d)); return; }
+  const start = clamp(Math.floor(depth || 1), 1, maxDepth());
+  transition(() => {
+    state.run = { floor: start, buffs: { atk: 0, hp: 0, heal: 0, gold: 0, crit: 0, def: 0 }, relics: {}, kills: 0, goldGained: 0, azuriteGained: 0 };
+    // 광산 입장 첫 층은 항상 갱도(mine) — 깊이만큼의 층 스케일이 그대로 적용된다
+    state.world = genDungeon(start, { biome: 'mine', kind: 'safe' });
+    placeParty(state.world, state.world.spawn.x, state.world.spawn.y);
+    setLastDepth(start);
+    recordDepth(start);
+    toast(`⛏️ 깊이 ${start} — ${state.world.theme.name}`);
+    if (Math.random() < .7) say(pick(party.slice(1)), pick(['으스스해요…', '조심해서 가요!', '몬스터 냄새가 나요…']));
+    updateHudMode();
+    // 최초 광산 입장 1회 — 빌드 시스템 안내 (깊이 안내 토스트 뒤에 이어서)
+    hintOnce('firstDungeon', '👤 버튼에서 젬 장착과 패시브를 찍을 수 있어요!', 2600);
+    scheduleModal('buff', 500, openBuffChoice);
+  });
+}
+
+/* ---- 시작 깊이 선택 모달 (체크포인트) ---- */
+let depthPick = 1;
+function openDepthChoice(after) {
+  const max = maxDepth();
+  depthPick = clamp(Math.floor(state.lastDepth || 1), 1, max);
+  openModal('⛏️ 시작 깊이를 선택하세요', body => {
+    body.innerHTML = `
+      <div class="depthPick">
+        <div class="depthNum">깊이 <b id="depthVal">${depthPick}</b></div>
+        <div class="depthRec" id="depthRec"></div>
+        <div class="depthStep">
+          <button class="depthBtn" data-step="-5">-5</button>
+          <button class="depthBtn" data-step="-1">-1</button>
+          <button class="depthBtn" data-step="1">+1</button>
+          <button class="depthBtn" data-step="5">+5</button>
+        </div>
+        <div class="depthJump">
+          <button class="depthBtn jump" data-jump="first">처음 (1)</button>
+          <button class="depthBtn jump" data-jump="last">최근 (${clamp(state.lastDepth || 1, 1, max)})</button>
+          <button class="depthBtn jump" data-jump="best">최심 (${max})</button>
+        </div>
+      </div>
+      <p class="sumHint">깊게 시작할수록 몬스터도 보상도 커집니다. 최고 깊이 ${max}까지 되짚어 갈 수 있어요.</p>
+      <button class="modalBtn" id="depthGo">깊이 ${depthPick}에서 시작</button>`;
+    const valEl = body.querySelector('#depthVal');
+    const recEl = body.querySelector('#depthRec');
+    const goEl = body.querySelector('#depthGo');
+    const sync = () => {
+      const rec = recLvForDepth(depthPick);
+      valEl.textContent = depthPick;
+      goEl.textContent = `깊이 ${depthPick}에서 시작`;
+      recEl.textContent = `권장 레벨 ${rec} · 현재 Lv.${state.lv}`;
+      recEl.classList.toggle('warn', depthTooDeep(depthPick));
+      body.querySelectorAll('[data-step]').forEach(b => {
+        const n = clamp(depthPick + Number(b.dataset.step), 1, max);
+        b.disabled = (n === depthPick);
+      });
+    };
+    const setDepth = d => { depthPick = clamp(Math.floor(d), 1, max); sync(); };
+    body.querySelectorAll('[data-step]').forEach(b => {
+      b.addEventListener('click', () => setDepth(depthPick + Number(b.dataset.step)));
+    });
+    body.querySelectorAll('[data-jump]').forEach(b => {
+      b.addEventListener('click', () => setDepth(
+        b.dataset.jump === 'first' ? 1 : b.dataset.jump === 'best' ? max : (state.lastDepth || 1)));
+    });
+    goEl.addEventListener('click', () => {
+      const d = depthPick;
+      closeModal();
+      if (after) after(d);
+    });
+    sync();
+  }, { key: 'depth' });
+}
+
+// 갱도 분기 없이 들어갈 때의 기본 선택지 (보스 깊이 / 첫 층)
+function defaultChoice(floor) {
+  return { biome: floor <= 1 ? 'mine' : pick(BIOME_KEYS), kind: 'safe' };
+}
+// 계단을 밟았을 때 — 보스 깊이는 고정 진입, 그 외에는 갱도 분기 모달
+function onStairsStep() {
+  const next = state.world.floor + 1;
+  if (next % 3 === 0) {
+    toast('⚠️ 다음은 보스 갱도 — 분기 없이 진입합니다!');
+    descend(defaultChoice(next));
+    return;
+  }
+  openPathChoice();
+}
+function descend(choice) {
+  const next = state.world.floor + 1;
+  const ch = choice || defaultChoice(next);
+  sfx('stairs');
+  transition(() => {
+    if (state.run) state.run.floor = next;
+    state.world = genDungeon(next, ch);
+    placeParty(state.world, state.world.spawn.x, state.world.spawn.y);
+    setLastDepth(next);
+    const newBest = next > (state.best || 0);
+    recordDepth(next);
+    if (newBest) addFloater(leader.px, leader.py - 60, '🏆 최고 기록!', '#ffe88a', 15);
+    const w = state.world;
+    const pk = PATH_KINDS[w.kind] || PATH_KINDS.safe;
+    toast(`⬇️ 깊이 ${next} — ${pk.icon} ${w.theme.name}`);
+    if (w.stairsPending) say(leader, '보스가 있는 갱도야… 조심하자!');
+    else if (w.kind === 'challenge') say(leader, '입구가 닫혔어! 싸워서 뚫는 수밖에!');
+    else if (w.kind === 'treasure') say(party[3], '보물이다! …함정도 잔뜩이지만요.');
+    else if (w.kind === 'risk') say(party[1], '기운이 심상치 않아요… 대신 벌이는 좋겠죠?');
+    updateHudMode();
+    scheduleModal('buff', 500, openBuffChoice);
+  });
+}
+function escapeDungeon() {
+  if (state.world.mode !== 'dungeon' || state.paused || state.transitioning) return;
+  showRunSummary(true);
+}
+function showRunSummary(escaped) {
+  const run = state.run || { floor: state.world.floor || 1, kills: 0, goldGained: 0, azuriteGained: 0 };
+  if (state.records && run.kills > (state.records.bestKills || 0)) state.records.bestKills = run.kills;
+  state.run = null;
+  // 런이 끝났으므로 예약된 축복/유물 모달은 의미가 없다 — 전부 취소하고 정산을 최우선으로 띄운다
+  cancelPendingModals(false);
+  const lost = escaped ? 0 : Math.floor(state.gold * diff().wipeLoss);
+  if (!escaped) sfx('wipe');
+  openModal(escaped ? '🏃 광산 탈출!' : '💀 파티 전멸…', body => {
+    body.innerHTML = `
+      <div class="sumRow"><span>도달 깊이</span><b>깊이 ${run.floor}</b></div>
+      <div class="sumRow"><span>최고 기록</span><b>깊이 ${state.best}</b></div>
+      <div class="sumRow"><span>처치한 몬스터</span><b>${run.kills}</b></div>
+      <div class="sumRow"><span>획득 골드</span><b>+${fmt(run.goldGained)}</b></div>
+      <div class="sumRow"><span>획득 아주라이트</span><b id="sumAz">+${fmt(run.azuriteGained || 0)} ◆</b></div>
+      ${escaped ? '' : `<div class="sumRow bad"><span>잃은 골드</span><b>-${fmt(lost)}</b></div>`}
+      <p class="sumHint">${escaped ? '골드로 캠프에서 영구 강화를 해보세요!' : '축복은 사라지지만 골드와 경험은 남아요.'}</p>
+      <button class="modalBtn" id="sumOk">초원으로</button>`;
+    body.querySelector('#sumOk').addEventListener('click', () => {
+      closeModal();
+      transition(() => {
+        if (!escaped) {
+          party.forEach(m => { m.down = false; m.hp = maxHp(m) * 0.5; });
+          state.gold -= lost;
+        }
+        state.cameFromDungeon = true;
+        gotoOverworld();
+      });
+    });
+  }, { key: 'summary', priority: true });
+  saveDirty = true;
+}
+
+/* ---------------- 자동 탐험 ---------------- */
+let autoPath = null;
+function bfsPath(wld, sx, sy, goalFn) {
+  const w = wld.w, h = wld.h;
+  const prev = new Int32Array(w * h).fill(-2);
+  const q = [sy * w + sx];
+  prev[sy * w + sx] = -1;
+  let head = 0;
+  while (head < q.length) {
+    const cur = q[head++];
+    const cx = cur % w, cy = (cur / w) | 0;
+    if (goalFn(cx, cy) && cur !== sy * w + sx) {
+      const path = [];
+      let node = cur;
+      while (node !== sy * w + sx) {
+        path.unshift({ x: node % w, y: (node / w) | 0 });
+        node = prev[node];
+      }
+      return path;
+    }
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = cx + dx, ny = cy + dy;
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+      const ni = ny * w + nx;
+      if (prev[ni] !== -2) continue;
+      if (!walkable(wld, nx, ny)) continue;
+      prev[ni] = cur;
+      q.push(ni);
+    }
+  }
+  return null;
+}
+/* ---- 자동 탐험 회피 ----
+ * 예고 장판 위에 서 있으면 인접 8칸 중 '겹친 장판이 가장 적은' 칸으로 한 스텝.
+ * 완전히 안전한 칸이 없어도 피해가 덜한 쪽으로 움직인다(막다른 길이면 실패). */
+function telegraphCount(wld, x, y) {
+  const tgs = wld.telegraphs;
+  if (!tgs || !tgs.length) return 0;
+  let n = 0;
+  for (const tg of tgs) if (tg.cells.some(c => c.x === x && c.y === y)) n++;
+  return n;
+}
+function autoDodgeStep() {
+  if (!state.auto || leader.moving || state.transitioning) return false;
+  const wld = state.world;
+  if (wld.mode !== 'dungeon' || !wld.telegraphs || !wld.telegraphs.length) return false;
+  const cur = telegraphCount(wld, leader.gx, leader.gy);
+  if (cur <= 0) return false;
+  let best = null, bestN = cur;
+  for (const [dx, dy] of shuffle(DIRS8.slice())) {
+    const nx = leader.gx + dx, ny = leader.gy + dy;
+    if (!walkable(wld, nx, ny) || monsterAt(wld, nx, ny)) continue;
+    // 대각은 모서리 통과 금지 규칙을 미리 반영 (헛스텝 방지)
+    if (dx && dy && !walkable(wld, nx, leader.gy) && !walkable(wld, leader.gx, ny)) continue;
+    const n = telegraphCount(wld, nx, ny);
+    if (n < bestN) { bestN = n; best = [dx, dy]; if (!n) break; }
+  }
+  if (!best) return false;
+  if (!tryLeaderStep(best[0], best[1])) return false;
+  autoPath = null;
+  return true;
+}
+// 탐험률이 이만큼을 넘으면 남은 frontier 대신 계단(보스)으로 향한다
+const AUTO_RUSH_PCT = 0.92;
+function autoDest(wld) {
+  if (wld.mode !== 'dungeon') return wld.entrance;
+  const boss = wld.monsters.find(m => m.boss && m.hp > 0);
+  return wld.stairs || (boss && { x: boss.gx, y: boss.gy }) || null;
+}
+/* 계단 직행(92% 러시) 중에도 맵에 남은 보상은 챙긴다.
+ * 대상: 남은 아이템 · 아직 안 들른 도박 제단(골드가 있을 때) · 아직 안 들른 상인 */
+function rushRewards(wld) {
+  const goals = [];
+  wld.items.forEach(it => goals.push({ x: it.gx, y: it.gy }));
+  const altarCost = 30 * (wld.floor || 1);
+  wld.props.forEach(p => {
+    if (p.type === 'altar' && !p.used && !p.seen && state.gold >= altarCost) goals.push({ x: p.gx, y: p.gy });
+    else if (p.type === 'merchant' && !p.visited) goals.push({ x: p.gx, y: p.gy });
+    else if (p.type === 'vein' && !p.mined) goals.push({ x: p.gx, y: p.gy });
+  });
+  return goals;
+}
+function updateAuto() {
+  if (!state.auto || leader.moving || state.transitioning) return;
+  const wld = state.world;
+  // 리더가 쓰러져 있으면 자동 탐험을 멈춘다 (쓰러진 리더가 걸어가는 연출 제거).
+  // 부활 타이머는 전투 중에도 절반 속도로 계속 진행되므로 교착은 없다.
+  if (leader.down) { autoPath = null; return; }
+  if (autoDodgeStep()) return;                 // 강타 장판 회피가 최우선
+  // 어둠이 위험 수위에 닿으면 플레어를 터뜨려 안전 지대를 만든다
+  if (darkActive() && state.darkStack >= DARK_AUTO_FLARE && state.flares > 0) {
+    if (useFlare()) return;
+  }
+  // 광맥 옆에 섰으면 채굴이 끝날 때까지 기다린다 (updateMining 이 진행을 담당)
+  if (wld.mode === 'dungeon' && miningTarget()) { autoPath = null; return; }
+  // 근처 몬스터와 교전 중이면 대기
+  if (wld.mode === 'dungeon' &&
+      wld.monsters.some(m => m.hp > 0 && cheb(m.gx, m.gy, leader.gx, leader.gy) <= 1.9)) {
+    autoPath = null;
+    return;
+  }
+  if (!autoPath || !autoPath.length) {
+    autoPath = null;                       // 빈 배열도 '경로 없음'으로 취급
+    const dest = autoDest(wld);
+    // 이미 목적지 칸에 서 있으면 빈 경로가 나오므로 null 로 정규화한다
+    const ok = p => (p && p.length ? p : null);
+    const pathTo = d => ok(bfsPath(wld, leader.gx, leader.gy, (x, y) => x === d.x && y === d.y));
+    // 템포: 던전을 92% 이상 봤으면 남은 구석 대신 계단/보스로 (보물방은 100% 회수)
+    const pct = wld.walkTotal ? wld.seenCount / wld.walkTotal : 0;
+    const rush = wld.mode === 'dungeon' && wld.kind !== 'treasure' && pct >= AUTO_RUSH_PCT;
+    if (rush) {
+      // 계단으로 직행하기 전에 가장 가까운 남은 보상부터 회수한다 (도달 불가면 그냥 계단행)
+      const goals = rushRewards(wld);
+      if (goals.length) {
+        const set = new Set(goals.map(g => g.y * wld.w + g.x));
+        autoPath = ok(bfsPath(wld, leader.gx, leader.gy, (x, y) => set.has(y * wld.w + x)));
+      }
+      if (!autoPath && dest) autoPath = pathTo(dest);
+    }
+    if (!autoPath) {
+      const frontier = (x, y) => !wld.seen[idx(wld, x, y)];
+      autoPath = ok(bfsPath(wld, leader.gx, leader.gy, frontier));
+    }
+    // 다 봤으면 목적지로 (던전: 계단 또는 보스 / 초원: 입구)
+    if (!autoPath && dest) autoPath = pathTo(dest);
+    if (!autoPath) return;
+  }
+  const next = autoPath[0];
+  if (cheb(next.x, next.y, leader.gx, leader.gy) !== 1) { autoPath = null; return; }
+  if (monsterAt(wld, next.x, next.y)) { return; }  // 길목 몬스터: 자동공격이 정리
+  if (tryLeaderStep(next.x - leader.gx, next.y - leader.gy)) autoPath.shift();
+  else autoPath = null;
+}

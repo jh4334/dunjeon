@@ -183,8 +183,34 @@ python3 -m http.server 8000
 ## 구조
 
 ```
-index.html   # 마크업 + HUD
-style.css    # HUD / 모달 스타일
-game.js      # 게임 전체 (맵 생성 / 이동 / 전투 / 빌드 / 자동탐험 / 렌더링 / 사운드)
-docs/        # README용 스크린샷
+index.html      # 마크업 + HUD + 스크립트 로드 순서
+style.css       # HUD / 모달 스타일
+js/             # 게임 로직 (아래 순서대로 로드)
+docs/           # README용 스크린샷
 ```
+
+### js/ — 로드 순서와 책임
+
+**ES 모듈이 아닙니다.** `file://` 로 index.html을 바로 열어도 돌아가야 하고(ES 모듈은 CORS로 차단됨)
+빌드 단계도 두지 않으므로, 일반 `<script>` 태그를 **의존 순서대로 나열해 전역 스코프를 공유**합니다.
+
+| # | 파일 | 책임 |
+|---|---|---|
+| 1 | `js/core.js` | 상수(TILE/T/SIGHT…) · 유틸(rand/clamp/iso…) · `state` · 난이도 · 직업/젬/패시브 데이터 · `party`/`leader`/스탯(maxHp/atkPow/goldMult) · 아주라이트 · 타격감 · 이펙트 버퍼 · 세이브(load/save) |
+| 2 | `js/audio.js` | WebAudio SFX 신스 (오실레이터 + 노이즈 + 엔벨로프) |
+| 3 | `js/mapgen.js` | 월드/타일 · 초원 · `BIOMES` · 레이아웃(rooms/cave/mine/arena/운하/용암) · 연결성 · `genFloor`/`populateFloor` · 시야 |
+| 4 | `js/monsters.js` | `makeMonster` · 엘리트 어픽스 · 팩 어그로 · 매복/소환 · 텔레그래프 강타 |
+| 5 | `js/combat.js` | 이동(리더/팔로워) · `updateCombat` · `damageMonster`/`damageMember` · 부활/전멸 · 직업 능력(미니언/지뢰/블레이드 오라) · 상태이상 · 젬 효과 |
+| 6 | `js/delve.js` | 아주라이트 광맥 채굴 · 어둠 게이지 · 플레어 |
+| 7 | `js/world.js` | 맵 전환(`enterDungeon`/`descend`/`escapeDungeon`/정산) · 깊이 선택 · 자동 탐험 |
+| 8 | `js/ui.js` | 모달 시스템 + 큐 · 모든 모달(축복/유물/갈림길/상점/파티/설정/기록판/깊이) · HUD · 토스트 · 힌트 · 뱃지 |
+| 9 | `js/draw.js` | 미니맵 + 렌더링 전부(타일/캐릭터/몬스터/프롭/이펙트/비네트) |
+| 10 | `js/main.js` | 입력 · 잡담 · 메인 루프 · 부트스트랩 · `window.GAME` 디버그 훅 |
+
+함수 선언은 **파일 안에서만** 호이스팅되므로, 순서를 지켜야 하는 건 *로드 시점에 즉시 평가되는* 참조뿐입니다.
+실제로 걸리는 곳은 두 군데입니다.
+
+- `ui.js` 가 로드 중 `escapeDungeon`(world.js)을 버튼에 바인딩 → **world.js 가 먼저**
+- `draw.js` 가 로드 중 `resize()` 를 실행하고 `el()`(ui.js)을 사용 → **ui.js 가 먼저**
+
+상수 테이블과 `state` 는 전부 `core.js` 에 모여 있으므로, 나머지는 core.js 가 1번이라는 것만 지키면 됩니다.
