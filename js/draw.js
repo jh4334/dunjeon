@@ -1048,10 +1048,54 @@ function drawProp(sx, sy, p) {
   }
   ctx.restore();
 }
+/* ---- M2 장비 드랍 — PoE식 세로 광선 + 레어리티 색 이름 라벨 ---- */
+const BEAM_H = 58, BEAM_W = 16;
+function drawLootBeam(it) {
+  const item = it.item;
+  const r = RARITY[item.rarity] || RARITY.common;
+  const pulse = 0.75 + Math.sin(state.time * 3.4 + it.gx * 0.7) * 0.25;
+  // 바닥 광원
+  ctx.fillStyle = rarityRGBA(item.rarity, 0.3 * pulse);
+  ctx.beginPath(); ctx.ellipse(0, 0, 18, 9, 0, 0, Math.PI * 2); ctx.fill();
+  // 세로 광선 (위로 갈수록 투명 · 살짝 벌어지는 사다리꼴)
+  const g = ctx.createLinearGradient(0, -BEAM_H, 0, 0);
+  g.addColorStop(0, rarityRGBA(item.rarity, 0));
+  g.addColorStop(0.4, rarityRGBA(item.rarity, 0.3 * pulse));
+  g.addColorStop(1, rarityRGBA(item.rarity, 0.78 * pulse));
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.moveTo(-BEAM_W * 0.55, -BEAM_H);
+  ctx.lineTo(BEAM_W * 0.55, -BEAM_H);
+  ctx.lineTo(BEAM_W * 0.34, 0);
+  ctx.lineTo(-BEAM_W * 0.34, 0);
+  ctx.closePath(); ctx.fill();
+  // 심지 (가운데 밝은 선)
+  ctx.strokeStyle = rarityRGBA(item.rarity, 0.75 * pulse);
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, -BEAM_H * 0.9); ctx.lineTo(0, -2); ctx.stroke();
+  // 아이템 아이콘
+  ctx.font = '13px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText(itemIcon(item), 0, -6);
+  // 이름 라벨 (레어리티 색)
+  const label = itemLabel(item);
+  ctx.font = 'bold 10px sans-serif';
+  const w = ctx.measureText(label).width + 10;
+  const ly = -BEAM_H - 4;
+  ctx.fillStyle = 'rgba(8, 10, 16, 0.78)';
+  ctx.beginPath(); ctx.roundRect(-w / 2, ly - 12, w, 14, 4); ctx.fill();
+  ctx.strokeStyle = rarityRGBA(item.rarity, 0.85);
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.roundRect(-w / 2, ly - 12, w, 14, 4); ctx.stroke();
+  ctx.fillStyle = r.color;
+  ctx.fillText(label, 0, ly - 2);
+}
 function drawItem(sx, sy, it) {
   ctx.save();
   ctx.translate(sx, sy + Math.sin(state.time * 3 + it.gx) * 1.5);
-  if (it.type === 'gold') {
+  if (it.type === 'equip') {
+    drawLootBeam(it);
+  } else if (it.type === 'gold') {
     ctx.fillStyle = '#f7c437';
     ctx.beginPath(); ctx.ellipse(0, -5, 6, 4.5, 0, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = '#a97c12'; ctx.lineWidth = 1.5;

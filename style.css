@@ -516,6 +516,89 @@ html, body {
   transition: opacity .45s;
 }
 
+/* ===================================================================
+   M2 장비 — 슬롯 / 인벤토리 / 상세(비교)
+   레어리티 색은 items.js 의 RARITY 와 맞춘다
+   (일반 #dcdcdc · 마법 #6f9cff · 희귀 #ffd75e · 고유 #ff8a3a)
+   =================================================================== */
+.r-common { --rc: #dcdcdc; }
+.r-magic  { --rc: #6f9cff; }
+.r-rare   { --rc: #ffd75e; }
+.r-unique { --rc: #ff8a3a; }
+
+.eqSlot {
+  width: 56px; min-height: 50px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  background: rgba(20, 34, 40, 0.85);
+  border: 1.5px dashed #4b6b73; border-radius: 8px;
+  color: #cfe9e4; padding: 4px 2px; cursor: pointer;
+}
+.eqSlot .gIcon { font-size: 16px; }
+.eqSlot small { font-size: 8.5px; line-height: 1.1; text-align: center; word-break: keep-all; }
+.eqSlot.filled { border-style: solid; background: rgba(24, 50, 60, 0.92); }
+.eqSlot.picking { box-shadow: 0 0 8px rgba(255, 232, 138, .55); border-color: #ffe88a !important; }
+
+.eqPickList {
+  display: flex; flex-direction: column; gap: 6px;
+  margin: -2px 0 10px; padding: 8px;
+  background: rgba(12, 26, 32, 0.75); border-radius: 8px;
+}
+.eqPick {
+  display: grid; grid-template-columns: 26px 1fr auto; gap: 2px 8px; align-items: center;
+  text-align: left; padding: 6px 8px; cursor: pointer;
+  background: rgba(22, 44, 52, 0.9);
+  border: 1.5px solid #4b6b73; border-radius: 8px; color: #eafffb;
+}
+.eqPick .gIcon { font-size: 17px; grid-row: span 2; }
+.eqPick b { font-size: 12px; }
+.eqPick small { font-size: 10px; color: #a9d8d2; grid-column: 2; }
+.eqPick em { font-style: normal; font-size: 11px; color: #ffd75e; grid-row: span 2; }
+.eqPick.on { box-shadow: 0 0 8px rgba(255, 232, 138, .5); }
+.eqPick.off { display: block; text-align: center; font-weight: 700; font-size: 12px; }
+
+.eqDetail {
+  margin: 4px 0 10px; padding: 10px;
+  background: rgba(10, 22, 28, 0.92);
+  border: 1.5px solid #4b6b73; border-radius: 10px;
+}
+.eqdHead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.eqdIcon { font-size: 26px; }
+.eqdName b { font-size: 14px; display: block; }
+.eqdName small { font-size: 10.5px; color: #a9d8d2; }
+.eqdUniq {
+  font-size: 11.5px; color: #ffd0a8; line-height: 1.45;
+  background: rgba(90, 48, 16, 0.5); border-left: 3px solid #ff8a3a;
+  border-radius: 4px; padding: 6px 8px; margin-bottom: 8px;
+}
+.eqdAffixes { display: flex; flex-direction: column; gap: 3px; }
+.eqAff {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: baseline;
+  font-size: 12px; color: #cfe9e4;
+  padding: 3px 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.eqAff b { color: #eafffb; font-size: 12.5px; }
+.eqAff.eqNone { display: block; text-align: center; color: #8fb0ab; font-size: 11px; }
+.eqAff .cmp { font-style: normal; font-size: 11px; min-width: 46px; text-align: right; }
+.eqAff .cmp.up { color: #7ee8a0; }
+.eqAff .cmp.down { color: #ff8a8a; }
+.eqAff .cmp.same { color: #8fb0ab; }
+.eqdBtns { display: flex; gap: 6px; margin-top: 8px; }
+.modalBtn.eqd { flex: 1; margin: 0; font-size: 12.5px; padding: 8px 6px; }
+.modalBtn.eqd.danger { background: #4a1e22; border-color: #b0555c; color: #ffd7d7; }
+
+.eqInvHead {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin: 10px 0 6px; font-size: 12px; color: #a9d8d2;
+}
+.eqBulkBtn {
+  background: #17323f; border: 1.5px solid #6fb6d0; border-radius: 8px;
+  color: #dff2ff; font-size: 11.5px; padding: 5px 9px; cursor: pointer;
+}
+.eqBulkBtn:disabled { opacity: .4; cursor: default; }
+.eqInvList { display: flex; flex-direction: column; gap: 6px; max-height: 34vh; overflow-y: auto; }
+.shopRow.eqShopRow { border-bottom-color: var(--rc, #4b6b73); }
+.shopRow.eqShopRow .sInfo b { color: var(--rc, #eafffb); }
+
 .hidden { display: none !important; }
 
 /* ---- 좁은 모바일 폭(≈360px): 좌상단 버프 칩과 우측 탐험 패널이 겹치지 않게 축소 ---- */

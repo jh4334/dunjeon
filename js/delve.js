@@ -82,6 +82,9 @@ function finishVein(p) {
     extra += ' · 💗 포션!';
   }
 
+  // M2 — 광맥 15% 장비 드랍 (바닥에 떨어진다)
+  if (rollVeinDrop(p.gx, p.gy, floor)) extra += ' · 🗡️ 장비!';
+
   const ambush = Math.random() < VEIN_AMBUSH_P;
   if (ambush) {
     spawnAmbush(leader.gx, leader.gy, irand(4, 7), 2, 4);
@@ -134,6 +137,8 @@ function darkActive() {
   return !!(w && w.mode === 'dungeon' && w.biome === 'mine');
 }
 function maxFlares() { return FLARE_BASE + mineLv('pouch'); }
+// 광원 반경 — 「등불지기」를 착용하면 +2
+function lightRadius() { return LIGHT_R + (anyUnique('lantern') ? UNIQ_LIGHT_BONUS : 0); }
 // 광산 층 입장 시 자동 보충
 function refillFlares() {
   const n = maxFlares();
@@ -154,7 +159,8 @@ function lightSources(wld) {
   return out;
 }
 function nearLight(x, y, wld) {
-  return lightSources(wld).some(s => cheb(s.x, s.y, x, y) <= LIGHT_R);
+  const R = lightRadius();
+  return lightSources(wld).some(s => cheb(s.x, s.y, x, y) <= R);
 }
 // 어둠 피해(초당). 캐주얼은 절반.
 function darkDps(stack, floor) {
@@ -164,6 +170,7 @@ function darkDps(stack, floor) {
   const casual = state.difficulty === 'casual' ? 0.5 : 1;
   return Math.max(0, s) * DARK_DMG_PER_STACK * (1 + DARK_DEPTH_MUL * (f - 1)) * casual;
 }
+function darkRecoverMul() { return anyUnique('lantern') ? UNIQ_DARK_RECOVER_MUL : 1; }
 function resetDarkness() {
   state.darkStack = 0; state.darkAway = 0; state.darkTick = 0;
   state.darkWarned = false; state.darkSafe = true;
@@ -193,11 +200,13 @@ function updateDarkness(dt) {
   if (safe) {
     state.darkAway = 0;
     state.darkTick = 0;
-    state.darkStack = Math.max(0, state.darkStack - DARK_RECOVER * dt);
+    // 「등불지기」 — 어둠 스택 감소 2배
+    state.darkStack = Math.max(0, state.darkStack - DARK_RECOVER * darkRecoverMul() * dt);
   } else {
     state.darkAway += dt;
     if (state.darkAway >= DARK_GRACE) {
-      state.darkStack = Math.min(DARK_MAX, state.darkStack + DARK_RATE * dt);
+      // 장비 '어둠 저항 %' — 스택이 차오르는 속도를 늦춘다
+      state.darkStack = Math.min(DARK_MAX, state.darkStack + DARK_RATE * (1 - equipDarkRes()) * dt);
       // 스택 피해는 1초 간격으로 묶어서 (플로터 도배 방지)
       state.darkTick += dt;
       while (state.darkTick >= 1) { state.darkTick -= 1; applyDarkDamage(darkDps()); }
@@ -220,7 +229,7 @@ function useFlare() {
   if (wld.props.some(p => p.type === 'flare' && p.gx === leader.gx && p.gy === leader.gy)) return false;
   state.flares--;
   wld.props.push({ type: 'flare', gx: leader.gx, gy: leader.gy, solid: false, t: state.time });
-  reveal(wld, leader.gx, leader.gy, LIGHT_R);      // 던진 곳 주변을 밝힌다
+  reveal(wld, leader.gx, leader.gy, lightRadius());  // 던진 곳 주변을 밝힌다
   state.darkAway = 0;
   state.darkTick = 0;
   addFloater(leader.px, leader.py - 50, '🔥 플레어!', '#ffb066', 15);
@@ -242,8 +251,9 @@ function flareLit(x, y, wld) {
   const w = wld || state.world;
   if (!w || w.mode !== 'dungeon') return false;
   const list = litList(w);
+  const R = lightRadius();
   for (let i = 0; i < list.length; i++) {
-    if (cheb(list[i].x, list[i].y, x, y) <= LIGHT_R) return true;
+    if (cheb(list[i].x, list[i].y, x, y) <= R) return true;
   }
   return false;
 }
