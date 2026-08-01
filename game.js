@@ -40,7 +40,8 @@ const state = {
   meta: { atk: 0, hp: 0, heal: 0, gold: 0, revive: 0, classes: ['knight'] },  // 영구 강화 (로그라이트 메타 진행) + 해금 직업
   run: null,                                              // 현재 던전 런 (버프/기록)
   paused: false,
-  best: 0,                                                // 최고 도달 층 (영구 기록)
+  best: 0,                                                // 최고 도달 깊이 (영구 기록)
+  lastDepth: 1,                                           // 가장 최근 런에서 마지막으로 있던 깊이 (깊이 선택 기본값)
   auto: false,
   world: null,          // 현재 맵
   cam: { x: 0, y: 0 },
@@ -119,7 +120,7 @@ function unlockClass(k) {
   saveDirty = true;
   return true;
 }
-// 던전 안에서는 직업을 바꿀 수 없다
+// 광산 안에서는 직업을 바꿀 수 없다
 function canChangeClass() { return !(state.world && state.world.mode === 'dungeon'); }
 function setClass(k) {
   if (!CLASSES[k] || !classUnlocked(k) || !canChangeClass()) return false;
@@ -380,6 +381,11 @@ const SFX = {
   // 계단 하강 — 하강 2음
   stairs:  { notes: [{ w: 'triangle', f: 392, t: 0, d: 0.10, v: 0.32 },
                      { w: 'triangle', f: 262, t: 0.09, d: 0.18, v: 0.32 }] },
+  // 곡괭이 채굴 — 금속성 짧은 타격 + 돌가루 노이즈 (채널링 중 반복)
+  pick:    { throttle: 0.24,
+             noise: { t: 0, d: 0.10, v: 0.26, cut: 2400 },
+             notes: [{ w: 'square', f: 900, f2: 320, t: 0, d: 0.05, v: 0.26, jit: 0.10 },
+                     { w: 'triangle', f: 180, f2: 90, t: 0.01, d: 0.09, v: 0.30 }] },
 };
 
 let audioCtx = null, sfxBus = null, sfxNoiseBuf = null;
@@ -531,7 +537,7 @@ function genOverworld() {
     const edge = 0.72 + 0.16 * Math.sin(ang * 3 + seed) + 0.08 * Math.sin(ang * 7 + seed * 2);
     wld.tiles[idx(wld, x, y)] = (r < edge) ? T.GRASS : T.WATER;
   }
-  // 던전 입구 (북서쪽 풀밭에 배치)
+  // 광산 입구 (북서쪽 풀밭에 배치)
   let ex = 0, ey = 0;
   outer:
   for (let y = 5; y < h - 5; y++) for (let x = 5; x < w - 5; x++) {
@@ -598,13 +604,23 @@ const BIOMES = {
     weights: { slime: 1, bat: 2, skeleton: 5 },
     decos: ['lavarock', 'ember'], decoCount: [8, 14],
   },
+  mine: {
+    key: 'mine', name: '아주라이트 갱도', icon: '⛏️', gen: 'mine',
+    desc: '좁은 갱도와 채굴 공동 · 아주라이트 광맥',
+    theme: { name: '아주라이트 갱도', f1: '#3b2c20', f2: '#35271b', wt: '#2b2017', wl: '#16100a', wr: '#100b07' },
+    weights: { slime: 1, bat: 4, skeleton: 4 },
+    decos: ['timber', 'lantern', 'minecart'], decoCount: [12, 18],
+  },
 };
 const BIOME_KEYS = Object.keys(BIOMES);
+// 통행을 막는 갱도 프롭 (배치 시 연결성 검사를 거친다)
+const SOLID_DECOS = { timber: 1, minecart: 1 };
 
-// 기본(갈림길 없이 진입할 때) 층별 바이옴
+// 기본(갱도 분기 없이 진입할 때) 깊이별 바이옴
 function biomeForFloor(floor) {
   if (floor <= 2) return 'catacomb';
-  if (floor <= 5) return 'waterway';
+  if (floor <= 4) return 'mine';
+  if (floor <= 6) return 'waterway';
   if (floor <= 8) return 'lava';
   return 'cave';
 }
@@ -799,14 +815,21 @@ function layoutRooms(wld, cfg) {
   rooms.forEach(r => {
     for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) carveTile(wld, x, y);
   });
+  // 복도 폭: 기본 2칸 (광산은 1칸 고정 → 좁은 갱도)
+  const cw = cfg.corridor === 1 ? 0 : 1;
   for (let i = 1; i < rooms.length; i++) {
     const a = rooms[i - 1], b = rooms[i];
     let x = a.cx, y = a.cy;
-    while (x !== b.cx) { carveTile(wld, x, y); carveTile(wld, x, y + 1); x += Math.sign(b.cx - x); }
-    while (y !== b.cy) { carveTile(wld, x, y); carveTile(wld, x + 1, y); y += Math.sign(b.cy - y); }
+    while (x !== b.cx) { carveTile(wld, x, y); if (cw) carveTile(wld, x, y + cw); x += Math.sign(b.cx - x); }
+    while (y !== b.cy) { carveTile(wld, x, y); if (cw) carveTile(wld, x + cw, y); y += Math.sign(b.cy - y); }
     carveTile(wld, x, y);
   }
   return rooms;
+}
+/* 광산 갱도: 폭 1칸 복도 + 작은 채굴 공동(3~5칸)을 많이 —
+ * 방/복도 알고리즘의 변형이라 배치·연결성 규칙을 그대로 물려받는다. */
+function layoutMine(wld) {
+  return layoutRooms(wld, { count: 17, min: 3, max: 5, corridor: 1 });
 }
 // 셀룰러 오토마타 동굴 (랜덤 45% 채움 → 4~5회 스무딩 → 최대 영역만 유지)
 function layoutCave(wld) {
@@ -941,6 +964,7 @@ function genFloor(biomeKey, kind, floor) {
   if (kind === 'challenge') rooms = layoutArena(wld);
   else if (kind === 'treasure') rooms = layoutRooms(wld, { count: 4, min: 4, max: 7 });
   else if (biome.gen === 'cave') rooms = layoutCave(wld);
+  else if (biome.gen === 'mine') rooms = layoutMine(wld);
   else rooms = layoutRooms(wld, { count: 8, min: 4, max: 8 });
 
   // 2) 바이옴 지형 (특수 층은 순수 구조 유지)
@@ -974,6 +998,45 @@ function genDungeon(floor, opt) {
   opt = opt || {};
   const bk = BIOMES[opt.biome] ? opt.biome : biomeForFloor(floor);
   return genFloor(bk, opt.kind || 'safe', floor);
+}
+
+/* ---- 통행 차단 프롭(버팀목/광차) 배치 안전 검사 ----
+ * 폭 1칸 갱도에 solid 프롭을 세우면 길이 끊긴다.
+ * '막았을 때 도달 가능 칸이 정확히 1칸만 줄어드는' 자리(= 절단점이 아닌 곳)에만 세운다. */
+function blockGridOf(wld) {
+  const g = new Uint8Array(wld.w * wld.h);
+  wld.props.forEach(p => { if (p.solid) g[p.gy * wld.w + p.gx] = 1; });
+  return g;
+}
+function openReachCount(wld, g, sx, sy) {
+  const w = wld.w, h = wld.h;
+  if (!isOpenTile(wld, sx, sy) || g[sy * w + sx]) return 0;
+  const seen = new Uint8Array(w * h);
+  const q = [sy * w + sx];
+  seen[sy * w + sx] = 1;
+  let head = 0, n = 0;
+  while (head < q.length) {
+    const c = q[head++]; n++;
+    const cx = c % w, cy = (c / w) | 0;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = cx + dx, ny = cy + dy;
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+      const ni = ny * w + nx;
+      if (seen[ni] || g[ni] || !isOpenTile(wld, nx, ny)) continue;
+      seen[ni] = 1; q.push(ni);
+    }
+  }
+  return n;
+}
+function placeSolidDeco(wld, type, x, y, sctx) {
+  const i = y * wld.w + x;
+  if (sctx.g[i]) return false;
+  sctx.g[i] = 1;
+  const r = openReachCount(wld, sctx.g, wld.spawn.x, wld.spawn.y);
+  if (r !== sctx.reach - 1) { sctx.g[i] = 0; return false; }   // 길이 끊긴다 → 포기
+  sctx.reach = r;
+  wld.props.push({ type, gx: x, gy: y, solid: true });
+  return true;
 }
 
 function populateFloor(wld, biome, kind, floor, cells) {
@@ -1064,12 +1127,27 @@ function populateFloor(wld, biome, kind, floor, cells) {
     if (!c) break;
     wld.props.push({ type: 'trap', gx: c.x, gy: c.y, solid: false, armed: true });
   }
-  // --- 바이옴 전용 장식 프롭 ---
+  // --- 아주라이트 광맥 (광산 2~4 / 그 외 0~1 · 도전방 제외) ---
+  const veinCount = kind === 'challenge' ? 0
+    : biome.key === 'mine' ? irand(VEIN_COUNT_MINE[0], VEIN_COUNT_MINE[1])
+    : (Math.random() < 0.5 ? 1 : 0);
+  for (let i = 0; i < veinCount; i++) {
+    const c = takeCell(wld, cells, occ, 3, null);
+    if (!c) break;
+    wld.props.push({ type: 'vein', gx: c.x, gy: c.y, solid: false, mined: false, prog: 0 });
+  }
+  // --- 바이옴 전용 장식 프롭 (버팀목/광차는 길을 막지 않는 자리에만) ---
   const dn = irand(biome.decoCount[0], biome.decoCount[1]);
+  const softDeco = biome.decos.find(d => !SOLID_DECOS[d]) || null;
+  const sctx = { g: blockGridOf(wld), reach: 0 };
+  sctx.reach = openReachCount(wld, sctx.g, wld.spawn.x, wld.spawn.y);
   for (let i = 0; i < dn; i++) {
     const c = takeCell(wld, cells, occ, 2, null);
     if (!c) break;
-    wld.props.push({ type: pick(biome.decos), gx: c.x, gy: c.y, solid: false });
+    const type = pick(biome.decos);
+    if (!SOLID_DECOS[type]) { wld.props.push({ type, gx: c.x, gy: c.y, solid: false }); continue; }
+    if (placeSolidDeco(wld, type, c.x, c.y, sctx)) continue;
+    if (softDeco) wld.props.push({ type: softDeco, gx: c.x, gy: c.y, solid: false });
   }
 }
 
@@ -2089,6 +2167,103 @@ function partyWipe() {
   showRunSummary(false);
 }
 
+/* =====================================================================
+ * 아주라이트 광맥 채굴 (Delve 식 리스크 & 리워드)
+ * 리더가 광맥 옆에 멈춰 서면 2초 채널링 → 큰 골드(+젬/포션).
+ * 다만 35% 확률로 갱도가 무너지며 매복이 쏟아진다.
+ * =================================================================== */
+const VEIN_COUNT_MINE = [2, 4];    // 광산 바이옴의 광맥 수
+const VEIN_CHANNEL = 2.0;          // 채굴 채널링 시간(초)
+const VEIN_GOLD = [45, 110];       // 상자(30~80)보다 큰 기본 골드
+const VEIN_DEPTH_MUL = 0.22;       // 깊이 1당 골드 배율 가산
+const VEIN_GEM_P = 0.30;
+const VEIN_POTION_P = 0.20;
+const VEIN_AMBUSH_P = 0.35;
+let miningCur = null;              // 지금 캐고 있는 광맥 (렌더/테스트용)
+
+function veinList() {
+  const w = state.world;
+  return (w && w.mode === 'dungeon') ? w.props.filter(p => p.type === 'vein') : [];
+}
+// 리더가 지금 캘 수 있는 광맥 (인접 1칸 · 같은 칸 포함)
+function miningTarget() {
+  const w = state.world;
+  if (!w || w.mode !== 'dungeon' || leader.down) return null;
+  let best = null, bd = 9;
+  for (const p of w.props) {
+    if (p.type !== 'vein' || p.mined) continue;
+    const d = cheb(p.gx, p.gy, leader.gx, leader.gy);
+    if (d <= 1 && d < bd) { bd = d; best = p; }
+  }
+  return best;
+}
+function veinGold(floor) {
+  return Math.max(1, Math.floor(
+    irand(VEIN_GOLD[0], VEIN_GOLD[1]) * (1 + VEIN_DEPTH_MUL * (floor - 1)) * goldMult()));
+}
+// 채굴 완료 — 보상 지급 + 매복 판정
+function finishVein(p) {
+  const wld = state.world;
+  const floor = (wld && wld.floor) || 1;
+  p.mined = true;
+  p.prog = VEIN_CHANNEL;
+  const g = veinGold(floor);
+  state.gold += g;
+  if (state.run) state.run.goldGained += g;
+  const wx = isoX(p.gx, p.gy), wy = isoY(p.gx, p.gy);
+  addFloater(wx, wy - 24, `💎 +${fmt(g)}`, '#7ec8ff', 15);
+  addSparkle(wx, wy, '#7ec8ff');
+  addSparkle(wx, wy, '#cfe9ff');
+  sfx('gold');
+  saveDirty = true;
+
+  let extra = '';
+  if (Math.random() < VEIN_GEM_P) {
+    const gk = pick(GEMS).k;
+    if (giveGem(gk)) {
+      const gem = GEM_BY_KEY[gk];
+      addFloater(wx, wy - 48, `${gem.icon} ${gem.name}`, '#c79bff', 13);
+      extra += ' · 💎 스킬 젬!';
+    }
+  }
+  if (Math.random() < VEIN_POTION_P) {
+    party.forEach(m => {
+      if (m.down) return;
+      m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * 0.25);
+      addSparkle(m.px, m.py, '#ff9eae');
+    });
+    addFloater(wx, wy - 70, '💗 회복!', '#ff9eae', 13);
+    sfx('heal');
+    extra += ' · 💗 포션!';
+  }
+
+  const ambush = Math.random() < VEIN_AMBUSH_P;
+  if (ambush) {
+    spawnAmbush(leader.gx, leader.gy, irand(4, 7), 2, 4);
+    addShake(SHAKE_MAG_SMASH);
+    toast('💎 광맥이 무너지며 몬스터가 쏟아진다!');
+    say(party[1], '갱도가 무너져요! 조심해요!');
+  } else {
+    toast(`💎 아주라이트 채굴 — +${fmt(g)} 골드${extra}`);
+    if (Math.random() < .6) say(party[3], '이야, 순도가 장난 아닌데요?');
+  }
+  return { gold: g, ambush };
+}
+// 매 프레임 채널링 진행 (이동하면 중단 · 진행은 보존)
+function updateMining(dt) {
+  const wld = state.world;
+  if (!wld || wld.mode !== 'dungeon') { miningCur = null; return null; }
+  const p = miningTarget();
+  miningCur = p;
+  if (!p) return null;
+  if (leader.moving || state.transitioning) return p;   // 이동 중에는 중단 (진행 보존)
+  p.prog = Math.min(VEIN_CHANNEL, (p.prog || 0) + dt);
+  if (p.prog >= VEIN_CHANNEL) { miningCur = null; finishVein(p); return p; }
+  sfx('pick');
+  if (Math.random() < dt * 7) addSparkle(isoX(p.gx, p.gy), isoY(p.gx, p.gy) - 10, '#7ec8ff');
+  return p;
+}
+
 /* ---------------- 맵 전환 ---------------- */
 const fadeEl = document.getElementById('fade');
 function transition(fn) {
@@ -2130,31 +2305,104 @@ function gotoOverworld() {
   placeParty(overworld, sx, sy);
   updateHudMode();
 }
-function enterDungeon() {
+/* ---- 깊이(체크포인트) ----
+ * 광산은 한 번 내려간 깊이까지 되짚어 들어갈 수 있다.
+ * 최고 깊이(best)가 2 이상일 때만 선택할 거리가 생기므로 그때부터 모달을 띄운다. */
+function maxDepth() { return Math.max(1, state.best || 0); }
+function depthChoiceAvailable() { return maxDepth() >= 2; }
+function recLvForDepth(d) { return Math.max(1, d * 2); }        // 권장 레벨 ≈ 깊이 × 2
+function depthTooDeep(d) { return recLvForDepth(d) > state.lv + 2; }
+function setLastDepth(d) {
+  const v = clamp(Math.floor(d) || 1, 1, 999);
+  if (state.lastDepth !== v) { state.lastDepth = v; saveDirty = true; }
+}
+
+function enterDungeon(depth) {
   // 최초 1회만 난이도 선택 (이후엔 기억된 난이도로 바로 입장)
-  if (!state.difficultyPicked) { openDifficulty(enterDungeon); return; }
+  if (!state.difficultyPicked) { openDifficulty(() => enterDungeon(depth)); return; }
+  // 난이도 다음 — 시작 깊이 선택 (되짚어 갈 곳이 있을 때만)
+  if (depth == null && depthChoiceAvailable()) { openDepthChoice(d => enterDungeon(d)); return; }
+  const start = clamp(Math.floor(depth || 1), 1, maxDepth());
   transition(() => {
-    state.run = { floor: 1, buffs: { atk: 0, hp: 0, heal: 0, gold: 0, crit: 0, def: 0 }, relics: {}, kills: 0, goldGained: 0 };
-    state.world = genDungeon(1);
+    state.run = { floor: start, buffs: { atk: 0, hp: 0, heal: 0, gold: 0, crit: 0, def: 0 }, relics: {}, kills: 0, goldGained: 0 };
+    // 광산 입장 첫 층은 항상 갱도(mine) — 깊이만큼의 층 스케일이 그대로 적용된다
+    state.world = genDungeon(start, { biome: 'mine', kind: 'safe' });
     placeParty(state.world, state.world.spawn.x, state.world.spawn.y);
-    if (state.best < 1) { state.best = 1; saveDirty = true; }
-    toast(`🗝️ 지하 1층 — ${state.world.theme.name}`);
+    setLastDepth(start);
+    if (state.best < start) { state.best = start; saveDirty = true; }
+    toast(`⛏️ 깊이 ${start} — ${state.world.theme.name}`);
     if (Math.random() < .7) say(pick(party.slice(1)), pick(['으스스해요…', '조심해서 가요!', '몬스터 냄새가 나요…']));
     updateHudMode();
-    // 최초 던전 입장 1회 — 빌드 시스템 안내 (층 안내 토스트 뒤에 이어서)
+    // 최초 광산 입장 1회 — 빌드 시스템 안내 (깊이 안내 토스트 뒤에 이어서)
     hintOnce('firstDungeon', '👤 버튼에서 젬 장착과 패시브를 찍을 수 있어요!', 2600);
     scheduleModal('buff', 500, openBuffChoice);
   });
 }
-// 갈림길 없이 들어갈 때의 기본 선택지 (보스 층 / 첫 층)
-function defaultChoice(floor) {
-  return { biome: floor <= 1 ? 'catacomb' : pick(BIOME_KEYS), kind: 'safe' };
+
+/* ---- 시작 깊이 선택 모달 (체크포인트) ---- */
+let depthPick = 1;
+function openDepthChoice(after) {
+  const max = maxDepth();
+  depthPick = clamp(Math.floor(state.lastDepth || 1), 1, max);
+  openModal('⛏️ 시작 깊이를 선택하세요', body => {
+    body.innerHTML = `
+      <div class="depthPick">
+        <div class="depthNum">깊이 <b id="depthVal">${depthPick}</b></div>
+        <div class="depthRec" id="depthRec"></div>
+        <div class="depthStep">
+          <button class="depthBtn" data-step="-5">-5</button>
+          <button class="depthBtn" data-step="-1">-1</button>
+          <button class="depthBtn" data-step="1">+1</button>
+          <button class="depthBtn" data-step="5">+5</button>
+        </div>
+        <div class="depthJump">
+          <button class="depthBtn jump" data-jump="first">처음 (1)</button>
+          <button class="depthBtn jump" data-jump="last">최근 (${clamp(state.lastDepth || 1, 1, max)})</button>
+          <button class="depthBtn jump" data-jump="best">최심 (${max})</button>
+        </div>
+      </div>
+      <p class="sumHint">깊게 시작할수록 몬스터도 보상도 커집니다. 최고 깊이 ${max}까지 되짚어 갈 수 있어요.</p>
+      <button class="modalBtn" id="depthGo">깊이 ${depthPick}에서 시작</button>`;
+    const valEl = body.querySelector('#depthVal');
+    const recEl = body.querySelector('#depthRec');
+    const goEl = body.querySelector('#depthGo');
+    const sync = () => {
+      const rec = recLvForDepth(depthPick);
+      valEl.textContent = depthPick;
+      goEl.textContent = `깊이 ${depthPick}에서 시작`;
+      recEl.textContent = `권장 레벨 ${rec} · 현재 Lv.${state.lv}`;
+      recEl.classList.toggle('warn', depthTooDeep(depthPick));
+      body.querySelectorAll('[data-step]').forEach(b => {
+        const n = clamp(depthPick + Number(b.dataset.step), 1, max);
+        b.disabled = (n === depthPick);
+      });
+    };
+    const setDepth = d => { depthPick = clamp(Math.floor(d), 1, max); sync(); };
+    body.querySelectorAll('[data-step]').forEach(b => {
+      b.addEventListener('click', () => setDepth(depthPick + Number(b.dataset.step)));
+    });
+    body.querySelectorAll('[data-jump]').forEach(b => {
+      b.addEventListener('click', () => setDepth(
+        b.dataset.jump === 'first' ? 1 : b.dataset.jump === 'best' ? max : (state.lastDepth || 1)));
+    });
+    goEl.addEventListener('click', () => {
+      const d = depthPick;
+      closeModal();
+      if (after) after(d);
+    });
+    sync();
+  }, { key: 'depth' });
 }
-// 계단을 밟았을 때 — 보스 층은 고정 진입, 그 외에는 갈림길 모달
+
+// 갱도 분기 없이 들어갈 때의 기본 선택지 (보스 깊이 / 첫 층)
+function defaultChoice(floor) {
+  return { biome: floor <= 1 ? 'mine' : pick(BIOME_KEYS), kind: 'safe' };
+}
+// 계단을 밟았을 때 — 보스 깊이는 고정 진입, 그 외에는 갱도 분기 모달
 function onStairsStep() {
   const next = state.world.floor + 1;
   if (next % 3 === 0) {
-    toast('⚠️ 다음은 보스 층 — 갈림길 없이 진입합니다!');
+    toast('⚠️ 다음은 보스 갱도 — 분기 없이 진입합니다!');
     descend(defaultChoice(next));
     return;
   }
@@ -2168,6 +2416,7 @@ function descend(choice) {
     if (state.run) state.run.floor = next;
     state.world = genDungeon(next, ch);
     placeParty(state.world, state.world.spawn.x, state.world.spawn.y);
+    setLastDepth(next);
     if (next > state.best) {
       state.best = next;
       saveDirty = true;
@@ -2175,8 +2424,8 @@ function descend(choice) {
     }
     const w = state.world;
     const pk = PATH_KINDS[w.kind] || PATH_KINDS.safe;
-    toast(`⬇️ 지하 ${next}층 — ${pk.icon} ${w.theme.name}`);
-    if (w.stairsPending) say(leader, '보스가 있는 층이야… 조심하자!');
+    toast(`⬇️ 깊이 ${next} — ${pk.icon} ${w.theme.name}`);
+    if (w.stairsPending) say(leader, '보스가 있는 갱도야… 조심하자!');
     else if (w.kind === 'challenge') say(leader, '입구가 닫혔어! 싸워서 뚫는 수밖에!');
     else if (w.kind === 'treasure') say(party[3], '보물이다! …함정도 잔뜩이지만요.');
     else if (w.kind === 'risk') say(party[1], '기운이 심상치 않아요… 대신 벌이는 좋겠죠?');
@@ -2195,10 +2444,10 @@ function showRunSummary(escaped) {
   cancelPendingModals(false);
   const lost = escaped ? 0 : Math.floor(state.gold * diff().wipeLoss);
   if (!escaped) sfx('wipe');
-  openModal(escaped ? '🏃 던전 탈출!' : '💀 파티 전멸…', body => {
+  openModal(escaped ? '🏃 광산 탈출!' : '💀 파티 전멸…', body => {
     body.innerHTML = `
-      <div class="sumRow"><span>도달 층</span><b>지하 ${run.floor}층</b></div>
-      <div class="sumRow"><span>최고 기록</span><b>지하 ${state.best}층</b></div>
+      <div class="sumRow"><span>도달 깊이</span><b>깊이 ${run.floor}</b></div>
+      <div class="sumRow"><span>최고 기록</span><b>깊이 ${state.best}</b></div>
       <div class="sumRow"><span>처치한 몬스터</span><b>${run.kills}</b></div>
       <div class="sumRow"><span>획득 골드</span><b>+${fmt(run.goldGained)}</b></div>
       ${escaped ? '' : `<div class="sumRow bad"><span>잃은 골드</span><b>-${fmt(lost)}</b></div>`}
@@ -2297,6 +2546,7 @@ function rushRewards(wld) {
   wld.props.forEach(p => {
     if (p.type === 'altar' && !p.used && !p.seen && state.gold >= altarCost) goals.push({ x: p.gx, y: p.gy });
     else if (p.type === 'merchant' && !p.visited) goals.push({ x: p.gx, y: p.gy });
+    else if (p.type === 'vein' && !p.mined) goals.push({ x: p.gx, y: p.gy });
   });
   return goals;
 }
@@ -2307,6 +2557,8 @@ function updateAuto() {
   // 부활 타이머는 전투 중에도 절반 속도로 계속 진행되므로 교착은 없다.
   if (leader.down) { autoPath = null; return; }
   if (autoDodgeStep()) return;
+  // 광맥 옆에 섰으면 채굴이 끝날 때까지 기다린다 (updateMining 이 진행을 담당)
+  if (wld.mode === 'dungeon' && miningTarget()) { autoPath = null; return; }
   // 근처 몬스터와 교전 중이면 대기
   if (wld.mode === 'dungeon' &&
       wld.monsters.some(m => m.hp > 0 && cheb(m.gx, m.gy, leader.gx, leader.gy) <= 1.9)) {
@@ -2427,7 +2679,7 @@ const BUFF_POOL = [
 function openBuffChoice() {
   if (!state.run) return;
   const opts = [...BUFF_POOL].sort(() => Math.random() - .5).slice(0, 3);
-  openModal(`지하 ${state.run.floor}층 — 축복을 선택하세요`, body => {
+  openModal(`깊이 ${state.run.floor} — 축복을 선택하세요`, body => {
     const grid = document.createElement('div');
     grid.className = 'buffGrid';
     opts.forEach(o => {
@@ -2561,7 +2813,7 @@ function rollPathOptions(floor) {
 function openPathChoice() {
   const next = state.world.floor + 1;
   const opts = rollPathOptions(next);
-  openModal(`🚪 지하 ${next}층 — 갈림길`, body => {
+  openModal(`🚪 깊이 ${next} — 갱도 분기`, body => {
     const grid = document.createElement('div');
     grid.className = 'buffGrid';
     opts.forEach((o, i) => {
@@ -2580,7 +2832,7 @@ function openPathChoice() {
     body.appendChild(grid);
     const hint = document.createElement('p');
     hint.className = 'sumHint';
-    hint.textContent = '길은 하나만 고를 수 있어요. 신중하게!';
+    hint.textContent = '갱도는 하나만 고를 수 있어요. 신중하게!';
     body.appendChild(hint);
   }, { key: 'path' });
 }
@@ -2667,7 +2919,7 @@ function openMerchant(p) {
  * =================================================================== */
 function openClassChoice() {
   if (!canChangeClass()) {
-    toast('🎭 던전 안에서는 직업을 바꿀 수 없어요!');
+    toast('🎭 광산 안에서는 직업을 바꿀 수 없어요!');
     return;
   }
   openModal('🎭 직업 변경', body => {
@@ -2704,7 +2956,7 @@ function openClassChoice() {
       });
       const hint = document.createElement('p');
       hint.className = 'sumHint';
-      hint.textContent = '직업은 초원(던전 밖)에서만 바꿀 수 있어요.';
+      hint.textContent = '직업은 초원(광산 밖)에서만 바꿀 수 있어요.';
       body.appendChild(hint);
       const close = document.createElement('button');
       close.className = 'modalBtn';
@@ -2894,13 +3146,13 @@ function openRunInfo() {
     if (dungeon) {
       const run = state.run || { kills: 0, goldGained: 0 };
       const pk = PATH_KINDS[wld.kind] || PATH_KINDS.safe;
-      rows.push(['현재 층', `지하 ${wld.floor}층${wld.kind && wld.kind !== 'safe' ? ` ${pk.icon} ${pk.name}` : ''}`]);
+      rows.push(['현재 깊이', `깊이 ${wld.floor}${wld.kind && wld.kind !== 'safe' ? ` ${pk.icon} ${pk.name}` : ''}`]);
       rows.push(['바이옴', floorBiomeLine()]);
       rows.push(['처치한 몬스터', String(run.kills || 0)]);
       rows.push(['획득 골드', `+${fmt(run.goldGained || 0)}`]);
-      rows.push(['최고 기록', `지하 ${state.best}층`]);
+      rows.push(['최고 기록', `깊이 ${state.best}`]);
     } else {
-      rows.push(['최고 기록', `지하 ${state.best}층`]);
+      rows.push(['최고 기록', `깊이 ${state.best}`]);
       rows.push(['레벨', `Lv.${state.lv}`]);
       rows.push(['보유 골드', fmt(state.gold)]);
       rows.push(['직업', `${curClass().icon} ${curClass().name}`]);
@@ -2947,7 +3199,7 @@ function openRunInfo() {
 
     const hint = document.createElement('p');
     hint.className = 'sumHint';
-    hint.textContent = dungeon ? '탈출하면 축복·유물은 사라지고 골드와 경험은 남아요.' : '던전에 들어가면 축복과 유물을 모을 수 있어요.';
+    hint.textContent = dungeon ? '탈출하면 축복·유물은 사라지고 골드와 경험은 남아요.' : '광산에 들어가면 축복과 유물을 모을 수 있어요.';
     body.appendChild(hint);
     const close = document.createElement('button');
     close.className = 'modalBtn';
@@ -3082,7 +3334,7 @@ function openShop() {
 /* ---------------- 잡담 ---------------- */
 let chatterT = rand(6, 10);
 const CHATTER = {
-  overworld: ['날씨가 좋네요!', '소풍 온 것 같아요~', '사과 주워가도 될까요?', '던전은 저쪽이에요!'],
+  overworld: ['날씨가 좋네요!', '소풍 온 것 같아요~', '사과 주워가도 될까요?', '광산은 저쪽이에요!'],
   dungeon: ['발밑 조심하세요…', '여긴 좀 어둡네요…', '뭔가 소리가 들려요…', '보물 냄새가 나요!'],
 };
 function updateChatter(dt) {
@@ -3172,12 +3424,12 @@ function checkGoldHint() {
     hintOnce('firstGold', '⚒️ 캠프에서 새 직업을 해금할 수 있어요!');
   }
 }
-// 탐험 패널 1행: 지하 N층 · (특수 층/웨이브) · 난이도  — 짧게 유지해 줄바꿈을 막는다
+// 탐험 패널 1행: 깊이 N · (특수 층/웨이브) · 난이도  — 짧게 유지해 줄바꿈을 막는다
 function floorTitle() {
   const w = state.world;
   const k = PATH_KINDS[w.kind] || PATH_KINDS.safe;
-  let s = `지하 ${w.floor}층`;
-  if (w.kind !== 'safe') s += ` ${k.icon}`;      // 성격은 아이콘만 (진입 토스트/갈림길 카드에 이름 표기)
+  let s = `깊이 ${w.floor}`;
+  if (w.kind !== 'safe') s += ` ${k.icon}`;      // 성격은 아이콘만 (진입 토스트/갱도 분기 카드에 이름 표기)
   if (w.arena && !w.arena.done) s += ` · 웨이브 ${w.arena.wave}/${w.arena.total}`;
   return `${s} · ${diff().name}`;
 }
@@ -3205,7 +3457,7 @@ function updateHud() {
   el('explorePct').textContent = pct + '%';
   el('exploreBar').style.width = pct + '%';
   el('exploreCount').textContent = `${fmt(wld.seenCount)} / ${fmt(wld.walkTotal)}`;
-  // 던전 입구 배너
+  // 광산 입구 배너
   const nearEntrance = wld.mode === 'overworld' && wld.entrance &&
     cheb(leader.gx, leader.gy, wld.entrance.x, wld.entrance.y) <= 3;
   el('dungeonBanner').classList.toggle('hidden', !nearEntrance);
@@ -3227,7 +3479,7 @@ function updateBuffBar() {
       if (n > 0) html += `<span class="chip relic">${o.icon}<b>${n}</b></span>`;
     });
   } else if (state.best > 0) {
-    html = `<span class="chip best">🏆 최고 지하 ${state.best}층</span>`;
+    html = `<span class="chip best">🏆 최고 깊이 ${state.best}</span>`;
   }
   if (html !== buffBarCache) {
     buffBarCache = html;
@@ -3881,7 +4133,7 @@ function drawProp(sx, sy, p) {
       break;
     }
     case 'entrance': {
-      // 돌 아치 + 해골 + 덩굴
+      // 광산 입구 — 돌 아치 + 해골 + 덩굴 + 갱도 버팀목 + 광차/곡괭이
       ctx.fillStyle = '#8f8f96';
       rr(-30, -58, 60, 52, 10);
       ctx.fillStyle = '#a7a7ae';
@@ -3918,6 +4170,46 @@ function drawProp(sx, sy, p) {
       ctx.beginPath();
       ctx.moveTo(-19, 2); ctx.lineTo(19, 2);
       ctx.moveTo(-22, 8); ctx.lineTo(22, 8);
+      ctx.stroke();
+      // --- 갱도 버팀목 (나무 기둥 + 가로보) ---
+      ctx.fillStyle = '#6d4e2f';
+      rr(-21, -46, 8, 42, 2);
+      rr(13, -46, 8, 42, 2);
+      ctx.fillStyle = '#7d5a37';
+      rr(-27, -52, 54, 9, 2);
+      ctx.fillStyle = '#4a341e';
+      rr(-21, -30, 8, 2.6, 1);
+      rr(13, -30, 8, 2.6, 1);
+      ctx.fillStyle = '#8f6b41';
+      ctx.beginPath();
+      ctx.moveTo(-27, -43); ctx.lineTo(-13, -43); ctx.lineTo(-13, -36); ctx.closePath(); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(27, -43); ctx.lineTo(13, -43); ctx.lineTo(13, -36); ctx.closePath(); ctx.fill();
+      // --- 광차 (입구 왼쪽 레일 위) ---
+      ctx.strokeStyle = '#4c443c'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-52, 4); ctx.lineTo(-20, 4);
+      ctx.moveTo(-52, 9); ctx.lineTo(-20, 9);
+      ctx.stroke();
+      ctx.fillStyle = '#2c2620';
+      ctx.beginPath(); ctx.arc(-42, 3, 3.6, 0, Math.PI * 2); ctx.arc(-31, 3, 3.6, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#6b5340';
+      ctx.beginPath();
+      ctx.moveTo(-47, -14); ctx.lineTo(-26, -14); ctx.lineTo(-29, 0); ctx.lineTo(-44, 0);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#84674f';
+      rr(-48, -17, 23, 3.4, 1.4);
+      const eg = .55 + Math.sin(state.time * 2.2) * .3;
+      ctx.fillStyle = '#2f6fa8';
+      ctx.beginPath(); ctx.arc(-40, -18, 3.6, 0, Math.PI * 2); ctx.arc(-32, -19, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(150, 215, 255, ${eg})`;
+      ctx.beginPath(); ctx.arc(-40, -19, 1.7, 0, Math.PI * 2); ctx.arc(-32, -20, 1.3, 0, Math.PI * 2); ctx.fill();
+      // --- 곡괭이 (입구 오른쪽에 기대어 놓았다) ---
+      ctx.strokeStyle = '#7a5433'; ctx.lineWidth = 3.5;
+      ctx.beginPath(); ctx.moveTo(28, 8); ctx.lineTo(38, -26); ctx.stroke();
+      ctx.strokeStyle = '#b9c0c9'; ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(31, -27); ctx.quadraticCurveTo(38.5, -34, 46, -25);
       ctx.stroke();
       break;
     }
@@ -4056,6 +4348,111 @@ function drawProp(sx, sy, p) {
         ctx.beginPath();
         ctx.arc((i - 1) * 4 + Math.sin(t2 * 6 + i) * 2, -6 - t2 * 22, 2.2 - t2 * 1.2, 0, Math.PI * 2);
         ctx.fill();
+      }
+      break;
+    }
+    /* ---- 광산 전용 ---- */
+    case 'timber': {                    // 갱도 버팀목 (나무 기둥 + 가로보)
+      ctx.fillStyle = '#5a4026';
+      rr(-19, -34, 7, 34, 2);
+      rr(12, -34, 7, 34, 2);
+      ctx.fillStyle = '#6d4e2f';
+      rr(-23, -40, 46, 8, 2);
+      ctx.fillStyle = '#43301c';
+      rr(-19, -22, 7, 2.4, 1);
+      rr(12, -22, 7, 2.4, 1);
+      ctx.fillStyle = '#8a6a41';
+      ctx.beginPath();
+      ctx.moveTo(-23, -32); ctx.lineTo(-12, -32); ctx.lineTo(-12, -27); ctx.closePath(); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(23, -32); ctx.lineTo(12, -32); ctx.lineTo(12, -27); ctx.closePath(); ctx.fill();
+      break;
+    }
+    case 'minecart': {                  // 레일 위 광차 (아주라이트 광석을 실었다)
+      // 레일
+      ctx.strokeStyle = '#4c443c'; ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.moveTo(-26, 2); ctx.lineTo(26, 2);
+      ctx.moveTo(-24, 8); ctx.lineTo(24, 8);
+      ctx.stroke();
+      ctx.strokeStyle = '#3a3129'; ctx.lineWidth = 2;
+      for (let i = -2; i <= 2; i++) { ctx.beginPath(); ctx.moveTo(i * 10, 1); ctx.lineTo(i * 10 - 1, 9); ctx.stroke(); }
+      // 바퀴
+      ctx.fillStyle = '#2c2620';
+      ctx.beginPath(); ctx.arc(-9, 0, 4.5, 0, Math.PI * 2); ctx.arc(9, 0, 4.5, 0, Math.PI * 2); ctx.fill();
+      // 수레통
+      ctx.fillStyle = '#6b5340';
+      ctx.beginPath();
+      ctx.moveTo(-16, -22); ctx.lineTo(16, -22); ctx.lineTo(12, -3); ctx.lineTo(-12, -3);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#84674f';
+      rr(-17, -25, 34, 4, 1.5);
+      ctx.fillStyle = '#4b3a2c';
+      rr(-13, -18, 26, 2.4, 1);
+      // 실린 광석
+      const og = .55 + Math.sin(state.time * 2.2 + p.gx) * .3;
+      ctx.fillStyle = '#2f6fa8';
+      ctx.beginPath(); ctx.arc(-6, -26, 4.2, 0, Math.PI * 2); ctx.arc(5, -27, 3.6, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(140, 210, 255, ${og})`;
+      ctx.beginPath(); ctx.arc(-6, -27, 2, 0, Math.PI * 2); ctx.arc(5, -28, 1.6, 0, Math.PI * 2); ctx.fill();
+      break;
+    }
+    case 'lantern': {                   // 수정 랜턴 (푸른 빛)
+      const lg = .5 + Math.sin(state.time * 2.6 + p.gy) * .3;
+      ctx.fillStyle = `rgba(110, 190, 255, ${lg * 0.3})`;
+      ctx.beginPath(); ctx.ellipse(0, -14, 17, 12, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#4d3a24';
+      rr(-1.6, -22, 3.2, 22, 1.4);
+      ctx.fillStyle = '#5f4a2e';
+      rr(-7, -25, 14, 4, 1.6);
+      ctx.fillStyle = '#2c6a94';
+      ctx.beginPath();
+      ctx.moveTo(0, -34); ctx.lineTo(6, -25); ctx.lineTo(-6, -25); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = `rgba(170, 226, 255, ${.6 + lg * .4})`;
+      ctx.beginPath();
+      ctx.moveTo(0, -32); ctx.lineTo(3.4, -26); ctx.lineTo(-3.4, -26); ctx.closePath(); ctx.fill();
+      break;
+    }
+    case 'vein': {                      // 아주라이트 광맥 (채굴 대상)
+      if (p.mined) {
+        // 다 캔 자리 — 부서진 암반과 광석 부스러기
+        ctx.fillStyle = '#3a2e24';
+        ctx.beginPath(); ctx.ellipse(0, -4, 13, 7, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#2b2119';
+        ctx.beginPath(); ctx.ellipse(-4, -6, 6, 4, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = 'rgba(90, 150, 200, 0.5)';
+        ctx.beginPath(); ctx.arc(5, -7, 2, 0, Math.PI * 2); ctx.arc(-6, -3, 1.5, 0, Math.PI * 2); ctx.fill();
+        break;
+      }
+      const vg = .55 + Math.sin(state.time * 2.6 + p.gx * 0.7) * .3;
+      // 바닥 발광
+      ctx.fillStyle = `rgba(90, 180, 255, ${vg * 0.32})`;
+      ctx.beginPath(); ctx.ellipse(0, -3, 20, 10, 0, 0, Math.PI * 2); ctx.fill();
+      // 암반 덩어리
+      ctx.fillStyle = '#3d2f24';
+      ctx.beginPath(); ctx.ellipse(-3, -9, 13, 10, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#4b3a2c';
+      ctx.beginPath(); ctx.ellipse(6, -12, 9, 8, 0, 0, Math.PI * 2); ctx.fill();
+      // 아주라이트 결정
+      ctx.fillStyle = '#2f7fc4';
+      ctx.beginPath(); ctx.moveTo(-6, -30); ctx.lineTo(-1, -12); ctx.lineTo(-11, -12); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(7, -26); ctx.lineTo(12, -11); ctx.lineTo(2, -11); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = `rgba(160, 220, 255, ${vg})`;
+      ctx.beginPath(); ctx.moveTo(-6, -28); ctx.lineTo(-3.5, -14); ctx.lineTo(-8.5, -14); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(7, -24); ctx.lineTo(9.5, -13); ctx.lineTo(4.5, -13); ctx.closePath(); ctx.fill();
+      // 채굴 진행 게이지 (광맥 위)
+      const prog = clamp((p.prog || 0) / VEIN_CHANNEL, 0, 1);
+      if (prog > 0) {
+        const bw = 42, bh = 7, by = -50;
+        ctx.fillStyle = 'rgba(0,0,0,0.62)';
+        rr(-bw / 2 - 1.5, by - 1.5, bw + 3, bh + 3, 3);
+        ctx.fillStyle = '#1a2634';
+        rr(-bw / 2, by, bw, bh, 2.5);
+        ctx.fillStyle = '#6fc9ff';
+        rr(-bw / 2, by, Math.max(1.5, bw * prog), bh, 2.5);
+        ctx.fillStyle = '#dff2ff';
+        ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText('⛏️ 채굴', 0, by - 5);
       }
       break;
     }
@@ -4271,6 +4668,8 @@ function loadSave() {
         state.meta[k] = clamp(s.meta[k] || 0, 0, 99);
       }
       state.best = clamp(s.best || 0, 0, 999);
+      // 광산 체크포인트 — 구 세이브에는 없으므로 기본 1
+      state.lastDepth = clamp(Math.floor(s.lastDepth || 1), 1, 999);
       if (s.difficulty && DIFFS[s.difficulty]) state.difficulty = s.difficulty;
       state.difficultyPicked = !!s.difficultyPicked;
 
@@ -4320,6 +4719,7 @@ setInterval(() => {
   try {
     localStorage.setItem('dunjeon-save', JSON.stringify({
       lv: state.lv, xp: state.xp, gold: state.gold, meta: state.meta, best: state.best,
+      lastDepth: state.lastDepth,
       difficulty: state.difficulty, difficultyPicked: state.difficultyPicked,
       // Phase 3
       classId: state.classId, gems: state.gems, gemLoadout: state.gemLoadout,
@@ -4349,6 +4749,7 @@ function frame(now) {
     if (wasMoving && !leader.moving) onLeaderArrive();
     updateFollowers(dt);
     updateCombat(dt);
+    updateMining(dt);
     updateChatter(dt);
   }
 
@@ -4382,13 +4783,13 @@ function frame(now) {
 /* ---------------- 시작 ---------------- */
 loadSave();
 gotoOverworld();
-toast('🌿 방향키/WASD로 이동 · 해골 입구로 들어가면 던전!');
+toast('🌿 방향키/WASD로 이동 · 갱도 입구로 들어가면 광산!');
 requestAnimationFrame(frame);
 
 // 디버그/테스트용
 window.GAME = {
   state, party, leader,
-  enterDungeon: () => { state.cameFromDungeon = false; enterDungeon(); },
+  enterDungeon: d => { state.cameFromDungeon = false; enterDungeon(d); },
   escapeDungeon, descend, openBuffChoice, openShop, openRelicChoice, closeModal, tryLeaderStep,
   toggleAuto: () => el('autoBtn').click(),
   // Phase 1 (전투 긴장감) 훅
@@ -4469,6 +4870,17 @@ window.GAME = {
     return mon;
   },
   clearMonsters: () => { state.world.monsters.length = 0; },
+  /* ---- 광산(Delve) 훅 ---- */
+  // 깊이 선택 / 체크포인트
+  maxDepth, depthChoiceAvailable, recLvForDepth, depthTooDeep, setLastDepth,
+  openDepthChoice, depthPick: () => depthPick,
+  // 광맥 채굴
+  VEIN_COUNT_MINE, VEIN_CHANNEL, VEIN_GOLD, VEIN_DEPTH_MUL,
+  VEIN_GEM_P, VEIN_POTION_P, VEIN_AMBUSH_P,
+  veins: () => veinList(), miningTarget, updateMining, finishVein, veinGold,
+  miningCur: () => miningCur,
+  // 광산 레이아웃
+  layoutMine, SOLID_DECOS, blockGridOf, openReachCount,
   // 바이옴/특수 층을 강제로 불러온다 (테스트용)
   loadFloor: (biome, kind, floor) => {
     state.world = genFloor(biome, kind, floor || state.world.floor || 1);
