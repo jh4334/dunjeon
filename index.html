@@ -13,6 +13,7 @@
   <div id="topLeft">
     <div class="panel" id="lvPanel">Lv. <span id="lvVal">1</span></div>
     <div class="panel" id="goldPanel"><span class="coin"></span><span id="goldVal">0</span></div>
+    <div class="panel" id="azPanel"><span class="azIcon"></span><span id="azVal">0</span></div>
   </div>
   <div id="buffBar"></div>
 
@@ -39,8 +40,17 @@
     <button class="diag" data-dirs="down,left">↙</button><button data-dir="down">↓</button><button class="diag" data-dirs="down,right">↘</button>
   </div>
 
+  <!-- 어둠 게이지 (광산 층에서만) -->
+  <div id="darkPanel" class="hidden">
+    <div class="dRow"><span class="dEye">👁</span><span id="darkVal">0</span><span class="dMax">/10</span></div>
+    <div id="darkBarWrap"><div id="darkBar"></div></div>
+  </div>
+
   <button id="autoBtn">⟳<span>자동</span></button>
   <button id="upgradeBtn">⚒️<span>강화</span></button>
+  <button id="flareBtn" class="hidden">🔥<span id="flareVal">0</span></button>
+
+  <div id="vignette" class="hidden"></div>
 
   <div id="modalWrap" class="hidden">
     <div id="modal">

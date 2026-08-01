@@ -12,6 +12,12 @@ const MONSTER_STEP = 0.42;
 const SIGHT = 4.4;                       // 시야(밝게 보이는) 반경
 const REVEAL = 4;                        // 탐험 기록 반경
 
+/* ---- 광산 장비(아주라이트 영구 강화) 상한 — 효과 계산에서 먼저 쓰이므로 위에 둔다 ---- */
+const MINE_MAX_LV = { lamp: 4, pickaxe: 5, pouch: 5, detector: 2 };
+const MINE_COST_BASE = 20, MINE_COST_MUL = 1.6;
+const mineLv = k => clamp(Math.floor((state.meta && state.meta[k]) || 0), 0, MINE_MAX_LV[k] || 0);
+const mineCost = k => Math.floor(MINE_COST_BASE * Math.pow(MINE_COST_MUL, mineLv(k)));
+
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 
@@ -37,7 +43,19 @@ function isoY(x, y) { return (x + y) * (TILE_H / 2); }
 /* ---------------- 게임 상태 ---------------- */
 const state = {
   lv: 1, xp: 0, gold: 0,
-  meta: { atk: 0, hp: 0, heal: 0, gold: 0, revive: 0, classes: ['knight'] },  // 영구 강화 (로그라이트 메타 진행) + 해금 직업
+  azurite: 0,                                             // ◆ 아주라이트 (광맥/어픽스에서만 나오는 광산 전용 화폐)
+  flares: 0,                                              // 🔥 플레어 소지 수 (광산 층 입장 시 자동 보충)
+  // 영구 강화 (로그라이트 메타 진행) + 해금 직업
+  // lamp/pickaxe/pouch/detector = 아주라이트로 사는 광산 장비
+  meta: {
+    atk: 0, hp: 0, heal: 0, gold: 0, revive: 0,
+    lamp: 0, pickaxe: 0, pouch: 0, detector: 0,
+    classes: ['knight'],
+  },
+  // 깊이 기록판 (초원 비석) — 런 진행 중 자동 갱신
+  records: { classBest: {}, veins: 0, azurite: 0, bestKills: 0 },
+  // 어둠 게이지 (광산 층에서만) — 저장하지 않는 런 상태
+  darkStack: 0, darkAway: 0, darkTick: 0, darkWarned: false, darkSafe: true,
   run: null,                                              // 현재 던전 런 (버프/기록)
   paused: false,
   best: 0,                                                // 최고 도달 깊이 (영구 기록)
@@ -263,7 +281,9 @@ function hasUnyielding()   { return passiveN('def') >= 5; }
 function passiveGoldMult() { return 1 + 0.05 * passiveStacks('util'); }
 function passiveSpeedMult(){ return passiveN('util') >= 3 ? 1.08 : 1; }
 function passiveSight()    { return passiveN('util') >= 5 ? 1 : 0; }
-function sightRadius()     { return SIGHT + passiveSight(); }
+// 광부의 헬멧 램프(아주라이트 강화) — 레벨당 시야 +0.5
+function lampSight()       { return 0.5 * mineLv('lamp'); }
+function sightRadius()     { return SIGHT + passiveSight() + lampSight(); }
 function revealRadius()    { return REVEAL + passiveSight(); }
 // 순서 강제: 다음 노드만 찍을 수 있고, 포인트가 있어야 한다
 function canTakePassive(tree) {
@@ -317,6 +337,26 @@ function floorRisk() {
   return (w && w.mode === 'dungeon' && w.riskMult) ? w.riskMult : 1;
 }
 function goldMult() { return 1.3 * (1 + 0.10 * state.meta.gold) * (1 + 0.20 * runBuff('gold')) * (1 + 0.30 * relicCount('charm')) * rewardMult() * floorRisk() * passiveGoldMult(); }
+
+/* ---- ◆ 아주라이트 (광산 전용 화폐) ----
+ * 골드와 완전히 분리된 자원. 광맥 채굴과 '아주라이트가 깃든' 몬스터에서만 나오고,
+ * 캠프의 ◆ 광산 장비(시야/채굴/플레어/탐지기)를 사는 데만 쓴다. */
+function addAzurite(n) {
+  const v = Math.max(0, Math.floor(n) || 0);
+  if (!v) return 0;
+  state.azurite += v;
+  if (state.run) state.run.azuriteGained = (state.run.azuriteGained || 0) + v;
+  if (state.records) state.records.azurite = (state.records.azurite || 0) + v;
+  saveDirty = true;
+  return v;
+}
+function spendAzurite(n) {
+  const v = Math.max(0, Math.floor(n) || 0);
+  if (state.azurite < v) return false;
+  state.azurite -= v;
+  saveDirty = true;
+  return true;
+}
 party.forEach(m => { m.hp = maxHp(m); });
 
 /* ---------------- 타격감 (플래시 / 화면 흔들림 / 히트스톱) ----------------
@@ -386,6 +426,16 @@ const SFX = {
              noise: { t: 0, d: 0.10, v: 0.26, cut: 2400 },
              notes: [{ w: 'square', f: 900, f2: 320, t: 0, d: 0.05, v: 0.26, jit: 0.10 },
                      { w: 'triangle', f: 180, f2: 90, t: 0.01, d: 0.09, v: 0.30 }] },
+  // ◆ 아주라이트 획득 — 수정이 맑게 울리는 2음
+  azurite: { notes: [{ w: 'sine', f: 1319, t: 0, d: 0.10, v: 0.32 },
+                     { w: 'sine', f: 1976, t: 0.06, d: 0.20, v: 0.24 },
+                     { w: 'triangle', f: 660, t: 0, d: 0.14, v: 0.18 }] },
+  // 🔥 플레어 점화 — 치익 하는 노이즈 + 상승음
+  flare:   { noise: { t: 0, d: 0.34, v: 0.34, cut: 1800 },
+             notes: [{ w: 'sawtooth', f: 240, f2: 620, t: 0, d: 0.24, v: 0.26 }] },
+  // 👁 어둠 경고 — 낮게 깔리는 불협 2음 (스택 5 진입 시 1회)
+  dark:    { notes: [{ w: 'sine', f: 138, f2: 96, t: 0, d: 0.55, v: 0.34 },
+                     { w: 'sine', f: 196, f2: 132, t: 0.05, d: 0.50, v: 0.24 }] },
 };
 
 let audioCtx = null, sfxBus = null, sfxNoiseBuf = null;
@@ -552,6 +602,17 @@ function genOverworld() {
   // 스폰: 섬 중앙 근처
   wld.spawn = { x: Math.floor(cx), y: Math.floor(cy) + 3 };
   while (!walkable(wld, wld.spawn.x, wld.spawn.y)) wld.spawn.y--;
+
+  // 깊이 기록판 — 캠프(스폰) 바로 옆 비석. 리더가 인접하면 기록 모달이 열린다.
+  const rsSpots = [[2, 0], [-2, 0], [0, 2], [0, -2], [2, 2], [-2, -2], [3, 0], [0, 3]];
+  for (const [dx, dy] of rsSpots) {
+    const x = wld.spawn.x + dx, y = wld.spawn.y + dy;
+    if (tileAt(wld, x, y) !== T.GRASS) continue;
+    if (wld.props.some(p => p.gx === x && p.gy === y)) continue;
+    wld.props.push({ type: 'records', gx: x, gy: y, solid: true });
+    wld.records = { x, y };
+    break;
+  }
 
   // 장식물
   const decos = ['rock', 'stump', 'apple', 'bush', 'rune', 'rock', 'stump', 'bush'];
@@ -1160,8 +1221,9 @@ function countWalkable(wld) {
   wld.walkTotal = n;
 }
 
-function reveal(wld, cx, cy) {
-  const R = revealRadius();
+// rad 를 주면 그 반경으로 (플레어가 던져진 자리를 밝힐 때 사용)
+function reveal(wld, cx, cy, rad) {
+  const R = rad || revealRadius();
   for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
     if (dx * dx + dy * dy > R * R + 1) continue;
     const x = cx + dx, y = cy + dy;
@@ -1225,7 +1287,10 @@ const AFFIXES = [
   { k: 'summoner', name: '소환사',   apply: m => { m.summonT = 6; m.minions = []; } },
   { k: 'vampiric', name: '흡혈의',   apply: m => { m.leech = 0.5; } },
   { k: 'tough',    name: '단단한',   apply: m => { m.dr = 0.4; } },
+  // 광산 화폐 어픽스 — 처치하면 아주라이트가 흩어진다
+  { k: 'azurite',  name: '아주라이트가 깃든', apply: m => { m.azurite = irand(AZ_AFFIX_DROP[0], AZ_AFFIX_DROP[1]); } },
 ];
+const AZ_AFFIX_DROP = [2, 5];      // '아주라이트가 깃든' 처치 드랍량
 function rollAffixes(mon, floor) {
   // 층이 깊을수록 어픽스 개수 증가 (1~3)
   const n = clamp(1 + Math.floor((floor - 1) / 3) + (Math.random() < 0.3 ? 1 : 0), 1, 3);
@@ -1448,6 +1513,16 @@ function onLeaderArrive() {
     enterDungeon();
     return;
   }
+  // 깊이 기록판 — 인접하면 1회 열린다 (벗어났다 다시 오면 다시 열린다)
+  if (wld.mode === 'overworld') {
+    const rs = wld.props.find(p => p.type === 'records');
+    if (rs) {
+      const adj = cheb(rs.gx, rs.gy, leader.gx, leader.gy) <= 1;
+      if (!adj) rs.open = false;
+      // 자동 탐험 중에는 열지 않는다 (모달이 자동 진행을 멈추지 않도록)
+      else if (!rs.open && !state.auto && !modalIsOpen()) { rs.open = true; openRecords(); return; }
+    }
+  }
   if (wld.mode === 'dungeon') {
     if (wld.stairs && leader.gx === wld.stairs.x && leader.gy === wld.stairs.y) {
       onStairsStep();
@@ -1521,8 +1596,17 @@ function damageMonster(mon, dmg, color, opt) {
     const rm = mon.rewardMult || 1;
     const gainedXp = Math.floor(mon.xp * rewardMult() * floorRisk());
     state.xp += gainedXp;
-    if (state.run) state.run.kills++;
+    if (state.run) {
+      state.run.kills++;
+      if (state.records && state.run.kills > (state.records.bestKills || 0)) state.records.bestKills = state.run.kills;
+    }
     addFloater(mon.px, mon.py - 40, `+${gainedXp} XP`, '#9be8ff', 12);
+    // '아주라이트가 깃든' 어픽스 — 처치 시 아주라이트 드랍
+    if (mon.azurite > 0) {
+      const az = addAzurite(mon.azurite);
+      addFloater(mon.px, mon.py - 60, `+${az} ◆`, '#7ec8ff', 14);
+      addSparkle(mon.px, mon.py, '#7ec8ff');
+    }
     addSparkle(mon.px, mon.py, '#ffb0c0');
     if (Math.random() < .3) state.world.items.push({ type: 'gold', gx: mon.gx, gy: mon.gy, mult: rm });
     if (mon.elite) {
@@ -2169,17 +2253,24 @@ function partyWipe() {
 
 /* =====================================================================
  * 아주라이트 광맥 채굴 (Delve 식 리스크 & 리워드)
- * 리더가 광맥 옆에 멈춰 서면 2초 채널링 → 큰 골드(+젬/포션).
+ * 리더가 광맥 옆에 멈춰 서면 2초 채널링 → 아주라이트(+젬/포션).
  * 다만 35% 확률로 갱도가 무너지며 매복이 쏟아진다.
  * =================================================================== */
 const VEIN_COUNT_MINE = [2, 4];    // 광산 바이옴의 광맥 수
-const VEIN_CHANNEL = 2.0;          // 채굴 채널링 시간(초)
-const VEIN_GOLD = [45, 110];       // 상자(30~80)보다 큰 기본 골드
-const VEIN_DEPTH_MUL = 0.22;       // 깊이 1당 골드 배율 가산
+const VEIN_CHANNEL = 2.0;          // 채굴 채널링 기본 시간(초) — 단단한 곡괭이로 단축
+const VEIN_CHANNEL_MIN = 0.8;      // 곡괭이 강화 하한
+const VEIN_PICK_STEP = 0.2;        // 곡괭이 Lv당 단축(초)
+const VEIN_AZURITE = [8, 20];      // ◆ 아주라이트 기본 수량
+const VEIN_DEPTH_MUL = 0.22;       // 깊이 1당 수량 배율 가산
 const VEIN_GEM_P = 0.30;
 const VEIN_POTION_P = 0.20;
 const VEIN_AMBUSH_P = 0.35;
 let miningCur = null;              // 지금 캐고 있는 광맥 (렌더/테스트용)
+
+// 실제 채널링 시간 — '단단한 곡괭이' Lv당 -0.2초 (하한 0.8초)
+function veinChannel() {
+  return Math.max(VEIN_CHANNEL_MIN, VEIN_CHANNEL - VEIN_PICK_STEP * mineLv('pickaxe'));
+}
 
 function veinList() {
   const w = state.world;
@@ -2197,24 +2288,25 @@ function miningTarget() {
   }
   return best;
 }
-function veinGold(floor) {
+// 광맥 1개가 주는 아주라이트 — 8~20 × 깊이 배율
+function veinAzurite(floor) {
   return Math.max(1, Math.floor(
-    irand(VEIN_GOLD[0], VEIN_GOLD[1]) * (1 + VEIN_DEPTH_MUL * (floor - 1)) * goldMult()));
+    irand(VEIN_AZURITE[0], VEIN_AZURITE[1]) * (1 + VEIN_DEPTH_MUL * (floor - 1))));
 }
 // 채굴 완료 — 보상 지급 + 매복 판정
 function finishVein(p) {
   const wld = state.world;
   const floor = (wld && wld.floor) || 1;
   p.mined = true;
-  p.prog = VEIN_CHANNEL;
-  const g = veinGold(floor);
-  state.gold += g;
-  if (state.run) state.run.goldGained += g;
+  p.prog = veinChannel();
+  const az = veinAzurite(floor);
+  addAzurite(az);
+  if (state.records) state.records.veins = (state.records.veins || 0) + 1;
   const wx = isoX(p.gx, p.gy), wy = isoY(p.gx, p.gy);
-  addFloater(wx, wy - 24, `💎 +${fmt(g)}`, '#7ec8ff', 15);
+  addFloater(wx, wy - 24, `+${fmt(az)} ◆`, '#7ec8ff', 16);
   addSparkle(wx, wy, '#7ec8ff');
   addSparkle(wx, wy, '#cfe9ff');
-  sfx('gold');
+  sfx('azurite');
   saveDirty = true;
 
   let extra = '';
@@ -2244,10 +2336,10 @@ function finishVein(p) {
     toast('💎 광맥이 무너지며 몬스터가 쏟아진다!');
     say(party[1], '갱도가 무너져요! 조심해요!');
   } else {
-    toast(`💎 아주라이트 채굴 — +${fmt(g)} 골드${extra}`);
+    toast(`◆ 아주라이트 채굴 — +${fmt(az)} 아주라이트${extra}`);
     if (Math.random() < .6) say(party[3], '이야, 순도가 장난 아닌데요?');
   }
-  return { gold: g, ambush };
+  return { azurite: az, ambush };
 }
 // 매 프레임 채널링 진행 (이동하면 중단 · 진행은 보존)
 function updateMining(dt) {
@@ -2257,11 +2349,162 @@ function updateMining(dt) {
   miningCur = p;
   if (!p) return null;
   if (leader.moving || state.transitioning) return p;   // 이동 중에는 중단 (진행 보존)
-  p.prog = Math.min(VEIN_CHANNEL, (p.prog || 0) + dt);
-  if (p.prog >= VEIN_CHANNEL) { miningCur = null; finishVein(p); return p; }
+  const need = veinChannel();
+  p.prog = Math.min(need, (p.prog || 0) + dt);
+  if (p.prog >= need) { miningCur = null; finishVein(p); return p; }
   sfx('pick');
   if (Math.random() < dt * 7) addSparkle(isoX(p.gx, p.gy), isoY(p.gx, p.gy) - 10, '#7ec8ff');
   return p;
+}
+
+/* =====================================================================
+ * 어둠 게이지 & 플레어 (PoE Delve 시그니처)
+ * 광산(mine) 층에서만 발동한다.
+ *  · 광원(랜턴/플레어/채굴한 광맥/입구/계단) 반경 5 밖에서 6초가 지나면
+ *    어둠 스택이 초당 1씩 차오르고(최대 10), 스택 × 깊이 계수만큼 파티가 매초 깎인다.
+ *  · 광원 반경 안에서는 스택이 초당 2씩 빠진다 → "광원 근처는 안전, 구석은 위험".
+ *  · 플레어는 그 자리에 영구 광원을 만든다 (소지 2 + 플레어 주머니 Lv).
+ * =================================================================== */
+const DARK_MAX = 10;               // 스택 상한
+const DARK_RATE = 1;               // 어둠 속: 초당 스택 +1
+const DARK_RECOVER = 2;            // 광원 근처: 초당 스택 -2
+const DARK_GRACE = 6;              // 광원을 벗어난 뒤 이만큼(초) 지나야 잠식이 시작된다
+const LIGHT_R = 5;                 // 광원 반경 (체비셰프 거리)
+const DARK_DMG_PER_STACK = 0.6;    // 스택 1당 초당 피해 (깊이 1 기준)
+const DARK_DEPTH_MUL = 0.25;       // 깊이 1당 피해 배율 가산
+const DARK_WARN_AT = 5;            // 이 스택부터 보라 비네트 + 경고음 1회
+const DARK_AUTO_FLARE = 6;         // 자동 탐험이 플레어를 터뜨리는 스택
+const FLARE_BASE = 2;              // 기본 플레어 소지 수
+
+function darkActive() {
+  const w = state.world;
+  return !!(w && w.mode === 'dungeon' && w.biome === 'mine');
+}
+function maxFlares() { return FLARE_BASE + mineLv('pouch'); }
+// 광산 층 입장 시 자동 보충
+function refillFlares() {
+  const n = maxFlares();
+  if (state.flares < n) { state.flares = n; saveDirty = true; }
+  return state.flares;
+}
+/* 영구 광원 목록 — 수정 랜턴 / 플레어 / 채굴 완료된 광맥 / 입구(스폰) / 계단 */
+function lightSources(wld) {
+  const w = wld || state.world;
+  const out = [];
+  if (!w || w.mode !== 'dungeon') return out;
+  w.props.forEach(p => {
+    if (p.type === 'lantern' || p.type === 'flare') out.push({ x: p.gx, y: p.gy, k: p.type });
+    else if (p.type === 'vein' && p.mined) out.push({ x: p.gx, y: p.gy, k: 'vein' });
+  });
+  if (w.spawn) out.push({ x: w.spawn.x, y: w.spawn.y, k: 'entrance' });
+  if (w.stairs) out.push({ x: w.stairs.x, y: w.stairs.y, k: 'stairs' });
+  return out;
+}
+function nearLight(x, y, wld) {
+  return lightSources(wld).some(s => cheb(s.x, s.y, x, y) <= LIGHT_R);
+}
+// 어둠 피해(초당). 캐주얼은 절반.
+function darkDps(stack, floor) {
+  const w = state.world;
+  const s = (stack === undefined || stack === null) ? state.darkStack : stack;
+  const f = (floor === undefined || floor === null) ? ((w && w.floor) || 1) : floor;
+  const casual = state.difficulty === 'casual' ? 0.5 : 1;
+  return Math.max(0, s) * DARK_DMG_PER_STACK * (1 + DARK_DEPTH_MUL * (f - 1)) * casual;
+}
+function resetDarkness() {
+  state.darkStack = 0; state.darkAway = 0; state.darkTick = 0;
+  state.darkWarned = false; state.darkSafe = true;
+}
+// 어둠 피해는 방어 보정 없이 그대로 들어간다 (난이도 보정은 darkDps 안에서 끝난다)
+function applyDarkDamage(d) {
+  if (!(d > 0)) return 0;
+  let hit = 0;
+  party.forEach(m => {
+    if (m.down || m.invulnT > 0) return;
+    m.hp -= d;
+    hit++;
+    if (m.hp <= 0) { m.hp = 0; m.down = true; m.reviveT = 0; say(m, '으윽… 어둠이…'); }
+  });
+  if (hit) addFloater(leader.px, leader.py - 34, `👁 ${Math.max(1, Math.round(d))}`, '#c08aff', 13);
+  if (aliveMembers().length === 0) partyWipe();
+  return hit;
+}
+function updateDarkness(dt) {
+  if (!darkActive()) {                       // 광산 외 바이옴/초원 — 완전 비활성
+    if (state.darkStack !== 0 || state.darkAway !== 0) resetDarkness();
+    state.darkSafe = true;
+    return 0;
+  }
+  const safe = nearLight(leader.gx, leader.gy);
+  state.darkSafe = safe;
+  if (safe) {
+    state.darkAway = 0;
+    state.darkTick = 0;
+    state.darkStack = Math.max(0, state.darkStack - DARK_RECOVER * dt);
+  } else {
+    state.darkAway += dt;
+    if (state.darkAway >= DARK_GRACE) {
+      state.darkStack = Math.min(DARK_MAX, state.darkStack + DARK_RATE * dt);
+      // 스택 피해는 1초 간격으로 묶어서 (플로터 도배 방지)
+      state.darkTick += dt;
+      while (state.darkTick >= 1) { state.darkTick -= 1; applyDarkDamage(darkDps()); }
+    }
+  }
+  if (state.darkStack < DARK_WARN_AT) state.darkWarned = false;
+  else if (!state.darkWarned) {
+    state.darkWarned = true;
+    sfx('dark');
+    toast('👁 어둠이 잠식한다 — 광원으로 피하세요!');
+    say(party[2], '어둠이… 숨을 조여와요!');
+  }
+  return state.darkStack;
+}
+/* ---- 플레어: 현재 칸에 영구 광원을 설치한다 ---- */
+function useFlare() {
+  if (!darkActive() || state.transitioning || leader.down) return false;
+  if (state.flares <= 0) { toast('🔥 플레어가 없습니다'); return false; }
+  const wld = state.world;
+  if (wld.props.some(p => p.type === 'flare' && p.gx === leader.gx && p.gy === leader.gy)) return false;
+  state.flares--;
+  wld.props.push({ type: 'flare', gx: leader.gx, gy: leader.gy, solid: false, t: state.time });
+  reveal(wld, leader.gx, leader.gy, LIGHT_R);      // 던진 곳 주변을 밝힌다
+  state.darkAway = 0;
+  state.darkTick = 0;
+  addFloater(leader.px, leader.py - 50, '🔥 플레어!', '#ffb066', 15);
+  addSparkle(leader.px, leader.py, '#ffb066');
+  sfx('flare');
+  saveDirty = true;
+  return true;
+}
+/* 화면에 밝게 그릴 광원 (렌더용) — 타일마다 불리므로 목록을 캐시한다.
+ * 프롭 개수가 바뀌면(플레어 설치/계단 등장) 자동으로 다시 만든다. */
+function litList(w) {
+  if (!w.__lit || w.__litN !== w.props.length) {
+    w.__lit = w.props.filter(p => p.type === 'flare' || p.type === 'lantern').map(p => ({ x: p.gx, y: p.gy }));
+    w.__litN = w.props.length;
+  }
+  return w.__lit;
+}
+function flareLit(x, y, wld) {
+  const w = wld || state.world;
+  if (!w || w.mode !== 'dungeon') return false;
+  const list = litList(w);
+  for (let i = 0; i < list.length; i++) {
+    if (cheb(list[i].x, list[i].y, x, y) <= LIGHT_R) return true;
+  }
+  return false;
+}
+/* ---- 광맥 탐지기 (Lv2): 가장 가까운 미채굴 광맥 ---- */
+function nearestVein() {
+  const w = state.world;
+  if (!w || w.mode !== 'dungeon') return null;
+  let best = null, bd = Infinity;
+  w.props.forEach(p => {
+    if (p.type !== 'vein' || p.mined) return;
+    const d = Math.hypot(p.gx - leader.gx, p.gy - leader.gy);
+    if (d < bd) { bd = d; best = p; }
+  });
+  return best ? { p: best, d: bd } : null;
 }
 
 /* ---------------- 맵 전환 ---------------- */
@@ -2290,6 +2533,9 @@ function placeParty(wld, x, y) {
   // 직업 능력 상태 초기화 (미니언/지뢰는 층을 넘어가지 않는다)
   leader.summonT = 0; leader.auraT = 0; leader.mineCd = 0;
   wld.minions = []; wld.mines = [];
+  // 어둠 게이지는 층마다 초기화 · 광산 층에 들어서면 플레어 자동 보충
+  resetDarkness();
+  if (wld.mode === 'dungeon' && wld.biome === 'mine') refillFlares();
   reveal(wld, x, y);
   state.cam.x = isoX(x, y);
   state.cam.y = isoY(x, y);
@@ -2316,6 +2562,16 @@ function setLastDepth(d) {
   const v = clamp(Math.floor(d) || 1, 1, 999);
   if (state.lastDepth !== v) { state.lastDepth = v; saveDirty = true; }
 }
+/* ---- 깊이 기록 갱신 (전체 최고 + 직업별 최고) — 런 진행 중 자동으로 불린다 ---- */
+function recordDepth(d) {
+  const v = clamp(Math.floor(d) || 1, 1, 999);
+  let changed = false;
+  if (v > (state.best || 0)) { state.best = v; changed = true; }
+  const cb = state.records.classBest || (state.records.classBest = {});
+  if (v > (cb[state.classId] || 0)) { cb[state.classId] = v; changed = true; }
+  if (changed) saveDirty = true;
+  return changed;
+}
 
 function enterDungeon(depth) {
   // 최초 1회만 난이도 선택 (이후엔 기억된 난이도로 바로 입장)
@@ -2324,12 +2580,12 @@ function enterDungeon(depth) {
   if (depth == null && depthChoiceAvailable()) { openDepthChoice(d => enterDungeon(d)); return; }
   const start = clamp(Math.floor(depth || 1), 1, maxDepth());
   transition(() => {
-    state.run = { floor: start, buffs: { atk: 0, hp: 0, heal: 0, gold: 0, crit: 0, def: 0 }, relics: {}, kills: 0, goldGained: 0 };
+    state.run = { floor: start, buffs: { atk: 0, hp: 0, heal: 0, gold: 0, crit: 0, def: 0 }, relics: {}, kills: 0, goldGained: 0, azuriteGained: 0 };
     // 광산 입장 첫 층은 항상 갱도(mine) — 깊이만큼의 층 스케일이 그대로 적용된다
     state.world = genDungeon(start, { biome: 'mine', kind: 'safe' });
     placeParty(state.world, state.world.spawn.x, state.world.spawn.y);
     setLastDepth(start);
-    if (state.best < start) { state.best = start; saveDirty = true; }
+    recordDepth(start);
     toast(`⛏️ 깊이 ${start} — ${state.world.theme.name}`);
     if (Math.random() < .7) say(pick(party.slice(1)), pick(['으스스해요…', '조심해서 가요!', '몬스터 냄새가 나요…']));
     updateHudMode();
@@ -2417,11 +2673,9 @@ function descend(choice) {
     state.world = genDungeon(next, ch);
     placeParty(state.world, state.world.spawn.x, state.world.spawn.y);
     setLastDepth(next);
-    if (next > state.best) {
-      state.best = next;
-      saveDirty = true;
-      addFloater(leader.px, leader.py - 60, '🏆 최고 기록!', '#ffe88a', 15);
-    }
+    const newBest = next > (state.best || 0);
+    recordDepth(next);
+    if (newBest) addFloater(leader.px, leader.py - 60, '🏆 최고 기록!', '#ffe88a', 15);
     const w = state.world;
     const pk = PATH_KINDS[w.kind] || PATH_KINDS.safe;
     toast(`⬇️ 깊이 ${next} — ${pk.icon} ${w.theme.name}`);
@@ -2438,7 +2692,8 @@ function escapeDungeon() {
   showRunSummary(true);
 }
 function showRunSummary(escaped) {
-  const run = state.run || { floor: state.world.floor || 1, kills: 0, goldGained: 0 };
+  const run = state.run || { floor: state.world.floor || 1, kills: 0, goldGained: 0, azuriteGained: 0 };
+  if (state.records && run.kills > (state.records.bestKills || 0)) state.records.bestKills = run.kills;
   state.run = null;
   // 런이 끝났으므로 예약된 축복/유물 모달은 의미가 없다 — 전부 취소하고 정산을 최우선으로 띄운다
   cancelPendingModals(false);
@@ -2450,6 +2705,7 @@ function showRunSummary(escaped) {
       <div class="sumRow"><span>최고 기록</span><b>깊이 ${state.best}</b></div>
       <div class="sumRow"><span>처치한 몬스터</span><b>${run.kills}</b></div>
       <div class="sumRow"><span>획득 골드</span><b>+${fmt(run.goldGained)}</b></div>
+      <div class="sumRow"><span>획득 아주라이트</span><b id="sumAz">+${fmt(run.azuriteGained || 0)} ◆</b></div>
       ${escaped ? '' : `<div class="sumRow bad"><span>잃은 골드</span><b>-${fmt(lost)}</b></div>`}
       <p class="sumHint">${escaped ? '골드로 캠프에서 영구 강화를 해보세요!' : '축복은 사라지지만 골드와 경험은 남아요.'}</p>
       <button class="modalBtn" id="sumOk">초원으로</button>`;
@@ -2556,7 +2812,11 @@ function updateAuto() {
   // 리더가 쓰러져 있으면 자동 탐험을 멈춘다 (쓰러진 리더가 걸어가는 연출 제거).
   // 부활 타이머는 전투 중에도 절반 속도로 계속 진행되므로 교착은 없다.
   if (leader.down) { autoPath = null; return; }
-  if (autoDodgeStep()) return;
+  if (autoDodgeStep()) return;                 // 강타 장판 회피가 최우선
+  // 어둠이 위험 수위에 닿으면 플레어를 터뜨려 안전 지대를 만든다
+  if (darkActive() && state.darkStack >= DARK_AUTO_FLARE && state.flares > 0) {
+    if (useFlare()) return;
+  }
   // 광맥 옆에 섰으면 채굴이 끝날 때까지 기다린다 (updateMining 이 진행을 담당)
   if (wld.mode === 'dungeon' && miningTarget()) { autoPath = null; return; }
   // 근처 몬스터와 교전 중이면 대기
@@ -3150,11 +3410,14 @@ function openRunInfo() {
       rows.push(['바이옴', floorBiomeLine()]);
       rows.push(['처치한 몬스터', String(run.kills || 0)]);
       rows.push(['획득 골드', `+${fmt(run.goldGained || 0)}`]);
+      rows.push(['획득 아주라이트', `+${fmt(run.azuriteGained || 0)} ◆`]);
+      if (darkActive()) rows.push(['어둠 / 플레어', `👁 ${(state.darkStack || 0).toFixed(1)} · 🔥 ${state.flares}`]);
       rows.push(['최고 기록', `깊이 ${state.best}`]);
     } else {
       rows.push(['최고 기록', `깊이 ${state.best}`]);
       rows.push(['레벨', `Lv.${state.lv}`]);
       rows.push(['보유 골드', fmt(state.gold)]);
+      rows.push(['보유 아주라이트', `${fmt(state.azurite)} ◆`]);
       rows.push(['직업', `${curClass().icon} ${curClass().name}`]);
     }
     const wrap = document.createElement('div');
@@ -3192,6 +3455,9 @@ function openRunInfo() {
       chipList('영구 강화', 'riMeta', META_DEFS
         .filter(d => state.meta[d.k] > 0)
         .map(d => ({ k: d.k, icon: d.icon, name: d.name, n: state.meta[d.k] })));
+      chipList('◆ 광산 장비', 'riMine', MINE_DEFS
+        .filter(d => mineLv(d.k) > 0)
+        .map(d => ({ k: d.k, icon: d.icon, name: d.name, n: mineLv(d.k) })));
       chipList('해금한 직업', 'riClasses', CLASS_KEYS
         .filter(k => classUnlocked(k))
         .map(k => ({ k, icon: CLASSES[k].icon, name: CLASSES[k].name, n: 1 })));
@@ -3284,6 +3550,75 @@ const META_DEFS = [
   { k: 'revive', icon: '⏱️', name: '구급 처치',    desc: '부활 시간 -0.5초',  base: 80, max: 6 },
 ];
 const metaCost = d => Math.floor(d.base * Math.pow(1.7, state.meta[d.k]));
+
+/* ---- ◆ 광산 장비 — 아주라이트 전용 영구 강화 ---- */
+const MINE_DEFS = [
+  { k: 'lamp',     icon: '🪖', name: '광부의 헬멧 램프', desc: '시야 반경 +0.5' },
+  { k: 'pickaxe',  icon: '⛏️', name: '단단한 곡괭이',   desc: '채굴 시간 -0.2초 (하한 0.8초)' },
+  { k: 'pouch',    icon: '🔥', name: '플레어 주머니',   desc: '플레어 소지 +1' },
+  { k: 'detector', icon: '📡', name: '광맥 탐지기',     desc: 'Lv1 미니맵 표시 · Lv2 방향 화살표' },
+];
+function mineEffectLine(k) {
+  if (k === 'lamp') return `시야 ${sightRadius().toFixed(1)}`;
+  if (k === 'pickaxe') return `채굴 ${veinChannel().toFixed(1)}초`;
+  if (k === 'pouch') return `소지 ${maxFlares()}개`;
+  return mineLv('detector') >= 2 ? '미니맵 + 화살표' : mineLv('detector') >= 1 ? '미니맵 표시' : '없음';
+}
+function buyMineUpgrade(k) {
+  if (!MINE_MAX_LV[k]) return false;
+  if (mineLv(k) >= MINE_MAX_LV[k]) return false;
+  const cost = mineCost(k);
+  if (!spendAzurite(cost)) return false;
+  state.meta[k] = mineLv(k) + 1;
+  saveDirty = true;
+  return true;
+}
+function openMineShop() {
+  if (state.paused || state.transitioning) return;
+  openModal('◆ 광산 장비 — 아주라이트 강화', body => {
+    const render = () => {
+      body.innerHTML = `<div class="shopGold azBal"><span class="azIcon"></span><span id="mineAzVal">${fmt(state.azurite)}</span></div>`;
+      MINE_DEFS.forEach(d => {
+        const lvl = mineLv(d.k);
+        const max = MINE_MAX_LV[d.k];
+        const maxed = lvl >= max;
+        const cost = mineCost(d.k);
+        const row = document.createElement('div');
+        row.className = 'shopRow mineRow';
+        row.dataset.k = d.k;
+        row.innerHTML = `<span class="sIcon">${d.icon}</span>
+          <div class="sInfo"><b>${d.name} <em>Lv.${lvl}/${max}</em></b>
+            <small>${d.desc}</small><small class="sEff">현재: ${mineEffectLine(d.k)}</small></div>
+          <button class="buyBtn az" data-buy="${d.k}" ${(maxed || state.azurite < cost) ? 'disabled' : ''}>${maxed ? 'MAX' : `◆ ${fmt(cost)}`}</button>`;
+        row.querySelector('.buyBtn').addEventListener('click', () => {
+          if (!buyMineUpgrade(d.k)) return;
+          sfx('azurite');
+          addSparkle(leader.px, leader.py, '#7ec8ff');
+          render();
+        });
+        body.appendChild(row);
+      });
+      const hint = document.createElement('p');
+      hint.className = 'sumHint';
+      hint.textContent = '아주라이트는 광맥 채굴과 ◆ 어픽스 몬스터에서만 나옵니다.';
+      body.appendChild(hint);
+      const back = document.createElement('button');
+      back.className = 'modalBtn';
+      back.id = 'mineBackBtn';
+      back.textContent = '← 캠프로';
+      back.addEventListener('click', () => { closeModal(); openShop(); });
+      body.appendChild(back);
+      const close = document.createElement('button');
+      close.className = 'modalBtn';
+      close.id = 'mineCloseBtn';
+      close.textContent = '닫기';
+      close.addEventListener('click', closeModal);
+      body.appendChild(close);
+    };
+    render();
+  }, { key: 'mineshop' });
+}
+
 function openShop() {
   if (state.paused || state.transitioning) return;
   openModal('⚒️ 모닥불 캠프 — 영구 강화', body => {
@@ -3309,6 +3644,12 @@ function openShop() {
         });
         body.appendChild(row);
       });
+      const mbtn = document.createElement('button');
+      mbtn.className = 'modalBtn mine';
+      mbtn.id = 'mineShopBtn';
+      mbtn.textContent = `◆ 광산 장비 (아주라이트 ${fmt(state.azurite)})`;
+      mbtn.addEventListener('click', () => { closeModal(); openMineShop(); });
+      body.appendChild(mbtn);
       const cbtn = document.createElement('button');
       cbtn.className = 'modalBtn';
       cbtn.id = 'classBtn';
@@ -3329,6 +3670,52 @@ function openShop() {
     };
     render();
   });
+}
+
+/* =====================================================================
+ * 깊이 기록판 (초원 캠프 옆 비석)
+ * 리더가 인접하면 열린다. 기록은 런 진행 중 자동으로 갱신된다.
+ * =================================================================== */
+function openRecords() {
+  if (state.paused || state.transitioning) return;
+  const r = state.records || {};
+  openModal('🪦 깊이 기록판', body => {
+    const cb = r.classBest || {};
+    const rows = [
+      ['🏆 최고 깊이', `깊이 ${state.best || 0}`],
+      ['⛏️ 채굴한 광맥', `${fmt(r.veins || 0)}개`],
+      ['◆ 누적 아주라이트', `${fmt(r.azurite || 0)}`],
+      ['💀 최다 킬 (1런)', `${fmt(r.bestKills || 0)}`],
+    ];
+    const wrap = document.createElement('div');
+    wrap.id = 'recordsBody';
+    wrap.innerHTML = rows.map(([k, v]) => `<div class="sumRow"><span>${k}</span><b>${v}</b></div>`).join('');
+    body.appendChild(wrap);
+
+    const h = document.createElement('div');
+    h.className = 'riHead';
+    h.textContent = '직업별 최고 깊이';
+    wrap.appendChild(h);
+    const box = document.createElement('div');
+    box.className = 'riChips';
+    box.id = 'recClassBest';
+    const items = CLASS_KEYS.filter(k => (cb[k] || 0) > 0);
+    box.innerHTML = items.length
+      ? items.map(k => `<span class="riChip" data-k="${k}">${CLASSES[k].icon} ${CLASSES[k].name}<b>깊이 ${cb[k]}</b></span>`).join('')
+      : '<span class="riNone">아직 기록이 없습니다</span>';
+    wrap.appendChild(box);
+
+    const hint = document.createElement('p');
+    hint.className = 'sumHint';
+    hint.textContent = '직업을 바꿔가며 더 깊이 내려가 보세요.';
+    body.appendChild(hint);
+    const close = document.createElement('button');
+    close.className = 'modalBtn';
+    close.id = 'recordsClose';
+    close.textContent = '닫기';
+    close.addEventListener('click', closeModal);
+    body.appendChild(close);
+  }, { key: 'records' });
 }
 
 /* ---------------- 잡담 ---------------- */
@@ -3355,6 +3742,8 @@ const KEYMAP = {
 addEventListener('keydown', e => {
   const d = KEYMAP[e.code];
   if (d) { held[d] = true; e.preventDefault(); }
+  // F — 플레어 사용 (광산 층)
+  else if (e.code === 'KeyF' && !modalIsOpen()) { e.preventDefault(); useFlare(); updateDarkHud(); }
 });
 addEventListener('keyup', e => {
   const d = KEYMAP[e.code];
@@ -3443,6 +3832,11 @@ function updateHudMode() {
   const dungeon = state.world.mode === 'dungeon';
   el('escapeBtn').classList.toggle('hidden', !dungeon);
   el('upgradeBtn').classList.toggle('hidden', dungeon);
+  // 어둠 게이지 / 플레어 버튼은 광산(mine) 층에서만
+  const mine = darkActive();
+  el('darkPanel').classList.toggle('hidden', !mine);
+  el('flareBtn').classList.toggle('hidden', !mine);
+  if (!mine) el('vignette').classList.add('hidden');
   el('exploreTitle').textContent = dungeon ? floorTitle() : '초원 탐험';
   const bio = el('exploreBiome');
   bio.textContent = dungeon ? floorBiomeLine() : '';
@@ -3452,6 +3846,8 @@ function updateHudMode() {
 function updateHud() {
   el('lvVal').textContent = state.lv;
   el('goldVal').textContent = fmt(state.gold);
+  el('azVal').textContent = fmt(state.azurite);
+  updateDarkHud();
   const wld = state.world;
   const pct = wld.walkTotal ? Math.floor(wld.seenCount / wld.walkTotal * 100) : 0;
   el('explorePct').textContent = pct + '%';
@@ -3465,6 +3861,22 @@ function updateHud() {
   updateBuffBar();
   updatePartyBadge();
   checkGoldHint();
+}
+/* ---- 👁 어둠 게이지 / 🔥 플레어 HUD (광산 층에서만) ---- */
+function updateDarkHud() {
+  const mine = darkActive();
+  const panel = el('darkPanel'), fbtn = el('flareBtn'), vig = el('vignette');
+  panel.classList.toggle('hidden', !mine);
+  fbtn.classList.toggle('hidden', !mine);
+  if (!mine) { vig.classList.add('hidden'); return; }
+  const s = state.darkStack || 0;
+  el('darkVal').textContent = s.toFixed(1);
+  el('darkBar').style.width = clamp(s / DARK_MAX * 100, 0, 100) + '%';
+  const danger = s >= DARK_WARN_AT;
+  panel.classList.toggle('danger', danger);
+  vig.classList.toggle('hidden', !danger);
+  el('flareVal').textContent = String(state.flares);
+  fbtn.disabled = state.flares <= 0;
 }
 let buffBarCache = '';
 function updateBuffBar() {
@@ -3509,6 +3921,7 @@ function updatePartyBadge() {
 }
 el('escapeBtn').addEventListener('click', escapeDungeon);
 el('upgradeBtn').addEventListener('click', openShop);
+el('flareBtn').addEventListener('click', () => { useFlare(); updateDarkHud(); });
 el('autoBtn').addEventListener('click', () => {
   state.auto = !state.auto;
   el('autoBtn').classList.toggle('on', state.auto);
@@ -3559,6 +3972,20 @@ function drawMinimap() {
     mctx.fillStyle = '#7ee8d8';
     mctx.fillRect(p.gx * s - 1, p.gy * s - 1, s + 2, s + 2);
   });
+  // 📡 광맥 탐지기 Lv1+ — 아직 안 캔 광맥을 미니맵에 표시 (미탐험 지역도 보인다)
+  if (mineLv('detector') >= 1 && wld.mode === 'dungeon') {
+    wld.props.forEach(p => {
+      if (p.type !== 'vein' || p.mined) return;
+      mctx.fillStyle = '#6fc9ff';
+      mctx.fillRect(p.gx * s - 1.5, p.gy * s - 1.5, s + 3, s + 3);
+    });
+  }
+  // 🔥 던져 둔 플레어 (광원)
+  wld.props.forEach(p => {
+    if (p.type !== 'flare') return;
+    mctx.fillStyle = '#ffae5e';
+    mctx.fillRect(p.gx * s - 1, p.gy * s - 1, s + 2, s + 2);
+  });
   if (wld.stairs) { mctx.fillStyle = '#ffd75e'; mctx.fillRect(wld.stairs.x * s - 1, wld.stairs.y * s - 1, s + 2, s + 2); }
   if (wld.entrance) { mctx.fillStyle = '#e0e0e0'; mctx.fillRect(wld.entrance.x * s - 1, wld.entrance.y * s - 1, s + 2, s + 2); }
   mctx.fillStyle = '#ff5f6d';
@@ -3578,7 +4005,10 @@ resize();
 function tileBrightness(wld, x, y) {
   if (wld.mode !== 'dungeon') return 1;
   const d = Math.hypot(x - leader.gx, y - leader.gy);
-  return d <= sightRadius() ? 1 : 0.5;
+  if (d <= sightRadius()) return 1;
+  // 플레어/랜턴이 밝힌 자리는 시야 밖이라도 환하게 남는다
+  if (flareLit(x, y, wld)) return 0.92;
+  return 0.5;
 }
 
 function drawDiamond(sx, sy, color) {
@@ -4413,6 +4843,54 @@ function drawProp(sx, sy, p) {
       ctx.moveTo(0, -32); ctx.lineTo(3.4, -26); ctx.lineTo(-3.4, -26); ctx.closePath(); ctx.fill();
       break;
     }
+    case 'flare': {                     // 던져 둔 플레어 (영구 광원)
+      const fg = .6 + Math.sin(state.time * 9 + p.gx) * .35;
+      // 넓은 바닥 광원
+      ctx.fillStyle = `rgba(255, 150, 70, ${0.18 + fg * 0.12})`;
+      ctx.beginPath(); ctx.ellipse(0, -2, 46, 24, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(255, 210, 130, ${0.22 + fg * 0.18})`;
+      ctx.beginPath(); ctx.ellipse(0, -3, 24, 13, 0, 0, Math.PI * 2); ctx.fill();
+      // 막대
+      ctx.fillStyle = '#3a2a1c';
+      rr(-2, -14, 4, 14, 1.5);
+      // 불꽃
+      ctx.fillStyle = `rgba(255, 130, 40, ${.75 + fg * .25})`;
+      ctx.beginPath();
+      ctx.moveTo(0, -30 - fg * 5); ctx.lineTo(6, -14); ctx.lineTo(-6, -14); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = `rgba(255, 236, 170, ${.8 + fg * .2})`;
+      ctx.beginPath();
+      ctx.moveTo(0, -25 - fg * 4); ctx.lineTo(3.2, -15); ctx.lineTo(-3.2, -15); ctx.closePath(); ctx.fill();
+      // 불티
+      ctx.fillStyle = `rgba(255, 200, 120, ${fg})`;
+      ctx.beginPath();
+      ctx.arc(-7, -30 - fg * 6, 1.6, 0, Math.PI * 2);
+      ctx.arc(6, -34 + fg * 4, 1.2, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    }
+    case 'records': {                   // 깊이 기록 비석 (초원 캠프 옆 · 룬석 확대판)
+      // 받침돌
+      ctx.fillStyle = '#7d8b99';
+      ctx.beginPath(); ctx.ellipse(0, -4, 20, 9, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#95a4b3';
+      ctx.beginPath(); ctx.ellipse(-2, -7, 15, 7, 0, 0, Math.PI * 2); ctx.fill();
+      // 비석 본체
+      ctx.fillStyle = '#4a5a6b';
+      rr(-15, -56, 30, 50, 6);
+      ctx.fillStyle = '#5f7285';
+      rr(-12, -53, 24, 44, 5);
+      // 상단 아치 룬
+      const rg = .55 + Math.sin(state.time * 2.2) * .3;
+      ctx.fillStyle = `rgba(120, 210, 255, ${rg})`;
+      ctx.beginPath(); ctx.arc(0, -46, 7, Math.PI, 0); ctx.fill();
+      // 새겨진 기록선
+      ctx.fillStyle = '#93b6cf';
+      for (let i = 0; i < 4; i++) rr(-8, -38 + i * 7, 16 - (i % 2) * 5, 2.5, 1);
+      ctx.fillStyle = `rgba(190, 235, 255, ${.6 + rg * .4})`;
+      ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('⛏', 0, -44);
+      break;
+    }
     case 'vein': {                      // 아주라이트 광맥 (채굴 대상)
       if (p.mined) {
         // 다 캔 자리 — 부서진 암반과 광석 부스러기
@@ -4441,7 +4919,7 @@ function drawProp(sx, sy, p) {
       ctx.beginPath(); ctx.moveTo(-6, -28); ctx.lineTo(-3.5, -14); ctx.lineTo(-8.5, -14); ctx.closePath(); ctx.fill();
       ctx.beginPath(); ctx.moveTo(7, -24); ctx.lineTo(9.5, -13); ctx.lineTo(4.5, -13); ctx.closePath(); ctx.fill();
       // 채굴 진행 게이지 (광맥 위)
-      const prog = clamp((p.prog || 0) / VEIN_CHANNEL, 0, 1);
+      const prog = clamp((p.prog || 0) / veinChannel(), 0, 1);
       if (prog > 0) {
         const bw = 42, bh = 7, by = -50;
         ctx.fillStyle = 'rgba(0,0,0,0.62)';
@@ -4651,6 +5129,52 @@ function render() {
   });
   // 말풍선
   bubbles.forEach(b => drawBubble(b, offX, offY));
+  // 📡 광맥 탐지기 Lv2 — 화면 가장자리에 가장 가까운 광맥 방향 화살표
+  drawVeinArrow(offX, offY);
+}
+
+/* ---- 광맥 탐지기 Lv2: 가장 가까운 미채굴 광맥을 가리키는 가장자리 화살표 ---- */
+let veinArrowOn = false;
+function drawVeinArrow(offX, offY) {
+  veinArrowOn = false;
+  if (mineLv('detector') < 2) return;
+  const nv = nearestVein();
+  if (!nv) return;
+  const W = innerWidth, H = innerHeight;
+  const tx = isoX(nv.p.gx, nv.p.gy) + offX, ty = isoY(nv.p.gx, nv.p.gy) + offY - 16;
+  const M = 46;
+  // 이미 화면 안이면 화살표는 필요 없다
+  if (tx > M && tx < W - M && ty > M && ty < H - M) return;
+  const cx = W / 2, cy = H / 2;
+  const dx = tx - cx, dy = ty - cy;
+  const ang = Math.atan2(dy, dx);
+  // 화면 안쪽 테두리에 맞춰 자른다
+  const hw = W / 2 - M, hh = H / 2 - M;
+  const t = Math.min(Math.abs(hw / (dx || 1e-6)), Math.abs(hh / (dy || 1e-6)));
+  const ax = cx + dx * t, ay = cy + dy * t;
+  veinArrowOn = true;
+  ctx.save();
+  ctx.translate(ax, ay);
+  ctx.rotate(ang);
+  const pulse = .7 + Math.sin(state.time * 4) * .3;
+  ctx.fillStyle = `rgba(10, 26, 40, 0.8)`;
+  ctx.beginPath(); ctx.arc(0, 0, 19, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = `rgba(140, 215, 255, ${pulse})`;
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0, 0, 19, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = `rgba(160, 225, 255, ${pulse})`;
+  ctx.beginPath();
+  ctx.moveTo(13, 0); ctx.lineTo(-6, -9); ctx.lineTo(-2, 0); ctx.lineTo(-6, 9);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+  // 거리 표기
+  ctx.fillStyle = '#bfe8ff';
+  ctx.font = 'bold 11px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.strokeStyle = 'rgba(0,0,0,0.75)'; ctx.lineWidth = 3;
+  const label = `◆ ${Math.round(nv.d)}`;
+  ctx.strokeText(label, ax, ay + 32);
+  ctx.fillText(label, ax, ay + 32);
 }
 
 /* ---------------- 저장 ---------------- */
@@ -4662,11 +5186,28 @@ function loadSave() {
       state.lv = clamp(s.lv, 1, 99);
       state.xp = s.xp || 0;
       state.gold = s.gold || 0;
+      // 구 세이브에는 아주라이트/플레어/기록이 없다 → 기본 0
+      state.azurite = clamp(Math.floor(s.azurite || 0), 0, 9e9);
       // 수치형 메타만 clamp (classes 는 배열이므로 제외)
       if (s.meta) for (const k of Object.keys(state.meta)) {
         if (k === 'classes') continue;
-        state.meta[k] = clamp(s.meta[k] || 0, 0, 99);
+        state.meta[k] = clamp(s.meta[k] || 0, 0, MINE_MAX_LV[k] || 99);
       }
+      /* ---- 깊이 기록판 (구 세이브: best 만 소급, 나머지는 0) ---- */
+      state.records = { classBest: {}, veins: 0, azurite: 0, bestKills: 0 };
+      const rec = s.records;
+      if (rec && typeof rec === 'object') {
+        if (rec.classBest && typeof rec.classBest === 'object') {
+          CLASS_KEYS.forEach(k => {
+            const v = clamp(Math.floor(rec.classBest[k] || 0), 0, 999);
+            if (v > 0) state.records.classBest[k] = v;
+          });
+        }
+        state.records.veins = clamp(Math.floor(rec.veins || 0), 0, 9e9);
+        state.records.azurite = clamp(Math.floor(rec.azurite || 0), 0, 9e9);
+        state.records.bestKills = clamp(Math.floor(rec.bestKills || 0), 0, 9e9);
+      }
+      state.flares = clamp(Math.floor(s.flares || 0), 0, 99);
       state.best = clamp(s.best || 0, 0, 999);
       // 광산 체크포인트 — 구 세이브에는 없으므로 기본 1
       state.lastDepth = clamp(Math.floor(s.lastDepth || 1), 1, 999);
@@ -4720,6 +5261,8 @@ setInterval(() => {
     localStorage.setItem('dunjeon-save', JSON.stringify({
       lv: state.lv, xp: state.xp, gold: state.gold, meta: state.meta, best: state.best,
       lastDepth: state.lastDepth,
+      // M1 후속 — 아주라이트 / 플레어 / 깊이 기록
+      azurite: state.azurite, flares: state.flares, records: state.records,
       difficulty: state.difficulty, difficultyPicked: state.difficultyPicked,
       // Phase 3
       classId: state.classId, gems: state.gems, gemLoadout: state.gemLoadout,
@@ -4750,6 +5293,7 @@ function frame(now) {
     updateFollowers(dt);
     updateCombat(dt);
     updateMining(dt);
+    updateDarkness(dt);
     updateChatter(dt);
   }
 
@@ -4875,10 +5419,23 @@ window.GAME = {
   maxDepth, depthChoiceAvailable, recLvForDepth, depthTooDeep, setLastDepth,
   openDepthChoice, depthPick: () => depthPick,
   // 광맥 채굴
-  VEIN_COUNT_MINE, VEIN_CHANNEL, VEIN_GOLD, VEIN_DEPTH_MUL,
+  VEIN_COUNT_MINE, VEIN_CHANNEL, VEIN_CHANNEL_MIN, VEIN_PICK_STEP, VEIN_AZURITE, VEIN_DEPTH_MUL,
   VEIN_GEM_P, VEIN_POTION_P, VEIN_AMBUSH_P,
-  veins: () => veinList(), miningTarget, updateMining, finishVein, veinGold,
+  veins: () => veinList(), miningTarget, updateMining, finishVein, veinAzurite, veinChannel,
   miningCur: () => miningCur,
+  /* ---- M1 후속: 아주라이트 / 광산 장비 / 어둠·플레어 / 기록판 ---- */
+  addAzurite, spendAzurite, AZ_AFFIX_DROP,
+  MINE_DEFS, MINE_MAX_LV, MINE_COST_BASE, MINE_COST_MUL, mineLv, mineCost,
+  buyMineUpgrade, openMineShop, mineEffectLine, lampSight,
+  DARK_MAX, DARK_RATE, DARK_RECOVER, DARK_GRACE, LIGHT_R,
+  DARK_DMG_PER_STACK, DARK_DEPTH_MUL, DARK_WARN_AT, DARK_AUTO_FLARE, FLARE_BASE,
+  darkActive, darkDps, updateDarkness, resetDarkness, applyDarkDamage,
+  lightSources: w => lightSources(w), nearLight: (x, y) => nearLight(x, y),
+  useFlare, maxFlares, refillFlares, flareLit: (x, y) => flareLit(x, y),
+  flares: () => state.world.props.filter(p => p.type === 'flare'),
+  nearestVein, veinArrowOn: () => veinArrowOn, drawMinimap,
+  updateDarkHud, tileBrightness: (x, y) => tileBrightness(state.world, x, y),
+  openRecords, recordDepth,
   // 광산 레이아웃
   layoutMine, SOLID_DECOS, blockGridOf, openReachCount,
   // 바이옴/특수 층을 강제로 불러온다 (테스트용)
