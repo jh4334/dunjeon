@@ -41,6 +41,72 @@ html, body {
   vertical-align: -1px;
 }
 
+/* ◆ 아주라이트 (광산 전용 화폐) */
+#azPanel { border-color: #6fb6d0; color: #dff2ff; }
+.azIcon {
+  width: 11px; height: 11px;
+  background: linear-gradient(135deg, #bfe8ff, #2f7fc4);
+  border: 2px solid #1d4f7a;
+  display: inline-block;
+  margin-right: 6px;
+  transform: rotate(45deg);
+  vertical-align: -1px;
+  box-shadow: 0 0 6px rgba(110, 200, 255, .65);
+}
+
+/* 👁 어둠 게이지 — 광산 층에서만 (좌하단 강화 버튼 위) */
+#darkPanel {
+  position: absolute; left: 16px; bottom: 96px;
+  width: 132px;
+  background: rgba(18, 8, 30, 0.88);
+  border: 2px solid #9b6fd0;
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: #e7d8ff;
+  font-size: 13px; font-weight: 700;
+  text-shadow: 0 1px 0 #000;
+}
+#darkPanel .dRow { display: flex; align-items: baseline; gap: 4px; margin-bottom: 3px; }
+#darkPanel .dEye { font-size: 14px; }
+#darkPanel .dMax { font-size: 10px; color: #a98fd0; }
+#darkBarWrap {
+  height: 9px; background: #150a22;
+  border: 1px solid #6a4a99; border-radius: 3px; overflow: hidden;
+}
+#darkBar {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg, #7a5ac0, #d06fe8);
+  transition: width .2s;
+}
+#darkPanel.danger { border-color: #e06ff0; box-shadow: 0 0 12px rgba(200, 110, 240, .6); }
+
+/* 🔥 플레어 버튼 (광산 층에서만) */
+#flareBtn {
+  position: absolute; right: 16px; bottom: 100px;
+  width: 56px; height: 56px;
+  background: rgba(38, 16, 10, 0.9);
+  border: 3px solid #e8894a;
+  border-radius: 8px;
+  color: #ffd9b8;
+  font-size: 20px; font-weight: 700;
+  cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  line-height: 1.1;
+}
+#flareBtn span { font-size: 12px; }
+#flareBtn:active { transform: scale(.95); }
+#flareBtn:disabled { opacity: .45; cursor: default; }
+
+/* 어둠 위험(스택 5+) 보라 비네트 */
+#vignette {
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center,
+    rgba(40, 0, 60, 0) 38%, rgba(70, 10, 100, 0.42) 72%, rgba(30, 0, 45, 0.82) 100%);
+  animation: darkPulse 1.6s ease-in-out infinite;
+}
+@keyframes darkPulse { 0%, 100% { opacity: .72; } 50% { opacity: 1; } }
+
 #buffBar {
   position: absolute; top: 52px; left: 12px;
   display: flex; flex-wrap: wrap; gap: 5px;
@@ -268,6 +334,11 @@ html, body {
 .depthBtn:disabled { opacity: .35; cursor: default; }
 
 .shopGold { text-align: right; font-weight: 700; margin-bottom: 10px; font-size: 14px; }
+.shopGold.azBal { color: #bfe8ff; }
+.shopRow.mineRow { border-bottom-color: rgba(111, 182, 208, 0.25); }
+.sInfo .sEff { display: block; color: #7ec8ff; }
+.buyBtn.az { background: #14364d; border-color: #6fb6d0; color: #dff2ff; }
+.modalBtn.mine { background: #14364d; border-color: #6fb6d0; color: #dff2ff; }
 .shopRow {
   display: flex; align-items: center; gap: 10px;
   padding: 9px 4px;
@@ -450,7 +521,9 @@ html, body {
 /* ---- 좁은 모바일 폭(≈360px): 좌상단 버프 칩과 우측 탐험 패널이 겹치지 않게 축소 ---- */
 @media (max-width: 420px) {
   #topLeft { gap: 6px; }
-  #lvPanel, #goldPanel { font-size: 12px; padding: 4px 8px; }
+  #lvPanel, #goldPanel, #azPanel { font-size: 12px; padding: 4px 8px; }
+  #darkPanel { width: 112px; bottom: 92px; font-size: 12px; }
+  #flareBtn { width: 48px; height: 48px; bottom: 94px; font-size: 17px; }
   #buffBar { top: 46px; gap: 4px; }
   #buffBar .chip { font-size: 10.5px; padding: 1px 6px; border-radius: 10px; }
   #buffBar .chip b { font-size: 9.5px; }
