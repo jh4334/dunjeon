@@ -689,3 +689,98 @@ html, body {
     font-size: 13px; padding: 8px 14px;
   }
 }
+
+/* =====================================================================
+ * M3.5b — 🎭 파티 편성 / 🌳 패시브 트리
+ * =================================================================== */
+/* ---- 4슬롯 ---- */
+.partySlots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 6px 0 4px; }
+.pSlotCard {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 8px 2px; border-radius: 8px; cursor: pointer;
+  background: rgba(20, 40, 50, 0.7); border: 2px solid rgba(126, 232, 216, 0.28);
+  color: #d8f0ec; font-family: inherit;
+}
+.pSlotCard .sIcon { font-size: 20px; }
+.pSlotCard b { font-size: 12px; }
+.pSlotCard small { font-size: 9.5px; color: #8fbdb6; }
+.pSlotCard.leader { border-color: #ffd75e; }
+.pSlotCard.picking { background: rgba(50, 90, 100, 0.9); box-shadow: 0 0 8px rgba(126, 232, 216, .45); }
+
+/* ---- 캐릭터 그리드 ---- */
+.charGroupHead {
+  margin: 10px 0 4px; font-size: 12px; color: #a9d8d2;
+  border-bottom: 1px solid rgba(126, 232, 216, 0.2); padding-bottom: 3px;
+}
+.charGroupHead em { font-style: normal; float: right; color: #7ee8d8; }
+.charGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+.charCard {
+  display: flex; flex-direction: column; gap: 2px; text-align: left;
+  padding: 7px 8px; border-radius: 8px; cursor: pointer; font-family: inherit;
+  background: rgba(18, 34, 44, 0.8); border: 1.5px solid rgba(126, 232, 216, 0.22);
+  color: #d8f0ec;
+}
+.charCard .cIcon { font-size: 18px; }
+.charCard b { font-size: 12.5px; }
+.charCard small { font-size: 9.5px; color: #9ec6c0; line-height: 1.25; }
+.charCard .cUnlock { font-style: normal; font-size: 9.5px; color: #ffd75e; }
+.charCard.locked { opacity: .62; }
+.charCard.inParty { border-color: #7ee8d8; background: rgba(30, 74, 68, 0.7); }
+.charCard.on { box-shadow: 0 0 8px rgba(255, 232, 138, .5); border-color: #ffe88a; }
+.rTag {
+  display: inline-block; font-style: normal; font-size: 9px; padding: 0 4px;
+  margin-right: 3px; border: 1px solid; border-radius: 4px;
+}
+.charDetail {
+  margin: 8px 0; padding: 9px 10px; border-radius: 8px;
+  background: rgba(12, 28, 36, 0.9); border: 1.5px solid rgba(255, 232, 138, 0.35);
+}
+.cdHead { display: flex; align-items: center; gap: 8px; }
+.cdIcon { font-size: 24px; }
+.cdName b { font-size: 14px; display: block; }
+.cdName small { font-size: 10.5px; color: #9ec6c0; }
+.cdTags { margin: 5px 0; }
+.cdAbil { font-size: 11px; margin: 4px 0; color: #eafffb; }
+.cdAbil b { color: #7ee8d8; margin-right: 5px; }
+.cdStats { font-size: 10px; color: #8fbdb6; }
+.cdLong { font-size: 10.5px; color: #a9d8d2; margin: 5px 0 2px; line-height: 1.4; }
+.cdBtns { display: flex; gap: 6px; flex-wrap: wrap; }
+.cdBtns .modalBtn { flex: 1; margin: 4px 0 0; min-width: 120px; }
+
+/* ---- 패시브 트리 맵 ---- */
+.treeSpent { font-size: 10.5px; color: #8fbdb6; margin-left: auto; }
+.treeWrap {
+  position: relative; width: 100%; height: 46vh; min-height: 240px; max-height: 420px;
+  overflow: auto; border-radius: 8px; touch-action: pan-x pan-y;
+  background: radial-gradient(circle at 50% 50%, #12242e 0%, #0a151c 100%);
+  border: 1px solid rgba(126, 232, 216, 0.22);
+}
+.treeMap { position: relative; }
+.treeLinks { position: absolute; left: 0; top: 0; }
+.tNode {
+  position: absolute; border-radius: 50%; cursor: pointer; padding: 0;
+  border: 2px solid; background: rgba(10, 22, 30, 0.95);
+  color: #0a151c; font-size: 11px; font-family: inherit; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+.tNode.k-root { border-color: #e8e0d0; background: #e8e0d0; }
+.tNode.k-notable { font-size: 14px; }
+.tNode.k-keystone { border-width: 4px; font-size: 17px; box-shadow: 0 0 10px rgba(255, 232, 138, .35); }
+.tNode.s-far { opacity: .38; }
+.tNode.s-next { box-shadow: 0 0 8px rgba(255, 232, 138, .6); }
+.tNode.s-taken { color: #0a151c; }
+.tNode.on { outline: 2px solid #ffe88a; outline-offset: 2px; }
+.nodeDetail {
+  margin: 8px 0 4px; padding: 8px 10px; border-radius: 8px;
+  background: rgba(12, 28, 36, 0.9); border: 1px solid rgba(126, 232, 216, 0.25);
+}
+.ndHead { display: flex; align-items: baseline; gap: 8px; }
+.ndHead b { font-size: 13.5px; }
+.ndHead em { font-style: normal; font-size: 10px; color: #8fbdb6; }
+.nodeDetail p { font-size: 11px; color: #d8f0ec; margin: 4px 0; line-height: 1.4; }
+.modalBtn.danger { border-color: rgba(255, 122, 122, 0.5); color: #ffb3b3; }
+
+@media (max-width: 480px) {
+  .charGrid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
+  .treeWrap { height: 40vh; }
+}

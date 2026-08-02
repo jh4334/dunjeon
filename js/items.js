@@ -258,9 +258,22 @@ function buyPrice(it, mult) { return Math.max(1, Math.floor(sellPrice(it) * 3 * 
  * =================================================================== */
 const INVENTORY_MAX = 40;
 
+/* M3.5b: 장비는 '슬롯(자리)'이 아니라 '캐릭터'에 붙는다.
+ * 보유 중인 캐릭터 전원에게 빈 슬롯 골격을 만들어 둔다 (기존 4인 키는 그대로 승계). */
+function equipCharIds() {
+  const out = [];
+  (typeof ownedChars === 'function' ? ownedChars() : []).forEach(id => { if (out.indexOf(id) < 0) out.push(id); });
+  party.forEach(m => { if (out.indexOf(m.id) < 0) out.push(m.id); });
+  return out;
+}
+function resetEquipmentFor(id) {
+  if (!state.equipment || typeof state.equipment !== 'object') state.equipment = {};
+  if (!state.equipment[id]) { state.equipment[id] = { weapon: null, armor: null, trinket: null }; bumpEquip(); }
+  return state.equipment[id];
+}
 function resetEquipment() {
   state.equipment = {};
-  party.forEach(m => { state.equipment[m.id] = { weapon: null, armor: null, trinket: null }; });
+  equipCharIds().forEach(id => { state.equipment[id] = { weapon: null, armor: null, trinket: null }; });
   state.inventory = [];
   bumpEquip();
 }
@@ -279,15 +292,15 @@ function findItem(id) {
   const inv = invList();
   const i = inv.findIndex(x => x.id === id);
   if (i >= 0) return { it: inv[i], where: 'inv', i };
-  for (const m of party) {
-    const e = equipOf(m);
-    for (const s of SLOT_KEYS) if (e[s] && e[s].id === id) return { it: e[s], where: 'eq', memberId: m.id, slot: s };
+  for (const cid of equipCharIds()) {
+    const e = equipOf(cid);
+    for (const s of SLOT_KEYS) if (e[s] && e[s].id === id) return { it: e[s], where: 'eq', memberId: cid, slot: s };
   }
   return null;
 }
 function allOwnedItems() {
   const out = invList().slice();
-  party.forEach(m => { const e = equipOf(m); SLOT_KEYS.forEach(s => { if (e[s]) out.push(e[s]); }); });
+  equipCharIds().forEach(cid => { const e = equipOf(cid); SLOT_KEYS.forEach(s => { if (e[s]) out.push(e[s]); }); });
   return out;
 }
 
@@ -477,7 +490,8 @@ function giveItem(it) {
 }
 /* 장착 — 인벤토리의 아이템을 슬롯에 넣고, 원래 있던 건 인벤토리로 되돌린다 */
 function equipItem(memberId, itemOrId) {
-  const m = party.find(p => p.id === memberId);
+  // 편성에 없는 보유 캐릭터에게도 미리 장비를 맞춰둘 수 있다
+  const m = party.find(p => p.id === memberId) || (charOwned(memberId) ? { id: memberId, ghost: true } : null);
   if (!m) return false;
   const inv = invList();
   const i = typeof itemOrId === 'string' ? inv.findIndex(x => x.id === itemOrId) : inv.indexOf(itemOrId);
@@ -493,13 +507,13 @@ function equipItem(memberId, itemOrId) {
   bumpEquip();
   // 최대 체력 변화는 축복/패시브와 같은 규칙으로 현재 HP에 반영한다
   const after = maxHp(m);
-  if (!m.down) m.hp = clamp(m.hp + Math.max(0, after - before), 0, after);
+  if (!m.ghost && !m.down) m.hp = clamp(m.hp + Math.max(0, after - before), 0, after);
   updatePartyBadge();
   saveDirty = true;
   return true;
 }
 function unequipItem(memberId, slot) {
-  const m = party.find(p => p.id === memberId);
+  const m = party.find(p => p.id === memberId) || (charOwned(memberId) ? { id: memberId, ghost: true } : null);
   if (!m || !SLOTS[slot]) return false;
   const slots = equipOf(memberId);
   const it = slots[slot];
@@ -509,7 +523,7 @@ function unequipItem(memberId, slot) {
   invList().push(it);
   bumpEquip();
   const after = maxHp(m);
-  if (!m.down) m.hp = clamp(m.hp, 0, after);
+  if (!m.ghost && !m.down) m.hp = clamp(m.hp, 0, after);
   if (after < before) { /* 최대 HP가 줄면 위 clamp 로 잘린다 */ }
   trimInventory();
   updatePartyBadge();
@@ -660,9 +674,9 @@ function sanitizeItem(o) {
 }
 function saveItemsPayload() {
   const eq = {};
-  party.forEach(m => {
-    const e = equipOf(m);
-    eq[m.id] = { weapon: e.weapon, armor: e.armor, trinket: e.trinket };
+  equipCharIds().forEach(cid => {
+    const e = equipOf(cid);
+    eq[cid] = { weapon: e.weapon, armor: e.armor, trinket: e.trinket };
   });
   return { equipment: eq, inventory: invList(), newItems: state.newItems || 0 };
 }
@@ -677,12 +691,12 @@ function loadItemsSave(s) {
     return it;
   };
   if (s && s.equipment && typeof s.equipment === 'object') {
-    party.forEach(m => {
-      const src = s.equipment[m.id];
+    equipCharIds().forEach(cid => {
+      const src = s.equipment[cid];
       if (!src || typeof src !== 'object') return;
       SLOT_KEYS.forEach(sl => {
         const it = take(src[sl]);
-        if (it && it.slot === sl) state.equipment[m.id][sl] = it;
+        if (it && it.slot === sl) resetEquipmentFor(cid)[sl] = it;
       });
     });
   }

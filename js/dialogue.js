@@ -287,6 +287,57 @@ const DIALOGUE = {
   },
 };
 
+/* =====================================================================
+ * M3.5b — 성격군 공용 대사 풀 + 캐릭터 전용 대사
+ * 기존 4인의 대사는 그대로 각 성격군의 공용 풀이 된다.
+ *   유리 = 씩씩(brave) · 모리 = 시크(cool) · 리라 = 다정(kind) · 토토 = 너스레(joker)
+ * 신규 캐릭터는 "성격군 공용 풀 + 자기 전용 3줄 이상"을 쓴다.
+ * DIALOGUE 자체는 건드리지 않는다 — 기존 테이블/개수 검증이 그대로 통과한다.
+ * =================================================================== */
+const PERSONA_SRC = { brave: 'knight', cool: 'mage', kind: 'priest', joker: 'porter' };
+// 다른 캐릭터의 이름을 부르는 대사는 공용 풀에서 뺀다 (파티에 없을 수 있다)
+const NAME_WORDS = ['유리', '모리', '리라', '토토'];
+const PERSONA_DIALOGUE = {};
+Object.keys(DIALOGUE).forEach(ev => {
+  const row = {};
+  PERSONA_KEYS.forEach(pk => {
+    const src = DIALOGUE[ev][PERSONA_SRC[pk]];
+    if (!src || !src.length) return;
+    const arr = src.filter(t => !NAME_WORDS.some(w => t.indexOf(w) >= 0));
+    if (arr.length) row[pk] = arr;
+  });
+  if (Object.keys(row).length) PERSONA_DIALOGUE[ev] = row;
+});
+
+/* 캐릭터 전용 대사 — 신규 18인은 각 3줄 이상 */
+const CHAR_LINES = {
+  necro:   { combat: ['일어나라. 오늘도 일할 시간이야.'], idle_dungeon: ['해골은 불평이 없어서 좋아.'], levelup: ['소환진이 한 겹 더 두꺼워졌네.'] },
+  bomber:  { combat: ['자, 불꽃놀이 시작합니다!'], idle_dungeon: ['심지 길이는 항상 여유 있게.'], levelup: ['화약 배합을 조금 바꿔볼까요?'] },
+  blade:   { combat: ['멈추지 마. 멈추면 베여.'], idle_dungeon: ['칼날이 무뎌지면 그때가 끝이야.'], levelup: ['회전이 한 바퀴 더 늘었어.'] },
+  spear:   { combat: ['한 줄로 서! 한 번에 끝낸다!'], idle_dungeon: ['창은 거리가 생명이지!'], levelup: ['찌르기가 한 뼘 더 뻗는다!'] },
+  berserk: { combat: ['피 냄새… 좋군.'], idle_dungeon: ['상처는 훈장이야.'], levelup: ['더 아프게 맞을 수 있게 됐군.'] },
+  paladin: { combat: ['제 뒤로 오세요. 막아드릴게요.'], idle_dungeon: ['모두 무사한지 한 번만 더 볼게요.'], levelup: ['방패가 더 넓어졌어요.'] },
+  monk:    { combat: ['한 대? 두 대는 쳐야지!'], idle_dungeon: ['숨 고르기, 하나 둘 셋!'], levelup: ['주먹이 가벼워졌는데!'] },
+  axe:     { combat: ['크게 한 방, 갑니다!'], idle_dungeon: ['도끼날 값도 만만치 않다고요.'], levelup: ['이제 두 번 안 휘둘러도 되겠네.'] },
+  archer:  { combat: ['숨 참고… 놓는다.'], idle_dungeon: ['화살은 세어뒀어. 낭비는 없어.'], levelup: ['시위가 더 팽팽해졌군.'] },
+  pyro:    { combat: ['다 태워버릴게!'], idle_dungeon: ['불씨는 꺼뜨리면 안 돼!'], levelup: ['화력이 올랐어! 신난다!'] },
+  cryo:    { combat: ['얼어붙어.'], idle_dungeon: ['…여기 좀 춥지 않아? 내 탓인가.'], levelup: ['빙점이 더 내려갔네.'] },
+  spirit:  { combat: ['얘야, 부탁할게!'], idle_dungeon: ['정령이 자꾸 앞서 나가요…'], levelup: ['정령이 좋아하는 것 같아요.'] },
+  bard:    { combat: ['자, 전투곡 1번!'], idle_dungeon: ['발맞춰서! 하나 둘 하나 둘!'], levelup: ['음역대가 넓어졌어!'] },
+  shrine:  { combat: ['부적, 하나씩 받으세요.'], idle_dungeon: ['이 갱도… 기운이 탁하네요.'], levelup: ['결계가 더 단단해졌어요.'] },
+  alchem:  { combat: ['자, 실험 대상 등장!'], idle_dungeon: ['약값은 나중에 정산할게요, 나중에!'], levelup: ['배합비를 다시 계산해야겠는데요?'] },
+  chrono:  { combat: ['너희 시간만 느리게 갈 거야.'], idle_dungeon: ['1분 뒤가 이미 보이는데.'], levelup: ['지연장이 넓어졌어.'] },
+  druid:   { combat: ['조금… 커지겠습니다.'], idle_dungeon: ['이 아래에도 뿌리가 있네요.'], levelup: ['털이 더 두꺼워진 것 같아요.'] },
+  hunter:  { combat: ['물어! …아, 착하지.'], idle_dungeon: ['얘가 저보다 먼저 눈치채요.'], levelup: ['늑대가 더 빨라졌어!'] },
+};
+function charLineCount(id) {
+  const t = CHAR_LINES[id];
+  if (!t) return 0;
+  let n = 0;
+  for (const ev in t) n += t[ev].length;
+  return n;
+}
+
 /* ---- 런타임 상태 (저장하지 않는다) ---- */
 const SAY_HIST_MAX = 8;     // 캐릭터별로 기억하는 최근 발화 수
 const SAY_EVENT_CD = 10;    // 같은 이벤트 재발화 금지(초)
@@ -302,7 +353,13 @@ function dialogueLines(ev, id) {
   const pool = DIALOGUE[ev];
   if (!pool) return null;
   const arr = pool[id];
-  return (arr && arr.length) ? arr : null;
+  if (arr && arr.length) return arr;              // 기존 4인은 전용 테이블 그대로
+  // 신규 캐릭터: 전용 대사 + 성격군 공용 풀
+  const own = (CHAR_LINES[id] && CHAR_LINES[id][ev]) || null;
+  const per = PERSONA_DIALOGUE[ev] && PERSONA_DIALOGUE[ev][(ROSTER_BY_ID[id] || {}).persona];
+  if (!own && !per) return null;
+  const out = (own || []).concat(per || []);
+  return out.length ? out : null;
 }
 /* 그 이벤트에서 말할 수 있는 캐릭터 id 목록 */
 function dialogueChars(ev) {
