@@ -100,10 +100,12 @@ function makeMonster(type, floor, x, y) {
     shadow:    { hp: 95 + 36 * floor, atk: 8.5 + 4.0 * floor, xp: 100 + 28 * floor, step: 0.5, boss: true, scale: 1.75 },
   };
   const d = defs[type] || defs.slime;
+  // 키스톤 「부의 화신」 — 보상이 늘어나는 대신 몬스터가 단단해진다
+  const mhp = Math.max(1, Math.floor(d.hp * passiveMonHpMult()));
   const mon = {
     type, gx: x, gy: y, px: isoX(x, y), py: isoY(x, y),
     fromX: x, fromY: y, moveT: 1, moving: false,
-    hp: d.hp, maxHp: d.hp, atk: d.atk, xp: d.xp,
+    hp: mhp, maxHp: mhp, atk: d.atk, xp: d.xp,
     boss: !!d.boss, scale: d.scale || 1,
     stepInt: d.step, stepT: rand(0, d.step), atkCd: rand(0, .9), face: 1,
     packId: null, aggro: false, affixes: null, rewardMult: 1,
@@ -288,7 +290,8 @@ function castTelegraph(mon, force) {
     const t = tileAt(wld, x, y);
     if (t === T.FLOOR || t === T.GRASS) cells.push({ x, y });
   });
-  const tg = { cells, t: 0, delay: 1.0, dmg: monAtk(mon) * TELEGRAPH_MULT, kind: 'smash' };
+  // 키스톤 「시간 가속」 — 공속·이속이 오르는 대신 예고 시간이 절반으로 줄어든다
+  const tg = { cells, t: 0, delay: 1.0 * passiveTelegraphMult(), dmg: monAtk(mon) * TELEGRAPH_MULT, kind: 'smash' };
   wld.telegraphs.push(tg);
   addFloater(mon.px, mon.py - 52, '⚠️ 강타 준비!', '#ff9a5a', 13);
   sfx('warn');
@@ -349,7 +352,7 @@ function castLaser(mon, axis) {
   else { for (let y = 0; y < wld.h; y++) if (isOpenTile(wld, tgt.gx, y)) cells.push({ x: tgt.gx, y }); }
   if (!cells.length) return null;
   const tg = {
-    cells, t: 0, delay: GOLEM_LASER_DELAY, dmg: monAtk(mon) * LASER_MULT,
+    cells, t: 0, delay: GOLEM_LASER_DELAY * passiveTelegraphMult(), dmg: monAtk(mon) * LASER_MULT,
     kind: 'laser', axis: row ? 'row' : 'col', line: row ? tgt.gy : tgt.gx,
   };
   wld.telegraphs.push(tg);

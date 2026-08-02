@@ -79,21 +79,25 @@
      스크립트 로드 순서 (ES 모듈 아님 — file:// 로 직접 열어도 돌아가야 하고
      빌드 단계도 없으므로, 일반 <script> 를 의존 순서대로 나열해 전역을 공유한다)
 
-       1. core.js     상수 · 유틸 · state/party · 직업/젬/패시브 · 스탯 · 세이브
-       2. dialogue.js 상황별 캐릭터 대사 테이블 · 대사 엔진(반복 방지/쿨다운)
-       3. items.js    장비(슬롯/레어리티/접사/고유) · 인벤토리 · 드랍 · 스탯 합산
-       4. audio.js    WebAudio SFX 신스
-       5. mapgen.js   바이옴 · 레이아웃 알고리즘 · 층 생성/배치
-       6. monsters.js 몬스터 · 어픽스 · 팩 · 텔레그래프
-       7. combat.js   이동 · 전투 · 직업 능력(미니언/지뢰/폭탄 투척/오라)
-       8. delve.js    광맥 채굴 · 어둠 게이지 · 플레어
-       9. world.js    맵 전환(진입/하강/탈출/정산) · 자동 탐험(풀 루팅)
-      10. ui.js       모달 · HUD · 토스트 · 힌트
-      11. draw.js     미니맵 · 렌더링
-      12. main.js     입력 · 잡담 · 메인 루프 · 부트 · window.GAME
+       1. roster.js   캐릭터 22종 정의 (역할 태그 · 스탯 · 고유 능력 · 외형)
+       2. tree.js     PoE식 패시브 트리 58노드 (그래프 · 효과 · 구 패시브 사슬)
+       3. core.js     상수 · 유틸 · state/party · 편성/젬/트리 · 스탯 · 세이브
+       4. dialogue.js 상황별 캐릭터 대사 테이블 · 성격군 공용 풀 · 대사 엔진
+       5. items.js    장비(슬롯/레어리티/접사/고유) · 인벤토리 · 드랍 · 스탯 합산
+       6. audio.js    WebAudio SFX 신스
+       7. mapgen.js   바이옴 · 레이아웃 알고리즘 · 층 생성/배치
+       8. monsters.js 몬스터 · 어픽스 · 팩 · 텔레그래프
+       9. combat.js   이동 · 전투 · 캐릭터 능력(미니언/지뢰/오라/실드/변신)
+      10. delve.js    광맥 채굴 · 어둠 게이지 · 플레어
+      11. world.js    맵 전환(진입/하강/탈출/정산) · 자동 탐험(풀 루팅)
+      12. ui.js       모달 · HUD · 토스트 · 힌트 · 편성/트리 UI
+      13. draw.js     미니맵 · 렌더링
+      14. main.js     입력 · 잡담 · 메인 루프 · 부트 · window.GAME
 
      함수 선언은 파일 안에서만 호이스팅되므로, "로드 시점에 즉시 평가되는"
      참조만 순서를 지키면 된다. 실제로 걸리는 곳은 세 군데:
+       · core.js 가 로드 중 party 를 만들며 ROSTER(roster.js) 사용 → roster.js 가 먼저
+       · dialogue.js 가 로드 중 PERSONA_KEYS(roster.js)/DIALOGUE 로 성격군 풀을 만든다
        · items.js 가 로드 중 resetEquipment() 실행, state/party(core.js) 사용 → core.js 가 먼저
        · ui.js 가 로드 중 escapeDungeon(world.js) 을 버튼에 바인딩 → world.js 가 먼저
        · draw.js 가 로드 중 resize() 실행, el()(ui.js) 사용 → ui.js 가 먼저
@@ -104,6 +108,8 @@
      (core.js 의 maxHp/atkPow 는 items.js 함수를 부르지만 전부 런타임 호출이라
       순서 문제가 없다 — 파티 HP 초기화는 loadSave() 안으로 옮겼다.)
      =================================================================== -->
+<script src="js/roster.js"></script>
+<script src="js/tree.js"></script>
 <script src="js/core.js"></script>
 <script src="js/dialogue.js"></script>
 <script src="js/items.js"></script>
