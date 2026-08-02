@@ -612,16 +612,21 @@ function rollDrop(chance, ilvl, opt) {
   if (!(Math.random() < chance * weeklyMods().dropMul)) return null;
   return rollItem(ilvl, opt);
 }
+/* M7a: 드랍 아이템 레벨도 심층 지수 곡선을 따라간다 (깊이 10 이하는 floor 그대로) */
+function dropIlvlFor(floor) {
+  const f = floor || (state.world && state.world.floor) || 1;
+  return typeof depthIlvl === 'function' ? depthIlvl(f) : f;
+}
 function rollMonsterDrop(mon, floor) {
-  const it = rollDrop(monsterDropChance(mon), floor || (state.world && state.world.floor) || 1, dropOptFor(mon));
+  const it = rollDrop(monsterDropChance(mon), dropIlvlFor(floor), dropOptFor(mon));
   return it ? dropItemAt(it, mon.gx, mon.gy) : null;
 }
 function rollChestDrop(gx, gy, floor) {
-  const it = rollDrop(DROP_P.chest, floor || (state.world && state.world.floor) || 1, {});
+  const it = rollDrop(DROP_P.chest, dropIlvlFor(floor), {});
   return it ? dropItemAt(it, gx, gy) : null;
 }
 function rollVeinDrop(gx, gy, floor) {
-  const it = rollDrop(DROP_P.vein, floor || (state.world && state.world.floor) || 1, { bonus: 1.3 });
+  const it = rollDrop(DROP_P.vein, dropIlvlFor(floor), { bonus: 1.3 });
   return it ? dropItemAt(it, gx, gy) : null;
 }
 /* 줍기 — onLeaderArrive 의 아이템 회수 루프에서 불린다 */

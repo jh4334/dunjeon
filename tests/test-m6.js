@@ -702,11 +702,12 @@ const V2_SAVE = {
     check('CI — tests/out 과 node_modules 는 .gitignore', /tests\/out/.test(gi) && /node_modules/.test(gi));
 
     const runner = fs.readFileSync(path.join(SRC, 'tests/run-all.js'), 'utf8');
-    check('CI — 러너가 16개 스위트를 순차 실행한다',
-      (runner.match(/'test-[a-z0-9]+'/g) || []).length === 16,
+    // M7a: test-m7a 가 추가되어 17개
+    check('CI — 러너가 17개 스위트를 순차 실행한다',
+      (runner.match(/'test-[a-z0-9]+'/g) || []).length === 17,
       String((runner.match(/'test-[a-z0-9]+'/g) || []).length));
     const suiteFiles = fs.readdirSync(path.join(SRC, 'tests')).filter(f => /^test-.*\.js$/.test(f));
-    check('CI — tests/ 에 16개 스위트 파일이 이관되어 있다', suiteFiles.length === 16, String(suiteFiles.length));
+    check('CI — tests/ 에 17개 스위트 파일이 이관되어 있다', suiteFiles.length === 17, String(suiteFiles.length));
     const hard = suiteFiles.filter(f => {
       const s = fs.readFileSync(path.join(SRC, 'tests', f), 'utf8');
       return /\/opt\/pw-browsers|file:\/\/\/home\//.test(s);

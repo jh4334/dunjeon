@@ -669,31 +669,42 @@ const INTO_DARK = `(() => {
       const over = read();
       return { mine, cave, over, stackAfter, mode: G.state.world.mode };
     });
-    check('어둠 — 광산(mine) 층에서만 게이지/플레어 버튼 노출 · 다른 바이옴/초원은 비활성',
+    // M7a: 어둠이 전 바이옴으로 확장되어 HUD 는 던전 층이면 항상 뜬다 (초원에서만 숨는다)
+    check('어둠 — 던전 전 바이옴에서 게이지/플레어 버튼 노출 · 초원은 비활성',
       hud.mine.dark && hud.mine.flare && hud.mine.active &&
-      !hud.cave.dark && !hud.cave.flare && !hud.cave.active &&
+      hud.cave.dark && hud.cave.flare && hud.cave.active &&
       !hud.over.dark && !hud.over.flare && !hud.over.active,
       JSON.stringify(hud));
 
-    // (i) 비-광산 바이옴에서는 스택이 오르지 않는다
+    // (i) M7a — 비-광산 바이옴은 '순한 어둠': 상한 6 · 유예 8초 · 피해 계수 60%
     const noDark = await page.evaluate(() => {
       const G = window.GAME;
-      ['catacomb', 'cave', 'waterway', 'lava'].forEach(() => { });
       const out = {};
       ['catacomb', 'cave', 'waterway', 'lava'].forEach(b => {
         const w = G.loadFloor(b, 'safe', 6);
         w.monsters.length = 0;
-        G.party.forEach(m => { m.down = false; m.hp = 9999; });
+        // 광원(입구/계단/화톳불)에서 멀리 떨어뜨려 어둠이 실제로 차오르게 한다
+        w.props = w.props.filter(p => p.type !== 'brazier');
+        w.__lit = null; w.__litN = -1;
+        w.spawn = { x: 0, y: 0 }; w.stairs = null;
+        G.party.forEach(m => { m.down = false; m.hp = 99999; });
         G.resetDarkness();
         const hp0 = G.leader.hp;
         for (let i = 0; i < 300; i++) G.updateDarkness(0.1);   // 30초
-        out[b] = { stack: G.state.darkStack, dmg: +(hp0 - G.leader.hp).toFixed(2), active: G.darkActive() };
+        const prof = G.darkProfile();
+        out[b] = { stack: +G.state.darkStack.toFixed(2), dmg: +(hp0 - G.leader.hp).toFixed(2),
+          active: G.darkActive(), mine: prof.mine, max: prof.max, grace: prof.grace, mul: prof.dmgMul };
       });
       return out;
     });
-    check('어둠 — 광산 외 바이옴(지하묘지/동굴/수로/용암)에서는 완전 비활성',
-      ['catacomb', 'cave', 'waterway', 'lava'].every(b => noDark[b].stack === 0 && noDark[b].dmg === 0 && !noDark[b].active),
-      JSON.stringify(noDark));
+    const softBiomes = ['catacomb', 'cave', 'waterway', 'lava'];
+    check('어둠 — 갱도 외 바이옴에서도 발동한다 (순한 어둠: 상한 6 · 유예 8초 · 계수 0.6)',
+      softBiomes.every(b => noDark[b].active && !noDark[b].mine &&
+        noDark[b].max === 6 && noDark[b].grace === 8 && Math.abs(noDark[b].mul - 0.6) < 1e-9),
+      JSON.stringify(noDark.catacomb));
+    check('어둠 — 갱도 외 바이옴 스택은 상한 6에서 멈추고 피해가 실제로 들어간다',
+      softBiomes.every(b => Math.abs(noDark[b].stack - 6) < 0.01 && noDark[b].dmg > 0),
+      JSON.stringify(softBiomes.map(b => `${b}:${noDark[b].stack}/${noDark[b].dmg}`)));
 
     /* ---- 플레어 ---- */
     // (j) 자동 보충
@@ -701,15 +712,16 @@ const INTO_DARK = `(() => {
       const G = window.GAME;
       G.state.meta.pouch = 3;
       G.state.flares = 0;
-      G.loadFloor('cave', 'safe', 4);            // 광산이 아니면 보충 없음
+      G.loadFloor('cave', 'safe', 4);            // M7a: 어둠이 도는 층이면 어디서든 보충
       const cave = G.state.flares;
+      G.state.flares = 0;
       G.loadFloor('mine', 'safe', 4);            // 광산 입장 → 자동 보충
       const mine = G.state.flares;
       G.state.meta.pouch = 0;
       return { cave, mine, max: 2 + 3 };
     });
-    check('플레어 — 광산 층 입장 시 자동 보충 (기본 2 + 주머니 Lv)',
-      refill.cave === 0 && refill.mine === refill.max, JSON.stringify(refill));
+    check('플레어 — 던전 층 입장 시 자동 보충 (기본 2 + 주머니 Lv · 전 바이옴)',
+      refill.cave === refill.max && refill.mine === refill.max, JSON.stringify(refill));
 
     // (k) 설치 → 영구 광원 + 안전 지대 + 밝은 렌더
     const flare = await page.evaluate((code) => {
@@ -781,16 +793,21 @@ const INTO_DARK = `(() => {
       keys2.btn === true && afterBtn.f === keys2.f - 1 && afterBtn.n === keys2.n0 + 1,
       JSON.stringify({ before: keys2, after: afterBtn }));
 
-    // (m) 광산 외에서는 사용 불가
+    // (m) M7a: 갱도 밖 바이옴에서도 플레어를 쓸 수 있다 (초원에서는 여전히 불가)
     const noFlare = await page.evaluate(() => {
       const G = window.GAME;
       G.loadFloor('cave', 'safe', 4);
       G.state.flares = 3;
       const ok = G.useFlare();
-      return { ok, f: G.state.flares, n: G.flares().length };
+      const caveN = G.flares().length;
+      G.state.cameFromDungeon = false;
+      G.escapeDungeon();
+      const overOk = G.useFlare();
+      return { ok, caveN, overOk, f: G.state.flares, n: G.flares().length };
     });
-    check('플레어 — 광산 외 바이옴에서는 사용 불가',
-      noFlare.ok === false && noFlare.f === 3 && noFlare.n === 0, JSON.stringify(noFlare));
+    check('플레어 — 갱도 밖 바이옴에서도 사용 가능 · 초원에서는 불가',
+      noFlare.ok === true && noFlare.caveN === 1 && noFlare.overOk === false && noFlare.f === 2,
+      JSON.stringify(noFlare));
 
     // (n) 자동 탐험이 스택 6+ 에서 자동 사용
     const autoFlare = await page.evaluate((code) => {

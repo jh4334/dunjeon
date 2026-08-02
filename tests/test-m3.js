@@ -767,8 +767,9 @@ const NEARBY = `((dist) => {
         vent: G.HAZARDS.vent, spore: G.HAZARDS.spore, spike: G.HAZARDS.spike,
       };
     });
-    check('해저드 테이블 — 용암 분출구(lava) / 독안개 포자(cave) / 수정 가시',
-      table.keys.join(',') === 'vent,spore,spike' &&
+    // M7a: 거미줄(web) / 화상 장판(burn) 이 뒤에 추가되었다 — 앞 3종의 순서·수치는 그대로여야 한다
+    check('해저드 테이블 — 용암 분출구(lava) / 독안개 포자(cave) / 수정 가시 (+ M7a web·burn)',
+      table.keys.join(',') === 'vent,spore,spike,web,burn' &&
       table.byBiome.lava === 'vent' && table.byBiome.cave === 'spore' &&
       table.vent.cycle === 8 && table.vent.warn === 2 && table.spore.dur === 3 && table.spike.life === 10,
       JSON.stringify({ b: table.byBiome, cycle: table.vent.cycle, warn: table.vent.warn }));
