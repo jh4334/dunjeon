@@ -12,6 +12,9 @@ function newWorld(mode, w, h) {
     seen: new Uint8Array(w * h),
     props: [], monsters: [], items: [],
     telegraphs: [],       // 강공격 예고 장판
+    // M3: 맵 해저드(용암 분출구/독안개 포자/수정 가시) · 투사체(화살)
+    hazards: [],
+    projectiles: [],
     // Phase 3: 직업 소환물 (저장하지 않는 층 내 상태)
     minions: [],          // 네크로맨서 해골
     mines: [],            // 폭탄공 지뢰
@@ -103,35 +106,37 @@ const BIOMES = {
     key: 'catacomb', name: '낡은 지하묘지', icon: '⚰️', gen: 'rooms',
     desc: '방과 복도가 얽힌 표준 구조',
     theme: { name: '낡은 지하묘지', f1: '#3d4763', f2: '#39425c', wt: '#232a3f', wl: '#12151f', wr: '#0d101a' },
-    weights: { slime: 3, bat: 2, skeleton: 3 },
+    weights: { slime: 3, bat: 2, skeleton: 3, archer: 3 },
     decos: ['bone', 'urn'], decoCount: [8, 14],
   },
   cave: {
     key: 'cave', name: '천연 동굴', icon: '🕳️', gen: 'cave',
     desc: '유기적인 자연 동굴 · 박쥐 다수',
     theme: { name: '천연 동굴', f1: '#4d3c27', f2: '#473722', wt: '#3b2d1b', wl: '#1e1710', wr: '#15100a' },
-    weights: { slime: 1, bat: 5, skeleton: 2 },
+    weights: { slime: 1, bat: 5, skeleton: 2, shaman: 2 },
     decos: ['crystal', 'mushroom'], decoCount: [12, 20],
+    hazard: 'spore',
   },
   waterway: {
     key: 'waterway', name: '물에 잠긴 수로', icon: '💧', gen: 'waterway',
     desc: '운하와 좁은 다리 · 슬라임 다수',
     theme: { name: '물에 잠긴 수로', f1: '#2f4a41', f2: '#2b453c', wt: '#1e3a30', wl: '#0e1f18', wr: '#0a1712' },
-    weights: { slime: 5, bat: 2, skeleton: 1 },
+    weights: { slime: 5, bat: 2, skeleton: 1, shaman: 2 },
     decos: ['reed', 'barrel'], decoCount: [8, 14],
   },
   lava: {
     key: 'lava', name: '작열의 심층', icon: '🔥', gen: 'lava',
     desc: '용암 강과 외길 다리 · 해골 다수',
     theme: { name: '작열의 심층', f1: '#4a3132', f2: '#452c2d', wt: '#3a2224', wl: '#1f1012', wr: '#170c0e' },
-    weights: { slime: 1, bat: 2, skeleton: 5 },
+    weights: { slime: 1, bat: 2, skeleton: 5, bugbomb: 3 },
     decos: ['lavarock', 'ember'], decoCount: [8, 14],
+    hazard: 'vent',
   },
   mine: {
     key: 'mine', name: '아주라이트 갱도', icon: '⛏️', gen: 'mine',
     desc: '좁은 갱도와 채굴 공동 · 아주라이트 광맥',
     theme: { name: '아주라이트 갱도', f1: '#3b2c20', f2: '#35271b', wt: '#2b2017', wl: '#16100a', wr: '#100b07' },
-    weights: { slime: 1, bat: 4, skeleton: 4 },
+    weights: { slime: 1, bat: 4, skeleton: 4, archer: 2, bugbomb: 2 },
     decos: ['timber', 'lantern', 'minecart'], decoCount: [12, 18],
   },
 };
@@ -184,6 +189,57 @@ function themeForFloor(theme, floor) {
 }
 function dungeonTheme(floor) {
   return themeForFloor((BIOMES[biomeForFloor(floor)] || BIOMES.catacomb).theme, floor);
+}
+
+/* =====================================================================
+ * M3 — 맵 해저드 (용암 분출구 / 독안개 포자 / 수정 가시 지대)
+ * 데이터와 생성만 여기에 두고, 주기·발동은 combat.js 의 updateHazards 가 맡는다.
+ * =================================================================== */
+const HAZARDS = {
+  // 용암 분출구 — 8초 주기로 2초 전 예고 후 십자 1칸 분출 (몬스터도 피해)
+  vent:  { key: 'vent',  name: '용암 분출구', icon: '🌋', biome: 'lava', count: [3, 5], cycle: 8, warn: 2 },
+  // 독안개 포자 — 밟으면 터져 반경 1칸에 3초 독 도트
+  spore: { key: 'spore', name: '독안개 포자', icon: '🍄', biome: 'cave', count: [6, 10], dur: 3, radius: 1 },
+  // 수정 가시 지대 — 크리스탈 골렘이 바닥에 깐다 (10초 지속)
+  spike: { key: 'spike', name: '수정 가시',   icon: '💎', life: 10, tick: 0.8 },
+};
+const HAZARD_KEYS = Object.keys(HAZARDS);
+const HAZARD_BY_BIOME = { lava: 'vent', cave: 'spore' };
+const VENT_DMG = f => 9 + 5.5 * f;      // 분출 피해 (층 비례)
+const SPORE_DPS = f => 2 + 1.4 * f;     // 독 도트 초당 피해
+const SPIKE_DMG = f => 6 + 3.5 * f;     // 가시 지대 밟았을 때 피해 (골렘이 직접 지정하기도 한다)
+
+function hazardList(wld) { return (wld && wld.hazards) || []; }
+function hazardAt(wld, x, y) {
+  const list = hazardList(wld);
+  for (const h of list) if (!h.dead && h.gx === x && h.gy === y) return h;
+  return null;
+}
+function hazardDef(type) { return HAZARDS[type] || null; }
+/* opt: { world, dmg, dps, life } — 지정하지 않으면 층 기준 기본값 */
+function spawnHazard(type, x, y, opt) {
+  opt = opt || {};
+  const wld = opt.world || state.world;
+  const d = HAZARDS[type];
+  if (!wld || !d) return null;
+  if (!wld.hazards) wld.hazards = [];
+  if (hazardAt(wld, x, y)) return null;
+  const floor = wld.floor || 1;
+  const h = { type, gx: x, gy: y, t: 0, dead: false };
+  if (type === 'vent') {
+    h.cycle = d.cycle; h.warn = d.warn;
+    h.dmg = opt.dmg || VENT_DMG(floor);
+    h.t = rand(0, d.cycle * 0.6);          // 분출 타이밍을 흩뿌린다
+  } else if (type === 'spore') {
+    h.dps = opt.dps || SPORE_DPS(floor);
+    h.dur = d.dur; h.radius = d.radius;
+  } else if (type === 'spike') {
+    h.life = opt.life || d.life;
+    h.dmg = opt.dmg || SPIKE_DMG(floor);
+    h.tick = 0;
+  }
+  wld.hazards.push(h);
+  return h;
 }
 
 /* ---- 경로 성격 (갈림길 선택지) ---- */
@@ -580,7 +636,9 @@ function populateFloor(wld, biome, kind, floor, cells) {
   } else if (bossFloor) {
     wld.stairs = null;
     wld.stairsPending = { x: far.x, y: far.y };
-    wld.monsters.push(makeMonster(floor >= 6 ? 'lich' : 'slimeking', floor, far.x, far.y));
+    // M3: 바이옴 전속 보스 (매칭 없으면 기존 규칙으로 폴백)
+    wld.bossType = bossTypeFor(biome.key, floor);
+    wld.monsters.push(makeMonster(wld.bossType, floor, far.x, far.y));
   } else {
     // 보물방 포함 — 계단은 처음부터 열려 있다
     wld.stairs = { x: far.x, y: far.y };
@@ -649,6 +707,17 @@ function populateFloor(wld, biome, kind, floor, cells) {
     const c = takeCell(wld, cells, occ, 4, null);
     if (!c) break;
     wld.props.push({ type: 'trap', gx: c.x, gy: c.y, solid: false, armed: true });
+  }
+  // --- M3 맵 해저드 (용암 분출구 / 독안개 포자) ---
+  const hzKey = normal ? HAZARD_BY_BIOME[biome.key] : null;
+  if (hzKey) {
+    const hd = HAZARDS[hzKey];
+    const hn = irand(hd.count[0], hd.count[1]);
+    for (let i = 0; i < hn; i++) {
+      const c = takeCell(wld, cells, occ, 5, null);
+      if (!c) break;
+      spawnHazard(hzKey, c.x, c.y, { world: wld });
+    }
   }
   // --- 아주라이트 광맥 (광산 2~4 / 그 외 0~1 · 도전방 제외) ---
   const veinCount = kind === 'challenge' ? 0

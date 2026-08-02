@@ -157,12 +157,19 @@ function aliveMembers() { return party.filter(m => !m.down); }
 function damageMonster(mon, dmg, color, opt) {
   if (mon.hp <= 0) return;
   opt = opt || {};
+  // M3: 그림자 군주 — 분신이 살아 있는 동안 본체는 무적
+  if (mon.invuln && !opt.force) {
+    if (!opt.silent && Math.random() < 0.25) addFloater(mon.px, mon.py - 30, '무적', '#c9a4ff', 12);
+    return;
+  }
   const src = opt.src || null;
   const crit = !opt.noCrit && Math.random() < (0.08 * runBuff('crit') + passiveCrit() + equipCrit(src));
   // 장비 '치명타 피해 +%' 는 기본 2배에 곱해진다
   if (crit) { dmg *= 2 * (1 + equipCritDmg(src)); addHitStop(); }      // 치명타 히트스톱
   if (mon.dr) dmg *= (1 - mon.dr);           // '단단한' 어픽스
-  mon.hp -= dmg;
+  // M3: 히드라 — 본체는 무적, 피해는 남아 있는 머리에 들어간다 (머리를 모두 잘라야 처치)
+  if (mon.heads) damageHydraHead(mon, dmg);
+  else mon.hp -= dmg;
   if (!opt.silent) {
     sfx(crit ? 'crit' : 'hit');
     mon.flashT = HIT_FLASH_TIME;              // 피격 흰색 플래시
@@ -170,6 +177,7 @@ function damageMonster(mon, dmg, color, opt) {
   }
   // 패시브 '처형' — 빈사 상태의 적을 즉시 끝낸다
   if (mon.hp > 0 && hasExecute() && mon.hp <= mon.maxHp * 0.1) {
+    if (mon.heads) { mon.heads.forEach(h => { h.hp = 0; }); hydraSync(mon); }
     mon.hp = 0;
     addFloater(mon.px, mon.py - 40, '☠️ 처형!', '#ff5a5a', 15);
   }
@@ -407,12 +415,13 @@ function updateMinions(dt) {
     const leash = cheb(k.gx, k.gy, leader.gx, leader.gy);
     if (leash > MINION_LEASH) k.returning = true;
     else if (leash <= 2) k.returning = false;
-    // 가장 가까운 몬스터
-    let tgt = null, bd = 99;
+    // 가장 가까운 몬스터 (무적인 적은 뒤로 미룬다 — 분신부터 정리)
+    let tgt = null, bd = 99, tgtInv = true;
     mons.forEach(mon => {
       if (mon.hp <= 0) return;
       const d = cheb(k.gx, k.gy, mon.gx, mon.gy);
-      if (d < bd) { bd = d; tgt = mon; }
+      const inv = !!mon.invuln;
+      if ((tgtInv && !inv) || (inv === tgtInv && d < bd)) { bd = d; tgt = mon; tgtInv = inv; }
     });
     // 인접 몬스터 자동 공격 (복귀 중에는 교전하지 않는다)
     if (tgt && bd <= 1 && !k.returning) {
@@ -502,8 +511,9 @@ function applyStun(mon, dur) {
   mon.stunT = Math.max(mon.stunT || 0, dur);
   addFloater(mon.px, mon.py - 46, '⭐ 스턴!', '#ffe88a', 13);
 }
+// 몬스터와 파티원 모두에게 쓸 수 있다 (독안개 포자 / 히드라 독 뱉기)
 function addDot(mon, dps, dur, k) {
-  if (!mon || mon.hp <= 0) return;
+  if (!mon || mon.hp <= 0 || mon.down) return;
   if (!mon.dots) mon.dots = [];
   const ex = mon.dots.find(d => d.k === k);
   if (ex) { ex.t = Math.max(ex.t, dur); ex.dps = Math.max(ex.dps, dps); }
@@ -529,6 +539,130 @@ function updateMonsterStatus(mon, dt) {
   if (mon.dotT >= 0.5) {
     addFloater(mon.px, mon.py - 32, String(Math.max(1, Math.floor(mon.dotAcc))), '#8fe07f', 12);
     mon.dotAcc = 0; mon.dotT = 0;
+  }
+}
+
+/* ---- M3: 파티원 도트 (독안개 포자 · 히드라 독 뱉기) ----
+ * 몬스터와 같은 dots 구조를 그대로 쓰고, 0.5초마다 누적 피해를 적용한다. */
+function updateMemberDots(m, dt) {
+  if (!m.dots || !m.dots.length) return 0;
+  let total = 0;
+  for (let i = m.dots.length - 1; i >= 0; i--) {
+    const d = m.dots[i];
+    total += d.dps * dt;
+    d.t -= dt;
+    if (d.t <= 0) m.dots.splice(i, 1);
+  }
+  if (total <= 0) return 0;
+  m.dotAcc = (m.dotAcc || 0) + total;
+  m.dotT = (m.dotT || 0) + dt;
+  if (m.dotT >= 0.5) {
+    const dmg = m.dotAcc;
+    m.dotAcc = 0; m.dotT = 0;
+    damageMember(m, dmg, null, { dot: true });
+    addSparkle(m.px, m.py, '#8fe07f');
+  }
+  return total;
+}
+
+/* =====================================================================
+ * M3 — 맵 해저드 갱신 (용암 분출구 · 독안개 포자 · 수정 가시 지대)
+ * =================================================================== */
+function ventErupt(h) {
+  const wld = state.world;
+  const cells = [{ x: h.gx, y: h.gy }];
+  [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dx, dy]) => {
+    const x = h.gx + dx, y = h.gy + dy;
+    if (isOpenTile(wld, x, y)) cells.push({ x, y });
+  });
+  // 텔레그래프를 재활용한다 — mons:true 라서 몬스터도 맞는다
+  const tg = { cells, t: 0, delay: h.warn, dmg: h.dmg, kind: 'vent', mons: true };
+  wld.telegraphs.push(tg);
+  addFloater(isoX(h.gx, h.gy), isoY(h.gx, h.gy) - 26, '🌋 분출 경고!', '#ff9a5a', 12);
+  sfx('warn');
+  return tg;
+}
+function popSpore(h) {
+  const wld = state.world;
+  const dur = h.dur || HAZARDS.spore.dur;
+  const R = h.radius || HAZARDS.spore.radius;
+  addFloater(isoX(h.gx, h.gy), isoY(h.gx, h.gy) - 22, '☠️ 포자 폭발!', '#8fe07f', 14);
+  addSparkle(isoX(h.gx, h.gy), isoY(h.gx, h.gy), '#8fe07f');
+  sfx('warn');
+  let n = 0;
+  party.forEach(m => {
+    if (m.down || cheb(m.gx, m.gy, h.gx, h.gy) > R) return;
+    addDot(m, h.dps, dur, 'spore'); n++;
+  });
+  wld.monsters.forEach(m => {
+    if (m.hp <= 0 || cheb(m.gx, m.gy, h.gx, h.gy) > R) return;
+    addDot(m, h.dps, dur, 'spore'); n++;
+  });
+  h.dead = true;
+  return n;
+}
+function updateHazards(dt) {
+  const wld = state.world;
+  const list = wld.hazards;
+  if (!list || !list.length) return;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const h = list[i];
+    if (h.dead) { list.splice(i, 1); continue; }
+    h.t += dt;
+    if (h.type === 'vent') {
+      if (!h.warned && h.t >= h.cycle - h.warn) { h.warned = true; ventErupt(h); }
+      if (h.t >= h.cycle) { h.t = 0; h.warned = false; }
+      continue;
+    }
+    if (h.type === 'spike') {
+      h.life -= dt;
+      if (h.life <= 0) { list.splice(i, 1); continue; }
+      h.tick = Math.max(0, (h.tick || 0) - dt);
+      if (h.tick > 0) continue;
+      const on = party.filter(m => !m.down && m.gx === h.gx && m.gy === h.gy);
+      if (!on.length) continue;
+      h.tick = HAZARDS.spike.tick;
+      on.forEach(m => damageMember(m, h.dmg, null));
+      addFloater(isoX(h.gx, h.gy), isoY(h.gx, h.gy) - 22, '💎 수정 가시!', '#9be8ff', 13);
+      addSparkle(isoX(h.gx, h.gy), isoY(h.gx, h.gy), '#9be8ff');
+      sfx('hit');
+      continue;
+    }
+    if (h.type === 'spore') {
+      // 터뜨리는 것은 파티가 밟았을 때만 (몬스터가 지나다닐 때마다 터지면 주변이 늘 독지대가 된다).
+      // 다만 터진 뒤의 독 구름은 반경 1칸 안의 몬스터에게도 걸린다 — 유인해서 쓸 수 있다.
+      const stepped = party.some(m => !m.down && m.gx === h.gx && m.gy === h.gy);
+      if (!stepped) continue;
+      popSpore(h);
+      list.splice(i, 1);
+    }
+  }
+}
+
+/* ---- M3: 투사체(해골 궁수의 화살) ----
+ * 0.8초 비행 후 '착탄 칸'에 피해 — 그 사이에 움직이면 회피된다. */
+function updateProjectiles(dt) {
+  const wld = state.world;
+  const list = wld.projectiles;
+  if (!list || !list.length) return;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const p = list[i];
+    p.t += dt;
+    if (p.t < p.dur) continue;
+    list.splice(i, 1);
+    const wx = isoX(p.gx, p.gy), wy = isoY(p.gx, p.gy);
+    addSparkle(wx, wy, '#ffd7a0');
+    const hit = party.filter(m => !m.down && m.gx === p.gx && m.gy === p.gy);
+    if (hit.length) {
+      // 화살 1발은 한 명만 맞힌다 (파티가 한 칸에 겹쳐 서 있어도 4배로 아프지 않게).
+      // 겹쳐 있으면 가장 앞에 선 리더를 노린다.
+      const tgt = hit.indexOf(leader) >= 0 ? leader : pick(hit);
+      damageMember(tgt, p.dmg, p.src && p.src.hp > 0 ? p.src : null);
+      addFloater(wx, wy - 26, '🏹 명중!', '#ff7a7a', 13);
+      sfx('hit');
+    } else {
+      addFloater(wx, wy - 26, '🏹 빗나감!', '#8dffb0', 12);
+    }
   }
 }
 
@@ -690,9 +824,16 @@ function updateCombat(dt) {
   updateHungry(dt);                 // 「굶주린 검」 중첩 만료 (items.js)
   const mons = wld.monsters;
 
+  // M3: 해저드 / 투사체 / 주술사 오라
+  updateHazards(dt);
+  updateProjectiles(dt);
+  updateShamanAura(wld, dt);
+
   // 파티 공격
   party.forEach(m => {
     if (m.invulnT > 0) m.invulnT = Math.max(0, m.invulnT - dt);
+    if (m.down) return;
+    updateMemberDots(m, dt);          // 독 도트 (포자 / 히드라)
     if (m.down) return;
     const mods = gemMods(m);
     m.atkCd -= dt;
@@ -702,11 +843,14 @@ function updateCombat(dt) {
     const meleeMult = (m === leader) ? curClass().melee : 1;
     if (m === leader && meleeMult <= 0) { m.atkCd = 0; return; }
     const range = m.role === 'mage' ? 3.5 : 1;
-    let best = null, bd = 99;
+    // 사거리 안에서 가장 가까운 적 — 단, 무적인 적(분신 소환 중인 보스)은 뒤로 미룬다
+    let best = null, bd = 99, bestInv = true;
     mons.forEach(mon => {
       if (mon.hp <= 0) return;
       const d = cheb(m.gx, m.gy, mon.gx, mon.gy);
-      if (d <= range && d < bd) { best = mon; bd = d; }
+      if (d > range) return;
+      const inv = !!mon.invuln;
+      if ((bestInv && !inv) || (inv === bestInv && d < bd)) { best = mon; bd = d; bestInv = inv; }
     });
     if (best) {
       let dmg, splash = 0;
@@ -760,14 +904,24 @@ function updateCombat(dt) {
     // 텔레그래프 강공격 (엘리트 / 보스)
     if (mon.castT !== undefined) {
       mon.castT -= dt;
-      if (mon.castT <= 0) { mon.castT = 8 + rand(-2, 2); castTelegraph(mon); }
+      if (mon.castT <= 0) { mon.castT = (8 + rand(-2, 2)) * bossRate(mon); castTelegraph(mon); }
+    }
+    // M3: 보스 고유 기믹 (골렘 레이저·가시 / 그림자 분신 / 격노)
+    if (mon.boss) updateBossAI(mon, dt);
+    // M3: 해골 궁수 사격 / 자폭 광충 점화 (자폭하면 이번 프레임에 정리)
+    if (mon.type === 'archer') updateArcher(mon, dt);
+    if (mon.type === 'bugbomb' && updateBugbomb(mon, dt)) continue;
+    // M3: 히드라 — 머리별 공격 (물기/독 뱉기/물대포)
+    if (mon.heads && mon.atkCd <= 0 && hydraAttack(mon)) {
+      mon.atkCd = HYDRA_ATK_CD * bossRate(mon) / (mon.atkSpeed || 1);
+      continue;
     }
 
     // 인접 파티원 / 해골 미니언 공격 (미니언이 어그로를 대신 받는다)
-    const targets = aliveMembers().filter(a => cheb(a.gx, a.gy, mon.gx, mon.gy) <= 1);
-    const kins = (wld.minions || []).filter(k => k.hp > 0 && cheb(k.gx, k.gy, mon.gx, mon.gy) <= 1);
+    const targets = mon.noMelee ? [] : aliveMembers().filter(a => cheb(a.gx, a.gy, mon.gx, mon.gy) <= 1);
+    const kins = mon.noMelee ? [] : (wld.minions || []).filter(k => k.hp > 0 && cheb(k.gx, k.gy, mon.gx, mon.gy) <= 1);
     if ((targets.length || kins.length) && mon.atkCd <= 0) {
-      const raw = mon.atk * rand(0.8, 1.15);
+      const raw = monAtk(mon) * rand(0.8, 1.15);
       if (kins.length && (!targets.length || Math.random() < 0.7)) damageMinion(pick(kins), raw);
       else damageMember(pick(targets), raw, mon);
       // '흡혈의' 어픽스
@@ -776,7 +930,7 @@ function updateCombat(dt) {
         mon.hp = Math.min(mon.maxHp, mon.hp + heal);
         addFloater(mon.px, mon.py - 34, `+${Math.floor(heal)}`, '#ff6b9d', 11);
       }
-      mon.atkCd = 0.95 / (mon.atkSpeed || 1);
+      mon.atkCd = 0.95 * bossRate(mon) / (mon.atkSpeed || 1);   // 격노 = 주기 -25%
       continue;
     }
     // 이동 (빙결 슬로우 = 이동 간격 2배)
@@ -792,7 +946,13 @@ function updateCombat(dt) {
       if (d < gd) { gd = d; goal = k; }
     });
     let dx = 0, dy = 0;
-    if (mon.aggro && gd > 1) {
+    if (mon.aggro && mon.type === 'archer') {
+      // 해골 궁수: 4칸을 유지한다 — 너무 가까우면 후퇴, 멀면 접근, 사거리 안이면 정지
+      if (gd < ARCHER_MIN) { dx = Math.sign(mon.gx - goal.gx); dy = Math.sign(mon.gy - goal.gy); mon.retreating = true; }
+      else if (gd > ARCHER_RANGE) { dx = Math.sign(goal.gx - mon.gx); dy = Math.sign(goal.gy - mon.gy); mon.retreating = false; }
+      else mon.retreating = false;
+      if (dx && dy) (Math.random() < .5) ? dx = 0 : dy = 0;
+    } else if (mon.aggro && gd > 1) {
       dx = Math.sign(goal.gx - mon.gx); dy = Math.sign(goal.gy - mon.gy);
       if (dx && dy) (Math.random() < .5) ? dx = 0 : dy = 0;
     } else if (!mon.aggro && Math.random() < .5) {
@@ -804,8 +964,9 @@ function updateCombat(dt) {
         minionAt(wld, x, y) || party.some(p => p.gx === x && p.gy === y);
       let tx = mon.gx + dx, ty = mon.gy + dy;
       if (blocked(tx, ty) && mon.aggro) {
-        // 막히면 다른 축/옆으로 우회 (끝까지 쫓아오게)
-        const alts = [[Math.sign(goal.gx - mon.gx), 0], [0, Math.sign(goal.gy - mon.gy)], [dy, dx], [-dy, -dx]];
+        // 막히면 다른 축/옆으로 우회 (끝까지 쫓아오게 · 궁수는 반대로 물러나게)
+        const sgn = mon.retreating ? -1 : 1;
+        const alts = [[sgn * Math.sign(goal.gx - mon.gx), 0], [0, sgn * Math.sign(goal.gy - mon.gy)], [dy, dx], [-dy, -dx]];
         for (const [ax, ay] of alts) {
           if (!ax && !ay) continue;
           if (!blocked(mon.gx + ax, mon.gy + ay)) { tx = mon.gx + ax; ty = mon.gy + ay; break; }

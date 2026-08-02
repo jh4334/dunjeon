@@ -111,6 +111,7 @@ function frame(now) {
   for (let i = sparkles.length - 1; i >= 0; i--) { sparkles[i].t += dt; if (sparkles[i].t > sparkles[i].life) sparkles.splice(i, 1); }
 
   render();
+  updateBossBar();          // 보스 HP 바는 매 프레임 (피해가 즉시 보이도록)
 
   hudT += dt;
   if (hudT > 0.2) { hudT = 0; updateHud(); }
@@ -142,6 +143,7 @@ window.GAME = {
   telegraphs: () => state.world.telegraphs,
   openAltar,
   place: (x, y) => placeParty(state.world, x, y),
+  isoX, isoY,
   // Phase 2 (맵 다양성) 훅
   BIOMES, BIOME_KEYS, PATH_KINDS, T,
   genFloor, biomeForFloor, floorMonsterTypes,
@@ -210,6 +212,47 @@ window.GAME = {
     return mon;
   },
   clearMonsters: () => { state.world.monsters.length = 0; },
+  /* ---- M3: 보스·전투 다양화 훅 ---- */
+  BOSSES, BOSS_KEYS, bossTypeFor, MONSTER_KO, MONSTER_UNLOCK, MONSTER_KEYS, BASE_MONSTERS,
+  ENRAGE_HP, ENRAGE_MUL, bossRate, enrageCheck, monAtk,
+  ARCHER_RANGE, ARCHER_MIN, ARCHER_SHOT_CD, ARROW_FLIGHT, ARROW_MULT,
+  BUG_FUSE, BUG_BLAST_R, BUG_BLAST_MULT,
+  SHAMAN_AURA_R, SHAMAN_BUFF,
+  GOLEM_LASER_CD, GOLEM_LASER_DELAY, LASER_MULT, GOLEM_SPIKE_CD, SPIKE_ZONES, SPIKE_MULT,
+  HYDRA_HEADS, HYDRA_ATK_CD, HYDRA_RANGE, HYDRA_HEAD_DEFS,
+  SHADOW_PHASES, SHADOW_CLONES, SHADOW_CLONE_MUL,
+  // 보스 스폰 / 기믹
+  spawnBoss: (type, x, y, floor) => {
+    const wld = state.world;
+    const f = floor || wld.floor || 1;
+    const t = type || bossTypeFor(wld.biome, f);
+    const bx = x != null ? x : leader.gx + 3, by = y != null ? y : leader.gy;
+    const mon = makeMonster(t, f, bx, by);
+    mon.aggro = true;
+    wld.monsters.push(mon);
+    return mon;
+  },
+  boss: () => activeBoss(),
+  updateBossAI, castLaser, spawnCrystalSpikes,
+  initHydra, hydraHeads, hydraSync, damageHydraHead, hydraAttack, knockback,
+  summonShadowClones, teleportBoss, updateShadowPhase,
+  updateArcher, shootArrow, updateBugbomb, explodeBug, updateShamanAura,
+  projectiles: () => (state.world.projectiles || []),
+  updateProjectiles,
+  // 맵 해저드
+  HAZARDS, HAZARD_KEYS, HAZARD_BY_BIOME, VENT_DMG, SPORE_DPS, SPIKE_DMG,
+  hazards: () => hazardList(state.world),
+  hazardAt: (x, y) => hazardAt(state.world, x, y),
+  hazardDef, spawnHazard, updateHazards, ventErupt, popSpore,
+  hazardAvoid: () => hazardAvoid(state.world),
+  pathToAvoid: (x, y) => bfsPath(state.world, leader.gx, leader.gy,
+    (px, py) => px === x && py === y, hazardAvoid(state.world)),
+  updateMemberDots,
+  // 결정적 스텝 (테스트에서 state.paused 상태로 전투를 한 프레임씩 진행)
+  updateCombat,
+  // 보스 HP 바 / 좁은 폭 HUD 재배치
+  updateBossBar, bossBarInfo, activeBoss,
+  syncTopHud, HUD_NARROW_W,
   /* ---- 광산(Delve) 훅 ---- */
   // 깊이 선택 / 체크포인트
   maxDepth, depthChoiceAvailable, recLvForDepth, depthTooDeep, setLastDepth,
