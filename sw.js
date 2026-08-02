@@ -13,7 +13,7 @@
  * =================================================================== */
 'use strict';
 
-const CACHE = 'dunjeon-v8';          // ← 배포 때 이 값을 올리면 전체 캐시가 갱신된다
+const CACHE = 'dunjeon-v9';          // ← 배포 때 이 값을 올리면 전체 캐시가 갱신된다
 
 const PRECACHE = [
   './',
@@ -22,13 +22,14 @@ const PRECACHE = [
   'manifest.webmanifest',
   'docs/icon-192.png',
   'docs/icon-512.png',
-  // js/ 18개 모듈 — index.html 의 로드 순서와 같다
+  // js/ 19개 모듈 — index.html 의 로드 순서와 같다
   'js/roster.js',
   'js/tree.js',
   'js/gems.js',
   'js/core.js',
   'js/dialogue.js',
   'js/items.js',
+  'js/craft.js',
   'js/audio.js',
   'js/mapgen.js',
   'js/monsters.js',

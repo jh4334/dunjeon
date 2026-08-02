@@ -614,8 +614,8 @@ const MAKE_RUN = () => {
         tiers: G.ACHV_TIERS.map(t => `${t.n}:${t.az}:${t.title}`),
       };
     });
-    // M7c: 엔드게임 과제 6종 추가 (우버 2 · 환영 2 · 빌드 2)
-    check('도전 과제 36종이 정의된다', meta.n === 36 && meta.uniq === 36, `${meta.n}/${meta.uniq}`);
+    // M7c: 엔드게임 과제 6종 추가 (우버 2 · 환영 2 · 빌드 2) · M8a: 제작 과제 3종 추가
+    check('도전 과제 39종이 정의된다', meta.n === 39 && meta.uniq === 39, `${meta.n}/${meta.uniq}`);
     check('과제 전부 id·이름·설명·아이콘·목표치·진행함수를 갖는다', meta.allFields, '');
     check('과제 — 몬스터 도감 목표치는 하드코딩이 아니라 동적 계산 (몬스터 종수)',
       meta.fnGoals.indexOf('monsall') >= 0 && meta.monsallGoal >= 40,
@@ -1042,7 +1042,7 @@ const MAKE_RUN = () => {
     check('❗ 모달 — 기본은 런 정보 탭 (기존 내용 유지)',
       tabs.on.join() === 'riTabRun' && tabs.runBody && tabs.close, JSON.stringify(tabs.on));
     check('❗ 모달 — 탭 라벨에 달성 수 / 수집률이 표시된다',
-      /\d+\/36/.test(tabs.labels[1]) && /%/.test(tabs.labels[2]), tabs.labels.join(' | '));
+      /\d+\/39/.test(tabs.labels[1]) && /%/.test(tabs.labels[2]), tabs.labels.join(' | '));
 
     await page.click('#riTabAchv');
     const achvUi = await page.evaluate(() => {
@@ -1057,11 +1057,12 @@ const MAKE_RUN = () => {
         head: !!document.getElementById('achvBar'),
       };
     });
-    check('도전 과제 탭 — 36종 전부 목록에 나온다', achvUi.rows === 36, String(achvUi.rows));
+    // M8a: 제작 과제 3종 추가 → 39종
+    check('도전 과제 탭 — 39종 전부 목록에 나온다', achvUi.rows === 39, String(achvUi.rows));
     check('도전 과제 탭 — 카테고리 5개로 묶여 표시된다', achvUi.cats === 5, String(achvUi.cats));
     check('도전 과제 탭 — 진행형 과제에 진행도 바가 붙는다', achvUi.bars >= 20, String(achvUi.bars));
     check('도전 과제 탭 — 달성 수와 다음 보상이 표시된다',
-      /0 \/ 36/.test(achvUi.count) && /5개 달성/.test(achvUi.next), `${achvUi.count} · ${achvUi.next}`);
+      /0 \/ 39/.test(achvUi.count) && /5개 달성/.test(achvUi.next), `${achvUi.count} · ${achvUi.next}`);
 
     // 진행도 표기 (킬 742/1,000 형태)
     const progText = await page.evaluate(() => {

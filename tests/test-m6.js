@@ -685,8 +685,8 @@ const V2_SAVE = {
   {
     const sw = fs.readFileSync(path.join(SRC, 'sw.js'), 'utf8');
     const m = sw.match(/const CACHE = '([^']+)'/);
-    // M7c: js/endgame.js 추가 배포 → 캐시 버전 v8
-    check('릴리스 — sw.js 캐시 버전이 dunjeon-v8', m && m[1] === 'dunjeon-v8', m && m[1]);
+    // M7c: js/endgame.js 추가 배포 → v8 · M8a: js/craft.js 추가 배포 → v9
+    check('릴리스 — sw.js 캐시 버전이 dunjeon-v9', m && m[1] === 'dunjeon-v9', m && m[1]);
     const jsFiles = fs.readdirSync(path.join(SRC, 'js')).filter(f => f.endsWith('.js'));
     check('릴리스 — sw PRECACHE 가 js/ 전 모듈을 담고 있다',
       jsFiles.every(f => sw.indexOf('js/' + f) >= 0), String(jsFiles.length));
@@ -712,12 +712,12 @@ const V2_SAVE = {
     check('CI — tests/out 과 node_modules 는 .gitignore', /tests\/out/.test(gi) && /node_modules/.test(gi));
 
     const runner = fs.readFileSync(path.join(SRC, 'tests/run-all.js'), 'utf8');
-    // M7c: test-m7c 가 추가되어 19개
-    check('CI — 러너가 19개 스위트를 순차 실행한다',
-      (runner.match(/'test-[a-z0-9]+'/g) || []).length === 19,
+    // M7c: test-m7c · M8a: test-m8a 가 추가되어 20개
+    check('CI — 러너가 20개 스위트를 순차 실행한다',
+      (runner.match(/'test-[a-z0-9]+'/g) || []).length === 20,
       String((runner.match(/'test-[a-z0-9]+'/g) || []).length));
     const suiteFiles = fs.readdirSync(path.join(SRC, 'tests')).filter(f => /^test-.*\.js$/.test(f));
-    check('CI — tests/ 에 19개 스위트 파일이 이관되어 있다', suiteFiles.length === 19, String(suiteFiles.length));
+    check('CI — tests/ 에 20개 스위트 파일이 이관되어 있다', suiteFiles.length === 20, String(suiteFiles.length));
     const hard = suiteFiles.filter(f => {
       const s = fs.readFileSync(path.join(SRC, 'tests', f), 'utf8');
       return /\/opt\/pw-browsers|file:\/\/\/home\//.test(s);

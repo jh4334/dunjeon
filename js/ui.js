@@ -285,6 +285,20 @@ function makeMerchantStock(floor) {
       price: Math.floor((aw ? 640 : 120) * fm), sold: false, aw,
     });
   }
+  // M8a — 제작 재화 1~2개 (깊이가 깊을수록 비싸다)
+  if (Math.random() < CURRENCY_SHOP_P) {
+    const n = irand(1, 2);
+    const seen = {};
+    for (let i = 0; i < n; i++) {
+      const c = CURRENCY_BY_KEY[rollCurrencyKey()];
+      if (seen[c.k]) continue;
+      seen[c.k] = 1;
+      stock.push({
+        kind: 'currency', k: c.k, icon: c.icon, name: c.name, desc: c.desc,
+        price: Math.floor(c.price * fm * 0.5), sold: false,
+      });
+    }
+  }
   // 소모품은 항상 재고 마지막에
   stock.push({
     kind: 'potion', icon: '🧪', name: '회복 물약', desc: '파티 전원 30% 회복',
@@ -325,6 +339,10 @@ function openMerchant(p) {
             giveItem(s.item);
             sfx(RARITY[s.item.rarity].sfx);
             toast(`${s.icon} ${s.name} 구매 — 👤 장비 탭에서 장착!`);
+          } else if (s.kind === 'currency') {
+            giveCurrency(s.k, 1);
+            sfx('lootMagic');
+            toast(currencyGetMsg(s.k, 1));
           } else {
             party.forEach(m => {
               if (m.down) return;
@@ -522,6 +540,13 @@ function openParty(tab) {
     let picking = null;   // 젬 선택 { memberId, slot }
     let eqPick = null;    // 장비 슬롯 선택 { memberId, slot }
     let eqDetail = null;  // 장비 상세 { itemId, memberId }
+    /* M8a — ⚒️ 제작 패널 / 📊 스탯 상세 */
+    let craftPick = null;   // 제작 대상 아이템 id
+    let craftCur = null;    // 고른 재화 키
+    let craftLockIdx = -1;  // 🔒 고정할 접사 index
+    let craftFx = null;     // 마지막 제작 결과 연출 { ok, kind, outcome, destroyed, msg }
+    let statOpen = null;    // 스탯 상세를 펼친 파티원 id
+    const closeCraft = () => { craftPick = null; craftCur = null; craftLockIdx = -1; };
     const render = () => {
       body.innerHTML = '';
       // 탭
@@ -538,7 +563,9 @@ function openParty(tab) {
         b.id = TAB_ID[k];
         b.textContent = labels[k];
         b.addEventListener('click', () => {
-          partyTab = k; picking = null; eqPick = null; eqDetail = null; render();
+          partyTab = k; picking = null; eqPick = null; eqDetail = null;
+          closeCraft(); craftFx = null; statOpen = null;
+          render();
         });
         tabs.appendChild(b);
       });
@@ -563,18 +590,23 @@ function openParty(tab) {
     const invBtn = (it, memberId) => {
       const r = RARITY[it.rarity];
       const b = document.createElement('button');
-      b.className = `eqPick r-${it.rarity}` + (eqDetail && eqDetail.itemId === it.id ? ' on' : '');
+      b.className = `eqPick r-${it.rarity}` + (eqDetail && eqDetail.itemId === it.id ? ' on' : '') +
+        (itemCorrupted(it) ? ' corrupted' : '');
       b.dataset.item = it.id;
       b.dataset.rarity = it.rarity;
       b.dataset.slot = it.slot;
-      b.style.borderColor = r.color;
+      b.dataset.corrupt = itemCorrupted(it) ? '1' : '0';
+      b.style.borderColor = itemCorrupted(it) ? CORRUPT_COLOR : r.color;
       b.innerHTML = `<span class="gIcon">${itemIcon(it)}</span>` +
-        `<b style="color:${r.color}">${itemLabel(it)}</b>` +
-        `<small>${r.name} ${SLOTS[it.slot].name} · ilvl ${it.ilvl} · 접사 ${it.unique ? '고유' : it.affixes.length}</small>` +
+        `<b style="color:${itemCorrupted(it) ? CORRUPT_COLOR : r.color}">${itemLabel(it)}` +
+        (itemCorrupted(it) ? '<i class="corruptTag">타락</i>' : '') + `</b>` +
+        `<small>${r.name} ${SLOTS[it.slot].name} · ilvl ${it.ilvl} · 접사 ${it.unique ? '고유' : it.affixes.length}` +
+        (lockCount(it) ? ' · 🔒' : '') + `</small>` +
         `<em>${fmt(sellPrice(it))}g</em>`;
       b.addEventListener('click', () => {
-        eqDetail = (eqDetail && eqDetail.itemId === it.id)
-          ? null : { itemId: it.id, memberId: memberId || leader.id };
+        const same = eqDetail && eqDetail.itemId === it.id;
+        eqDetail = same ? null : { itemId: it.id, memberId: memberId || leader.id };
+        if (same || (craftPick && craftPick !== it.id)) closeCraft();
         render();
       });
       return b;
@@ -584,20 +616,24 @@ function openParty(tab) {
       const it = equippedItem(m, slot);
       const on = eqPick && eqPick.memberId === m.id && eqPick.slot === slot;
       const b = document.createElement('button');
-      b.className = 'eqSlot' + (it ? ` filled r-${it.rarity}` : '') + (on ? ' picking' : '');
+      b.className = 'eqSlot' + (it ? ` filled r-${it.rarity}` : '') + (on ? ' picking' : '') +
+        (itemCorrupted(it) ? ' corrupted' : '');
       b.dataset.member = m.id;
       b.dataset.slot = slot;
       b.dataset.item = it ? it.id : '';
       b.dataset.rarity = it ? it.rarity : '';
-      if (it) b.style.borderColor = RARITY[it.rarity].color;
+      b.dataset.corrupt = itemCorrupted(it) ? '1' : '0';
+      if (it) b.style.borderColor = itemCorrupted(it) ? CORRUPT_COLOR : RARITY[it.rarity].color;
       b.innerHTML = it
-        ? `<span class="gIcon">${itemIcon(it)}</span><small style="color:${RARITY[it.rarity].color}">${it.name}</small>`
+        ? `<span class="gIcon">${itemIcon(it)}</span><small style="color:${itemCorrupted(it) ? CORRUPT_COLOR : RARITY[it.rarity].color}">${it.name}</small>` +
+          (itemCorrupted(it) ? '<i class="corruptTag">타락</i>' : '')
         : `<span class="gIcon">${SLOTS[slot].icon}</span><small>${SLOTS[slot].name}</small>`;
       b.addEventListener('click', () => {
-        if (on) { eqPick = null; eqDetail = null; }
+        if (on) { eqPick = null; eqDetail = null; closeCraft(); }
         else {
           eqPick = { memberId: m.id, slot };
           eqDetail = it ? { itemId: it.id, memberId: m.id } : null;
+          if (!it || (craftPick && craftPick !== it.id)) closeCraft();
         }
         render();
       });
@@ -614,43 +650,64 @@ function openParty(tab) {
       // 비교 대상: 그 파티원이 같은 슬롯에 장착 중인 아이템 (자기 자신이면 비교 없음)
       const cur = equipped ? null : equippedItem(m, it.slot);
       const r = RARITY[it.rarity];
+      const corrupted = itemCorrupted(it);
       const wrap = document.createElement('div');
-      wrap.className = `eqDetail r-${it.rarity}`;
+      wrap.className = `eqDetail r-${it.rarity}` + (corrupted ? ' corrupted' : '');
       wrap.id = 'eqDetail';
       wrap.dataset.item = it.id;
       wrap.dataset.rarity = it.rarity;
       wrap.dataset.compare = cur ? cur.id : '';
-      wrap.style.borderColor = r.color;
+      wrap.dataset.corrupt = corrupted ? '1' : '0';
+      wrap.style.borderColor = corrupted ? CORRUPT_COLOR : r.color;
 
-      const vOf = (item, k) => {
-        if (!item) return 0;
-        const a = item.affixes.find(x => x.k === k);
-        return a ? a.v : 0;
-      };
+      const afOf = (item, k) => (item && item.affixes.find(x => x.k === k)) || null;
+      const vOf = (item, k) => { const a = afOf(item, k); return a ? a.v : 0; };
       const keys = it.affixes.map(a => a.k);
       if (cur) cur.affixes.forEach(a => { if (keys.indexOf(a.k) < 0) keys.push(a.k); });
       const rows = keys.map(k => {
         const nv = vOf(it, k), cv = vOf(cur, k), d = nv - cv;
+        const af = afOf(it, k);
         const cmp = !cur ? 'none' : (d > 1e-6 ? 'up' : d < -1e-6 ? 'down' : 'same');
         const arrow = cmp === 'up' ? '↑' : cmp === 'down' ? '↓' : cmp === 'same' ? '＝' : '';
-        return `<div class="eqAff" data-k="${k}" data-cmp="${cmp}">` +
-          `<span>${AFFIX_BY_KEY[k].name}</span><b>${affixValueText(k, nv)}</b>` +
+        const kind = af ? (af.kind || affixKind(k)) : affixKind(k);
+        return `<div class="eqAff${af && af.neg ? ' neg' : ''}" data-k="${k}" data-cmp="${cmp}"` +
+          (af ? ` data-tier="${af.tier || 3}" data-kind="${kind}" data-lock="${af.lock ? 1 : 0}"` : '') + `>` +
+          (af ? `<i class="tBadge t${af.tier || 3}">${affixTierMark(af)}</i>` : '<i class="tBadge off">－</i>') +
+          `<span>${af && af.lock ? '🔒 ' : ''}${AFFIX_KIND_NAME[kind]} ${AFFIX_BY_KEY[k].name}</span><b>${affixValueText(k, nv)}</b>` +
           `<em class="cmp ${cmp}">${arrow}${cur && cmp !== 'same' ? ` ${affixValueText(k, cv)}` : ''}</em></div>`;
       }).join('');
+      const impRow = it.implicit
+        ? `<div class="eqAff imp" data-k="${it.implicit.k}" data-implicit="1">` +
+          `<i class="tBadge imp">암시</i><span>${AFFIX_BY_KEY[it.implicit.k].name}</span>` +
+          `<b>${affixValueText(it.implicit.k, it.implicit.v)}</b><em class="cmp none"></em></div>`
+        : '';
 
       wrap.innerHTML = `<div class="eqdHead"><span class="eqdIcon">${itemIcon(it)}</span>
-          <div class="eqdName"><b style="color:${r.color}">${itemLabel(it)}</b>
-          <small>${r.mark} ${r.name} · ${SLOTS[it.slot].name}(${it.baseName}) · ilvl ${it.ilvl}</small></div></div>` +
+          <div class="eqdName"><b style="color:${corrupted ? CORRUPT_COLOR : r.color}">${itemLabel(it)}` +
+          (corrupted ? '<i class="corruptTag">타락</i>' : '') + `</b>
+          <small>${r.mark} ${r.name} · ${SLOTS[it.slot].name}(${it.baseName}) · ilvl ${it.ilvl}` +
+          (it.unique ? '' : ` · 접두 ${countAffixKind(it, 'prefix')}/${affixSlotMax(it.rarity, 'prefix')}` +
+                            ` · 접미 ${countAffixKind(it, 'suffix')}/${affixSlotMax(it.rarity, 'suffix')}`) +
+          `</small></div></div>` +
         (it.unique ? `<div class="eqdUniq">${UNIQUE_BY_KEY[it.unique].desc}</div>` : '') +
-        `<div class="eqdAffixes">${rows || '<div class="eqAff eqNone">접사 없음</div>'}</div>` +
+        `<div class="eqdAffixes">${impRow}${rows || '<div class="eqAff eqNone">접사 없음</div>'}</div>` +
+        (corrupted ? `<p class="sumHint corruptNote" id="eqCorruptNote">☠️ 타락한 장비 — 더 이상 제작할 수 없습니다</p>` : '') +
         (cur ? `<p class="sumHint" id="eqCmpHint">비교: ${m.name} 장착 중 «${itemLabel(cur)}»</p>`
              : equipped ? `<p class="sumHint" id="eqCmpHint">${m.name}이(가) 장착 중</p>` : '') +
         `<div class="eqdBtns">
           ${equipped
             ? `<button class="modalBtn eqd" id="eqDoUnequip">✖ 해제</button>`
             : `<button class="modalBtn eqd" id="eqDoEquip">${m.name}에게 장착</button>`}
+          ${craftableItem(it) ? `<button class="modalBtn eqd craft" id="eqDoCraft">⚒️ 제작</button>` : ''}
           <button class="modalBtn eqd danger" id="eqDoSell">💰 판매 ${fmt(sellPrice(it))}</button>
         </div>`;
+      const cf = wrap.querySelector('#eqDoCraft');
+      if (cf) cf.addEventListener('click', () => {
+        craftPick = (craftPick === it.id) ? null : it.id;
+        craftCur = null; craftLockIdx = -1; craftFx = null;
+        sfx('ui');
+        render();
+      });
       const eq = wrap.querySelector('#eqDoEquip');
       if (eq) eq.addEventListener('click', () => {
         if (equipItem(m.id, it.id)) { eqDetail = { itemId: it.id, memberId: m.id }; sfx('ui'); }
@@ -672,6 +729,112 @@ function openParty(tab) {
       return wrap;
     };
 
+    /* =============== ⚒️ 제작 패널 (M8a) =============== */
+    const buildCraft = () => {
+      const found = findItem(craftPick);
+      if (!found) { closeCraft(); return null; }
+      const it = found.it;
+      // 타락/파괴 등으로 더 이상 제작할 수 없게 되면 패널을 닫는다
+      if (!craftableItem(it)) { closeCraft(); return null; }
+      const wrap = document.createElement('div');
+      wrap.className = 'craftPanel' + (craftFx ? ` fx-${craftFx.destroyed ? 'brick' : 'ok'}` : '');
+      wrap.id = 'craftPanel';
+      wrap.dataset.item = it.id;
+      wrap.dataset.currency = craftCur || '';
+
+      // ---- 대상 접사 목록 (🔒 · 티어 뱃지) ----
+      const affRows = it.affixes.map((af, i) => {
+        const a = AFFIX_BY_KEY[af.k];
+        const pickable = craftCur === 'lock' && !af.lock;
+        return `<div class="craftAff${af.lock ? ' locked' : ''}${af.neg ? ' neg' : ''}` +
+          `${pickable ? ' pickable' : ''}${craftLockIdx === i ? ' on' : ''}" data-idx="${i}"` +
+          ` data-k="${af.k}" data-tier="${af.tier || 3}" data-kind="${af.kind || affixKind(af.k)}"` +
+          ` data-lock="${af.lock ? 1 : 0}">` +
+          `<i class="tBadge t${af.tier || 3}">${affixTierMark(af)}</i>` +
+          `<span>${af.lock ? '🔒 ' : ''}${AFFIX_KIND_NAME[af.kind || affixKind(af.k)]} ${a.name}</span>` +
+          `<b>${affixValueText(af.k, af.v)}</b></div>`;
+      }).join('');
+
+      // ---- 보유 재화 ----
+      const curCards = CURRENCIES.map(c => {
+        const own = currencyOwned(c.k);
+        const gate = canCraft(it, c.k);
+        return `<button class="craftCur${craftCur === c.k ? ' on' : ''}${(!gate.ok) ? ' dim' : ''}"` +
+          ` data-cur="${c.k}" data-own="${own}" data-ok="${gate.ok ? 1 : 0}"${gate.ok ? '' : ' disabled'}>` +
+          `<span class="gIcon">${c.icon}</span><b>${c.name}</b><small>${c.desc}</small><em>×${own}</em></button>`;
+      }).join('');
+
+      const pv = craftCur ? craftPreview(it, craftCur) : { text: '', odds: [] };
+      const oddsHtml = pv.odds.length
+        ? `<div class="craftOdds" id="craftOdds">` + pv.odds.map(o =>
+            `<div class="craftOdd" data-odd="${o.k}" data-p="${o.p}"><i>${o.icon}</i>` +
+            `<b>${o.pct}%</b><span>${o.name} — ${o.desc}</span></div>`).join('') + `</div>`
+        : '';
+      const need = (craftCur === 'lock' && craftLockIdx < 0);
+
+      wrap.innerHTML =
+        `<div class="craftHead"><b>⚒️ 제작 — ${itemLabel(it)}</b>` +
+        `<small>ilvl ${it.ilvl} · 접두 ${countAffixKind(it, 'prefix')}/${affixSlotMax(it.rarity, 'prefix')}` +
+        ` · 접미 ${countAffixKind(it, 'suffix')}/${affixSlotMax(it.rarity, 'suffix')}` +
+        ` · 시드 ${it.seed} · 제작 ${it.craftN || 0}회</small></div>` +
+        `<div class="craftAffixes" id="craftAffixes">${affRows || '<div class="craftAff none">접사 없음</div>'}</div>` +
+        `<div class="craftCurs" id="craftCurs">${curCards}</div>` +
+        `<p class="craftPreview" id="craftPreview">${craftCur ? pv.text : '재화를 골라 결과 미리보기를 확인하세요'}</p>` +
+        oddsHtml +
+        (need ? `<p class="sumHint" id="craftLockHint">고정할 접사를 위에서 하나 고르세요</p>` : '') +
+        (craftFx ? `<p class="craftResult ${craftFx.destroyed ? 'bad' : 'good'}" id="craftResult">${craftFx.msg}</p>` : '') +
+        `<div class="eqdBtns"><button class="modalBtn eqd" id="craftApply">${craftCur
+            ? `${CURRENCY_BY_KEY[craftCur].icon} 사용하기` : '재화 선택'}</button>` +
+        `<button class="modalBtn eqd" id="craftClose">닫기</button></div>`;
+
+      wrap.querySelectorAll('[data-cur]').forEach(b => {
+        b.addEventListener('click', () => {
+          craftCur = (craftCur === b.dataset.cur) ? null : b.dataset.cur;
+          craftLockIdx = -1; craftFx = null;
+          sfx('ui');
+          render();
+        });
+      });
+      wrap.querySelectorAll('.craftAff.pickable').forEach(d => {
+        d.addEventListener('click', () => { craftLockIdx = Number(d.dataset.idx); render(); });
+      });
+      const apply = wrap.querySelector('#craftApply');
+      apply.disabled = !craftCur || !canCraft(it, craftCur).ok || need;
+      apply.addEventListener('click', () => {
+        const res = craftItem(it.id, craftCur, { index: craftLockIdx });
+        craftFx = res.ok ? res : { destroyed: false, msg: res.why };
+        if (res.ok && res.destroyed) { closeCraft(); eqDetail = null; craftFx = res; }
+        else if (res.ok) { craftCur = null; craftLockIdx = -1; }
+        render();
+      });
+      wrap.querySelector('#craftClose').addEventListener('click', () => { closeCraft(); craftFx = null; render(); });
+      return wrap;
+    };
+
+    /* =============== 📊 스탯 브레이크다운 (M8a) =============== */
+    const buildStats = m => {
+      const wrap = document.createElement('div');
+      wrap.className = 'statBreak';
+      wrap.id = 'statBreak';
+      wrap.dataset.member = m.id;
+      wrap.innerHTML = statBreakdownAll(m).map(b => {
+        const val = b.stat === 'crit' ? `${b.total.toFixed(1)}%`
+          : b.stat === 'moveSpd' ? `×${b.total.toFixed(2)}`
+          : fmt(b.total);
+        const rows = b.parts.map(p => {
+          const v = p.kind === 'base' ? (Math.abs(p.value) < 10 ? p.value.toFixed(2) : fmt(p.value))
+            : p.kind === 'add' ? `+${p.value.toFixed(1)}%`
+            : (p.mul >= 1.35 || p.mul <= 0.75) ? `×${p.mul.toFixed(2)}` : pctText(p.mul);
+          return `<div class="sbRow" data-src="${p.k}"><span>${p.name}</span><b>${v}</b></div>`;
+        }).join('');
+        return `<div class="sbStat" data-stat="${b.stat}" data-total="${b.total}" data-calc="${b.calc}">` +
+          `<div class="sbHead"><span>${b.icon} ${b.name}</span><b>${val}</b></div>` +
+          `<div class="sbRows">${rows}</div>` +
+          `<p class="sbText">${b.text}</p></div>`;
+      }).join('');
+      return wrap;
+    };
+
     const renderEquip = () => {
       // 장비 탭을 봤으면 '새 장비' 알림 해제
       markItemsSeen();
@@ -682,11 +845,23 @@ function openParty(tab) {
         row.innerHTML = `<div class="pFace">${memberIcon(m)}</div>
           <div class="pInfo"><b>${m.name}</b><small>${memberRole(m)}</small>
           <small class="pHp">${m.down ? '쓰러짐' : `HP ${clamp(Math.floor(m.hp), 0, maxHp(m))} / ${maxHp(m)}`}</small></div>`;
+        const sb = document.createElement('button');
+        sb.className = 'statBtn' + (statOpen === m.id ? ' on' : '');
+        sb.id = 'statBtn_' + m.id;
+        sb.dataset.member = m.id;
+        sb.textContent = '📊 상세';
+        sb.addEventListener('click', () => {
+          statOpen = (statOpen === m.id) ? null : m.id;
+          sfx('ui');
+          render();
+        });
+        row.querySelector('.pInfo').appendChild(sb);
         const slots = document.createElement('div');
         slots.className = 'pSlots';
         SLOT_KEYS.forEach(sl => slots.appendChild(eqSlotBtn(m, sl)));
         row.appendChild(slots);
         body.appendChild(row);
+        if (statOpen === m.id) body.appendChild(buildStats(m));
         if (eqPick && eqPick.memberId === m.id) {
           const slot = eqPick.slot;
           const list = document.createElement('div');
@@ -707,10 +882,21 @@ function openParty(tab) {
         const d = buildDetail();
         if (d) body.appendChild(d);
       }
+      const craftEl = craftPick ? buildCraft() : null;
+      if (craftEl) body.appendChild(craftEl);
+      else if (craftFx) {
+        // 파괴 직후에는 패널이 사라지므로 결과 한 줄만 남긴다
+        const p = document.createElement('p');
+        p.className = 'craftResult bad';
+        p.id = 'craftResult';
+        p.textContent = craftFx.msg;
+        body.appendChild(p);
+      }
       // 인벤토리
       const head = document.createElement('div');
       head.className = 'eqInvHead';
-      head.innerHTML = `<span id="eqInvCount">🎒 ${invList().length} / ${INVENTORY_MAX}</span>`;
+      head.innerHTML = `<span id="eqInvCount">🎒 ${invList().length} / ${INVENTORY_MAX}</span>` +
+        `<span id="eqCurCount" class="curCount">⚒️ 재화 ${currencyTotal()}</span>`;
       const junk = invList().filter(x => x.rarity === 'common' || x.rarity === 'magic');
       const bulk = document.createElement('button');
       bulk.className = 'eqBulkBtn';

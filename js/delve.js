@@ -87,6 +87,14 @@ function finishVein(p) {
   // M2 — 광맥 15% 장비 드랍 (바닥에 떨어진다)
   if (rollVeinDrop(p.gx, p.gy, floor)) extra += ' · 🗡️ 장비!';
 
+  // M8a — 광맥 10% 제작 재화
+  const curK = rollCurrencyDrop('vein');
+  if (curK) {
+    const cd = CURRENCY_BY_KEY[curK];
+    addFloater(wx, wy - 58, `${cd.icon} ${cd.name}`, '#ffd7f5', 13);
+    extra += ` · ${cd.icon} ${cd.short}!`;
+  }
+
   const ambush = Math.random() < VEIN_AMBUSH_P;
   if (ambush) {
     spawnAmbush(leader.gx, leader.gy, irand(4, 7), 2, 4);

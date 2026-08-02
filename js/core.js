@@ -42,6 +42,48 @@ function shuffle(arr) {
 function isoX(x, y) { return (x - y) * (TILE_W / 2); }
 function isoY(x, y) { return (x + y) * (TILE_H / 2); }
 
+/* ---- M8a: 시드 난수 (결정성) ----
+ * 아이템 제작은 "같은 시드 + 같은 제작 이력 = 같은 결과"여야 테스트가 가능하다.
+ * mulberry32 — 32bit 정수 시드 하나로 재현 가능한 수열을 만든다.
+ * rngOf(seed) 는 rand/irand/pick/shuffle 을 그대로 흉내내므로 호출부는
+ * 전역 유틸을 쓰든 시드 난수를 쓰든 코드가 같다. */
+function mulberry32(seed) {
+  let s = (Math.floor(seed) >>> 0) || 0x9e3779b9;
+  return function () {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function rngOf(seed) {
+  const next = mulberry32(seed);
+  return {
+    seeded: true,
+    next,
+    rand: (a, b) => a + next() * (b - a),
+    irand: (a, b) => Math.floor(a + next() * (b - a + 1)),
+    pick: arr => arr[Math.floor(next() * arr.length)],
+    shuffle: arr => {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(next() * (i + 1));
+        const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+      }
+      return arr;
+    },
+  };
+}
+/* 시드를 주지 않았을 때 쓰는 '보통 난수' — 기존 동작을 그대로 유지한다 */
+const MATH_RNG = { seeded: false, next: Math.random, rand, irand, pick, shuffle };
+function rngFrom(seed) { return (seed === undefined || seed === null) ? MATH_RNG : rngOf(seed); }
+/* 32bit 무작위 시드 */
+function newSeed() { return (Math.floor(Math.random() * 4294967296) >>> 0) || 1; }
+/* 시드 + 단계 번호 → 새 시드 (제작 N회째의 난수열) */
+function mixSeed(seed, step) {
+  return ((Math.imul((Math.floor(step) || 0) + 1, 0x9e3779b1) ^ (Math.floor(seed) >>> 0)) >>> 0) || 1;
+}
+
 /* ---------------- 세이브 (M6: 버전 체계) ----------------
  * SAVE_VERSION 을 올릴 때마다 migrateV{n}toV{n+1} 을 하나 추가하면 된다. */
 const SAVE_KEY = 'dunjeon-save';
@@ -109,6 +151,8 @@ const state = {
   equipment: {},                           // { charId: { weapon, armor, trinket } }
   inventory: [],                           // 미장착 보관 (상한 INVENTORY_MAX)
   newItems: 0,                             // 획득 후 아직 장비 탭에서 확인하지 않은 수 (뱃지용)
+  // M8a — 제작 재화 보유량 { 재화키: 개수 }. 골격은 craft.js 의 ensureCurrency() 가 채운다.
+  currency: {},
   // M6 — 세이브 버전 / 미래 버전 세이브에서 온 '모르는 필드'(다시 저장할 때 되돌려 쓴다)
   saveVer: SAVE_VERSION,
   saveExtra: {},
@@ -1012,6 +1056,7 @@ const SAVE_KNOWN_KEYS = [
   'newGems', 'settings', 'hints',
   'runes', 'sockets', 'fragments', 'uberTickets',  // M7c 룬/소켓/환영 파편/우버 입장권
   'equipment', 'inventory', 'newItems',            // items.js
+  'currency',                                      // M8a 제작 재화 (craft.js)
   'achv', 'codex', 'weeklyDepth', 'title',         // meta.js
 ];
 
@@ -1150,6 +1195,15 @@ function sanitizeSave(s) {
   out.sockets = sk;
   out.fragments = clamp(Math.floor(num(out.fragments, 0)), 0, 9e9);
   out.uberTickets = clamp(Math.floor(num(out.uberTickets, 0)), 0, 999);
+  /* M8a — 제작 재화 (구 세이브에는 없다 → 전부 0) */
+  const cur = {};
+  if (out.currency && typeof out.currency === 'object' && typeof CURRENCY_KEYS !== 'undefined') {
+    CURRENCY_KEYS.forEach(k => {
+      const v = clamp(Math.floor(num(out.currency[k], 0)), 0, 99999);
+      if (v > 0) cur[k] = v;
+    });
+  }
+  out.currency = cur;
   const set = {};
   Object.keys(state.settings).forEach(k => {
     if (out.settings && typeof out.settings[k] === 'boolean') set[k] = out.settings[k];
@@ -1271,11 +1325,17 @@ function loadSave() {
     });
     state.fragments = sv.fragments;
     state.uberTickets = sv.uberTickets;
+    /* M8a — 제작 재화 */
+    state.currency = {};
+    if (typeof CURRENCY_KEYS !== 'undefined') {
+      CURRENCY_KEYS.forEach(k => { if (sv.currency[k] > 0) state.currency[k] = sv.currency[k]; });
+    }
     Object.keys(sv.settings).forEach(k => { state.settings[k] = sv.settings[k]; });
     state.hints = Object.assign({}, sv.hints);
     state.newGems = sv.newGems;
   }
   ensureRunes();
+  if (typeof ensureCurrency === 'function') ensureCurrency();   // M8a 제작 재화 골격
   SOCKET_IDS.forEach(id => { if (state.sockets[id] === undefined) state.sockets[id] = null; });
   bumpTree();
   // 편성 반영 (party 슬롯에 캐릭터를 입힌다)
@@ -1309,6 +1369,8 @@ function savePayload() {
     // M7c — 룬 / 소켓 / 환영 파편
     runes: state.runes, sockets: state.sockets, fragments: state.fragments,
     uberTickets: state.uberTickets,
+    // M8a — 제작 재화
+    currency: state.currency,
   // M2 — 장비 / 인벤토리 (영구 소장) · M4 — 도전 과제 / 도감 / 주간
   }, saveItemsPayload(), saveMetaPayload());
 }
