@@ -276,12 +276,13 @@ function makeMerchantStock(floor) {
       price: buyPrice(it, passiveShopMult()), sold: false, rarity: it.rarity,   // ilvl 이 이미 깊이 스케일
     });
   }
-  // 스킬 젬 1개 확률 등장 (영구 소장 아이템)
+  // 스킬 젬 1개 확률 등장 (영구 소장 아이템) — 심층(15층+)에서는 각성젬 재고도 섞인다
   if (Math.random() < 0.5) {
-    const g = pick(GEMS);
+    const aw = floor >= AW_SHOP_DEPTH && Math.random() < AW_SHOP_P;
+    const g = GEM_BY_KEY[rollGemKey({ awakened: aw })];
     stock.push({
-      kind: 'gem', k: g.k, icon: g.icon, name: `${g.name} 젬`, desc: g.desc,
-      price: Math.floor(120 * fm), sold: false,
+      kind: 'gem', k: g.k, icon: g.icon, name: `${g.name} ${aw ? '각성젬' : '젬'}`, desc: g.desc,
+      price: Math.floor((aw ? 640 : 120) * fm), sold: false, aw,
     });
   }
   // 소모품은 항상 재고 마지막에
@@ -722,23 +723,28 @@ function openParty(tab) {
       body.appendChild(list);
     };
 
+    const SLOT_LABEL = { skill: '스킬', support: '서포트', support2: '서포트②' };
+    // 각성젬은 「각성한 ○○」이 슬롯 폭을 넘겨 두 줄이 되므로 ✨ + 원본 이름으로 줄인다
+    const gemSlotName = g => (g.aw ? `✨${(GEM_BY_KEY[g.base] || g).name}` : g.name);
     const slotBtn = (m, slot) => {
       const lo = loadoutOf(m);
       const key = lo[slot];
       const gem = key ? GEM_BY_KEY[key] : null;
-      const locked = slot === 'support' && !supportUnlocked();
+      const locked = !slotUnlocked(slot);
       const b = document.createElement('button');
       b.className = 'gemSlot' + (gem ? ' filled' : '') + (locked ? ' locked' : '') +
+        (gem && gem.aw ? ' aw' : '') +
         (picking && picking.memberId === m.id && picking.slot === slot ? ' picking' : '');
       b.dataset.member = m.id;
       b.dataset.slot = slot;
       b.dataset.gem = key || '';
+      b.dataset.aw = (gem && gem.aw) ? '1' : '0';
       b.innerHTML = locked
-        ? `<span class="gIcon">🔒</span><small>Lv.${SUPPORT_LV}</small>`
-        : gem ? `<span class="gIcon">${gem.icon}</span><small>${gem.name}</small>`
-              : `<span class="gIcon">＋</span><small>${slot === 'skill' ? '스킬' : '서포트'}</small>`;
+        ? `<span class="gIcon">🔒</span><small>Lv.${slotLv(slot)}</small>`
+        : gem ? `<span class="gIcon">${gem.icon}</span><small>${gemSlotName(gem)}</small>`
+              : `<span class="gIcon">＋</span><small>${SLOT_LABEL[slot]}</small>`;
       b.addEventListener('click', () => {
-        if (locked) { toast(`💠 서포트 슬롯은 Lv.${SUPPORT_LV}부터!`); return; }
+        if (locked) { toast(`💠 ${SLOT_LABEL[slot]} 슬롯은 Lv.${slotLv(slot)}부터!`); return; }
         picking = (picking && picking.memberId === m.id && picking.slot === slot)
           ? null : { memberId: m.id, slot };
         render();
@@ -761,10 +767,15 @@ function openParty(tab) {
           <small class="pHp">${m.down ? '쓰러짐' : `HP ${hpNow} / ${maxHp(m)}`}</small></div>`;
         const slots = document.createElement('div');
         slots.className = 'pSlots';
-        slots.appendChild(slotBtn(m, 'skill'));
-        slots.appendChild(slotBtn(m, 'support'));
+        GEM_SLOTS.forEach(sl => slots.appendChild(slotBtn(m, sl)));
         row.appendChild(slots);
         body.appendChild(row);
+        // M7b: 콤보 미리보기 한 줄 ("💣 지옥 폭탄 → 연쇄 폭발 ×2")
+        const combo = document.createElement('div');
+        combo.className = 'comboLine';
+        combo.dataset.member = m.id;
+        combo.textContent = comboPreview(m);
+        body.appendChild(combo);
         // 선택 중이면 바로 아래에 인벤토리 목록
         if (picking && picking.memberId === m.id) {
           const list = document.createElement('div');
@@ -791,10 +802,15 @@ function openParty(tab) {
             const g = GEM_BY_KEY[k];
             const avail = gemAvailable(k);
             const b = document.createElement('button');
-            b.className = 'gemPick' + (avail <= 0 ? ' dim' : '');
+            b.className = 'gemPick' + (avail <= 0 ? ' dim' : '') + (g.aw ? ' aw' : '');
             b.dataset.gem = k;
+            b.dataset.aw = g.aw ? '1' : '0';
             b.disabled = avail <= 0;
-            b.innerHTML = `<span class="gIcon">${g.icon}</span><b>${g.name}</b><small>${g.desc}</small><em>×${avail}</em>`;
+            // 서포트를 고르는 중이면 지금 스킬과의 궁합을 바로 보여 준다
+            const lo2 = loadoutOf(m);
+            const fitNote = (g.kind === 'support' && !supportActive(k, lo2.skill)) ? ' · ⚠️ 효과 없음' : '';
+            b.innerHTML = `<span class="gIcon">${g.icon}</span><b>${g.name}</b>` +
+              `<small>${g.desc}${fitNote}</small><em>×${avail}</em>`;
             b.addEventListener('click', () => {
               if (equipGem(m.id, picking.slot, k)) { picking = null; render(); }
             });
@@ -806,8 +822,10 @@ function openParty(tab) {
       const inv = document.createElement('p');
       inv.className = 'sumHint';
       inv.id = 'gemInv';
-      inv.textContent = `보유 젬 ${state.gems.length}개` +
-        (supportUnlocked() ? '' : ` · 서포트 슬롯은 Lv.${SUPPORT_LV} 해금`);
+      const awN = state.gems.filter(k => gemIsAwakened(k)).length;
+      inv.textContent = `보유 젬 ${state.gems.length}개` + (awN ? ` (✨각성 ${awN})` : '') +
+        (supportUnlocked() ? '' : ` · 서포트 슬롯은 Lv.${SUPPORT_LV} 해금`) +
+        (support2Unlocked() ? '' : ` · 두 번째 서포트는 Lv.${SUPPORT2_LV} 해금`);
       body.appendChild(inv);
     };
 
@@ -1179,7 +1197,7 @@ function renderCodexTab(body) {
 
   section(`💠 스킬 젬 <em>${tot.parts.gems.got}/${tot.parts.gems.total}</em>`, 'codexGems', GEMS.map(g => {
     const on = codexKnows('gems', g.k);
-    return `<div class="cxCard${on ? '' : ' unknown'}" data-gem="${g.k}" data-known="${on ? '1' : '0'}">` +
+    return `<div class="cxCard${on ? '' : ' unknown'}${g.aw ? ' aw' : ''}" data-gem="${g.k}" data-known="${on ? '1' : '0'}" data-aw="${g.aw ? '1' : '0'}">` +
       `<span class="cxIcon">${on ? g.icon : '❓'}</span><b>${on ? g.name : '???'}</b>` +
       `<small>${on ? g.desc : '미획득'}</small></div>`;
   }));

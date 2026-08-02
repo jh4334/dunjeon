@@ -91,7 +91,7 @@ const state = {
   partyIds: DEFAULT_PARTY.slice(),         // 편성된 4인 (0번이 리더)
   // Phase 3 — 스킬 젬 / 패시브
   gems: [],                                // 영구 소장 젬 인벤토리 (젬 키 배열, 중복 허용)
-  gemLoadout: {},                          // { charId: { skill, support } }
+  gemLoadout: {},                          // { charId: { skill, support, support2 } }  (M7b: 서포트 2칸)
   passivePts: 0,                           // 미사용 패시브 포인트
   passiveNodes: [],                        // M3.5b — 찍은 트리 노드 id 목록
   newGems: 0,                              // 획득 후 아직 파티 화면에서 확인하지 않은 젬 수 (뱃지용)
@@ -281,37 +281,38 @@ Object.defineProperty(state.meta, 'classes', {
   enumerable: true, configurable: true,
 });
 
-/* ---------------- 스킬 젬 / 서포트 젬 ---------------- */
-// fit: 장착 가능한 역할 태그 (null = 아무나)
-const GEMS = [
-  { k: 'fireball', kind: 'skill',   fit: 'caster', icon: '🔥', name: '화염구',     desc: '마법 공격이 대상 주변 1칸 광역화' },
-  { k: 'chain',    kind: 'skill',   fit: 'caster', icon: '⚡', name: '연쇄 번개',   desc: '마법 공격이 최대 3마리 연쇄 (70%씩)' },
-  { k: 'freeze',   kind: 'skill',   fit: 'caster', icon: '❄️', name: '빙결',       desc: '마법 공격 시 2초 슬로우' },
-  { k: 'smite',    kind: 'skill',   fit: 'melee',  icon: '💥', name: '강타',       desc: '근접 20% 확률 1초 스턴' },
-  { k: 'holy',     kind: 'skill',   fit: 'healer', icon: '🌟', name: '신성한 빛',   desc: '치유가 반경 2칸 광역화' },
-  { k: 'poison',   kind: 'skill',   fit: 'melee',  icon: '🧪', name: '맹독',       desc: '근접 3초간 초당 30% 도트' },
-  { k: 'amp',      kind: 'support', fit: null,     icon: '📈', name: '증폭',       desc: '연결된 스킬 피해 +30%' },
-  { k: 'haste',    kind: 'support', fit: null,     icon: '💨', name: '가속',       desc: '해당 캐릭터 공격/시전 쿨 -25%' },
-  { k: 'spread',   kind: 'support', fit: null,     icon: '🌀', name: '확산',       desc: '광역 반경 / 연쇄 수 +1' },
-];
-const GEM_BY_KEY = {};
-GEMS.forEach(g => { GEM_BY_KEY[g.k] = g; });
-const SUPPORT_LV = 15;                        // 서포트 슬롯 해금 레벨
+/* ---------------- 스킬 젬 / 서포트 젬 / 각성젬 ----------------
+ * 젬 표(GEMS / GEM_BY_KEY / 태그 · 콤보 규칙)는 js/gems.js 로 옮겼다.
+ * 여기에는 '장착 상태(state.gemLoadout)를 다루는 로직'만 남긴다. */
+const SUPPORT_LV = 15;                        // 서포트 슬롯 ① 해금 레벨
+const SUPPORT2_LV = 25;                       // M7b: 서포트 슬롯 ② 해금 레벨
+const GEM_SLOTS = ['skill', 'support', 'support2'];
 function supportUnlocked() { return state.lv >= SUPPORT_LV; }
+function support2Unlocked() { return state.lv >= SUPPORT2_LV; }
+function slotUnlocked(slot) {
+  if (slot === 'support') return supportUnlocked();
+  if (slot === 'support2') return support2Unlocked();
+  return true;
+}
+function slotLv(slot) { return slot === 'support2' ? SUPPORT2_LV : SUPPORT_LV; }
 
 function loadoutOf(m) {
   const id = typeof m === 'string' ? m : m.id;
-  if (!state.gemLoadout[id]) state.gemLoadout[id] = { skill: null, support: null };
-  return state.gemLoadout[id];
+  let lo = state.gemLoadout[id];
+  if (!lo) { lo = { skill: null, support: null, support2: null }; state.gemLoadout[id] = lo; }
+  // 구 세이브(스킬/서포트 2칸)에서 올라온 로드아웃에 두 번째 서포트 칸을 붙여 준다
+  if (lo.support2 === undefined) lo.support2 = null;
+  return lo;
 }
-// 젬이 해당 캐릭터 / 슬롯에 맞는가 — 역할 태그 기준
+// 젬이 해당 캐릭터 / 슬롯에 맞는가 — 역할 태그 기준 (fit 은 문자열 또는 배열)
 function gemFits(gem, m, slot) {
   if (!gem) return false;
-  if (slot === 'support') return gem.kind === 'support';
+  if (slot === 'support' || slot === 'support2') return gem.kind === 'support';
   if (gem.kind !== 'skill') return false;
-  if (gem.fit === null) return true;
+  if (gem.fit === null || gem.fit === undefined) return true;
   const id = (m && typeof m === 'object') ? m.id : m;
-  return charHasRole(id, gem.fit);
+  const fits = Array.isArray(gem.fit) ? gem.fit : [gem.fit];
+  return fits.some(tag => charHasRole(id, tag));
 }
 // 인벤토리 보유 수 - 장착 중인 수 = 사용 가능 수
 function gemOwned(k) { return state.gems.filter(g => g === k).length; }
@@ -319,8 +320,7 @@ function gemEquippedCount(k) {
   let n = 0;
   ownedChars().forEach(id => {
     const lo = loadoutOf(id);
-    if (lo.skill === k) n++;
-    if (lo.support === k) n++;
+    GEM_SLOTS.forEach(s => { if (lo[s] === k) n++; });
   });
   return n;
 }
@@ -335,11 +335,14 @@ function giveGem(k) {
   return true;
 }
 // 젬 획득 안내 문구 (드랍/구매 공통) — 어디서 장착하는지까지 알려준다
-function gemGetMsg(g) { return `💎 스킬 젬 획득: ${g.name} — 👤에서 장착!`; }
+function gemGetMsg(g) {
+  if (g && g.aw) return `✨ 각성젬 획득: ${g.name} — 👤에서 장착!`;
+  return `💎 스킬 젬 획득: ${g.name} — 👤에서 장착!`;
+}
 function equipGem(memberId, slot, gemKey) {
   if (!charOwned(memberId)) return false;
-  if (slot !== 'skill' && slot !== 'support') return false;
-  if (slot === 'support' && !supportUnlocked()) return false;
+  if (GEM_SLOTS.indexOf(slot) < 0) return false;
+  if (!slotUnlocked(slot)) return false;
   const lo = loadoutOf(memberId);
   if (gemKey == null) { lo[slot] = null; updatePartyBadge(); saveDirty = true; return true; }
   const gem = GEM_BY_KEY[gemKey];
@@ -351,20 +354,52 @@ function equipGem(memberId, slot, gemKey) {
   return true;
 }
 function unequipGem(memberId, slot) { return equipGem(memberId, slot, null); }
-// 파티원의 젬 효과 요약 (전투 로직에서 사용)
+/* 장착 중인 서포트 젬 키 목록 (해금된 슬롯만) */
+function equippedSupports(m) {
+  const lo = loadoutOf(m);
+  const out = [];
+  if (supportUnlocked() && lo.support) out.push(lo.support);
+  if (support2Unlocked() && lo.support2) out.push(lo.support2);
+  return out;
+}
+/* 콤보 미리보기 한 줄 — "💣 지옥 폭탄 → 연쇄 폭발 ×2" */
+function comboPreview(m) {
+  const lo = loadoutOf(m);
+  return comboLine(lo.skill, equippedSupports(m));
+}
+/* 파티원의 젬 효과 요약 (전투 로직에서 사용)
+ * 서포트 2개는 곱연산 — 같은 젬을 두 번 끼면 배율도 두 번 곱해진다. */
 function gemMods(m) {
   const lo = loadoutOf(m);
   const skill = lo.skill;
-  const sup = supportUnlocked() ? lo.support : null;
+  const base = skill ? gemBaseKey(skill) : null;
+  const aw = skill ? gemIsAwakened(skill) : false;
+  const sups = equippedSupports(m);
+  // 태그가 맞는 서포트만 센다 (부적합 조합 = 장착은 되지만 효과 없음)
+  const act = {};
+  const inactive = [];
+  sups.forEach(k => {
+    if (supportActive(k, skill)) act[k] = (act[k] || 0) + 1;
+    else inactive.push(k);
+  });
+  const n = k => act[k] || 0;
   // 장비 '스킬 젬 효과 +%'는 연결된 스킬 젬이 있을 때만 곱해진다
   const gemUp = skill ? equipGemMul(m) * passiveGemMul() : 1;
+  const dmg = Math.pow(1.3, n('amp')) * Math.pow(1.8, n('focus')) *
+              Math.pow(1.45, n('sacrifice')) * (aw ? AW_MUL : 1) * gemUp;
   return {
-    skill,
-    dmg: ((sup === 'amp' && skill) ? 1.3 : 1) * gemUp,   // 증폭은 '연결된 스킬'이 있어야 발동
+    skill, base, aw,
+    awMul: aw ? AW_MUL : 1,
+    sups, supsActive: Object.keys(act), supsInactive: inactive,
+    dmg,
     // 장비 '공격 속도 +%' + 트리(시간 가속 / 피의 계약) + 음유시인 오라
-    cd: (sup === 'haste' ? 0.75 : 1) * equipCdMul(m) * passiveCdMult() *
+    cd: Math.pow(0.75, n('haste')) * equipCdMul(m) * passiveCdMult() *
         (skill ? passiveGemCdMult() : 1) * partyCdAura(),
-    spread: sup === 'spread' ? 1 : 0,
+    spread: n('spread'),
+    fork: n('fork'), multi: n('multi'), convert: n('convert'), siphon: n('siphon'),
+    focus: n('focus'), extend: n('extend'), trigger: n('trigger'),
+    sacrifice: n('sacrifice'), echo: n('echo'),
+    durMul: 1 + 0.5 * n('extend'),
   };
 }
 
@@ -1051,11 +1086,12 @@ function loadSave() {
     /* 젬 — 장착 검증은 보유 목록(state.gems)이 정해진 뒤라야 할 수 있다 */
     state.gems = sv.gems.slice();
     state.gemLoadout = {};
-    state.roster.forEach(id => { state.gemLoadout[id] = { skill: null, support: null }; });
+    state.roster.forEach(id => { state.gemLoadout[id] = { skill: null, support: null, support2: null }; });
     state.roster.forEach(id => {
       const src = sv.gemLoadout[id];
       if (!src) return;
-      ['skill', 'support'].forEach(slot => {
+      // 구 세이브에는 support2 가 없다 — 없는 칸은 그냥 비어 있는 채로 승계된다
+      GEM_SLOTS.forEach(slot => {
         const g = GEM_BY_KEY[src[slot]];
         if (g && gemFits(g, id, slot) && gemAvailable(src[slot]) > 0) state.gemLoadout[id][slot] = src[slot];
       });

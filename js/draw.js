@@ -529,7 +529,8 @@ function drawMinion(sx, sy, k) {
   ctx.translate(sx, sy);
   // 아군 표시: 소환수 색 오라
   const kc = MINION_KINDS[k.kind] || MINION_KINDS.skeleton;
-  const rgb = kc.k === 'spirit' ? '155, 232, 255' : kc.k === 'wolf' ? '216, 200, 154' : '120, 240, 130';
+  const rgb = kc.k === 'spirit' ? '155, 232, 255' : kc.k === 'wolf' ? '216, 200, 154'
+            : kc.k === 'archer' ? '216, 200, 160' : '120, 240, 130';
   ctx.fillStyle = `rgba(${rgb}, ${0.18 + 0.08 * Math.sin(t * 4 + k.gx)})`;
   ctx.beginPath(); ctx.ellipse(0, 1, 12, 5.5, 0, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = 'rgba(0,0,0,0.25)';
@@ -538,7 +539,8 @@ function drawMinion(sx, sy, k) {
   const bob = k.moving ? Math.sin(t * 20 + k.gx) * 1.4 : Math.sin(t * 3) * 0.6;
   ctx.translate(0, bob);
   // 갈비뼈 몸통 (정령/늑대는 색만 바꾼다 — 실루엣은 공유)
-  ctx.fillStyle = kc.k === 'spirit' ? 'rgba(155,232,255,0.75)' : kc.k === 'wolf' ? '#8a7a5a' : '#d9d4c8';
+  ctx.fillStyle = kc.k === 'spirit' ? 'rgba(155,232,255,0.75)' : kc.k === 'wolf' ? '#8a7a5a'
+                : kc.k === 'archer' ? '#e2d8bc' : '#d9d4c8';
   rr(-6, -18, 12, 9, 3);
   ctx.strokeStyle = '#b8b2a4'; ctx.lineWidth = 1.2;
   ctx.beginPath();
@@ -555,6 +557,13 @@ function drawMinion(sx, sy, k) {
     : kc.k === 'wolf' ? `rgba(255, 210, 120, ${glow})` : `rgba(120, 255, 140, ${glow})`;
   rr(-5, -26, 3.5, 4.5, 1.5);
   rr(2, -26, 3.5, 4.5, 1.5);
+  // M7b 해골 사수 — 손에 활을 들려 준다
+  if (kc.k === 'archer') {
+    ctx.strokeStyle = '#b58a3a'; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(9, -13, 6, -Math.PI * 0.55, Math.PI * 0.55); ctx.stroke();
+    ctx.strokeStyle = 'rgba(230,220,190,0.8)'; ctx.lineWidth = 0.9;
+    ctx.beginPath(); ctx.moveTo(6, -18); ctx.lineTo(6, -8); ctx.stroke();
+  }
   ctx.restore();
   // HP 바
   if (k.hp < k.maxHp) {
@@ -582,6 +591,26 @@ function drawMine(sx, sy, mine) {
   ctx.beginPath(); ctx.moveTo(2, -11); ctx.quadraticCurveTo(5, -15, 8, -13); ctx.stroke();
   ctx.fillStyle = `rgba(255, 190, 60, ${blink})`;
   ctx.beginPath(); ctx.arc(8, -13, 2.2, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+/* ---- M7b: 젬 장판 (성역 / 지옥 화염) ---- */
+function drawGemZone(sx, sy, z) {
+  const t = state.time;
+  const pulse = 0.55 + 0.45 * Math.abs(Math.sin(t * 2.2 + z.gx * 0.7 + z.gy * 0.4));
+  const heal = z.kind === 'sanctuary';
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.fillStyle = heal ? `rgba(141, 255, 176, ${0.10 + 0.10 * pulse})`
+                       : `rgba(255, 138, 74, ${0.12 + 0.12 * pulse})`;
+  ctx.beginPath(); ctx.ellipse(0, 0, 19, 10, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = heal ? `rgba(141, 255, 176, ${0.5 * pulse})` : `rgba(255, 180, 90, ${0.55 * pulse})`;
+  ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.ellipse(0, 0, 15, 7.5, 0, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 0.75 * pulse;
+  ctx.font = '11px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(z.icon || (heal ? '⛪' : '🔥'), 0, -6);
   ctx.restore();
 }
 
@@ -2047,6 +2076,11 @@ function render() {
     if (h.dead) return;
     if (wld.mode === 'dungeon' && !wld.seen[idx(wld, h.gx, h.gy)]) return;
     drawList.push({ key: h.gx + h.gy - 0.15, fn: () => drawHazard(isoX(h.gx, h.gy) + offX, isoY(h.gx, h.gy) + offY, h) });
+  });
+  // M7b 젬 장판 (성역/지옥 화염 — 해저드보다 살짝 아래)
+  (wld.gemZones || []).forEach(z => {
+    if (wld.mode === 'dungeon' && !wld.seen[idx(wld, z.gx, z.gy)]) return;
+    drawList.push({ key: z.gx + z.gy - 0.18, fn: () => drawGemZone(isoX(z.gx, z.gy) + offX, isoY(z.gx, z.gy) + offY, z) });
   });
   // 지뢰 (바닥에 붙어 있으므로 타일 순서 그대로)
   (wld.mines || []).forEach(mn => {

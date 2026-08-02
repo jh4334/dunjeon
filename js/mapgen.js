@@ -18,6 +18,9 @@ function newWorld(mode, w, h) {
     // Phase 3: 직업 소환물 (저장하지 않는 층 내 상태)
     minions: [],          // 네크로맨서 해골
     mines: [],            // 폭탄공 지뢰
+    // M7b: 젬 장판(성역/지옥 화염) · 지연 발동(운석 낙하/메아리)
+    gemZones: [],
+    gemCasts: [],
     floor: 0, walkTotal: 0, seenCount: 0,
     spawn: { x: 0, y: 0 },
     entrance: null, stairs: null, shrineUsed: false,

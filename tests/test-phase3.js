@@ -511,15 +511,19 @@ const near = (a, b, eps) => Math.abs(a - b) <= (eps == null ? 1e-6 : eps);
   const gemDef = await page.evaluate(() => {
     const G = window.GAME;
     return {
-      skills: G.GEMS.filter(g => g.kind === 'skill').map(g => g.k),
+      skills: G.GEMS.filter(g => g.kind === 'skill' && !g.aw).map(g => g.k),
       supports: G.GEMS.filter(g => g.kind === 'support').map(g => g.k),
+      awakened: G.GEMS.filter(g => g.aw).map(g => g.k),
+      total: G.GEMS.length,
     };
   });
-  check('스킬 젬 6종 + 서포트 젬 3종',
-    gemDef.skills.length === 6 && gemDef.supports.length === 3 &&
+  // M7b: 스킬 6 → 21종 / 서포트 3 → 12종 + 각성젬 21종 (기존 9종은 그대로 남는다)
+  check('스킬 젬 21종 + 서포트 젬 12종 + 각성젬 21종 (기존 6+3 유지)',
+    gemDef.skills.length === 21 && gemDef.supports.length === 12 &&
+    gemDef.awakened.length === 21 && gemDef.total === 54 &&
     ['fireball', 'chain', 'freeze', 'smite', 'holy', 'poison'].every(k => gemDef.skills.includes(k)) &&
     ['amp', 'haste', 'spread'].every(k => gemDef.supports.includes(k)),
-    JSON.stringify(gemDef));
+    JSON.stringify({ s: gemDef.skills.length, p: gemDef.supports.length, a: gemDef.awakened.length }));
 
   const equipTest = await page.evaluate(() => {
     const G = window.GAME;
@@ -868,8 +872,10 @@ const near = (a, b, eps) => Math.abs(a - b) <= (eps == null ? 1e-6 : eps);
     slots: [...document.querySelectorAll('.gemSlot')].map(s => s.dataset.member + ':' + s.dataset.slot),
     tabs: [!!document.getElementById('tabGem'), !!document.getElementById('tabPassive')],
   }));
-  check('👤 버튼 → 파티 모달 (4명 · 스킬/서포트 슬롯 각 1개 · 탭 2개)',
-    partyUi.open && partyUi.rows.length === 4 && partyUi.slots.length === 8 &&
+  // M7b: 슬롯이 스킬 1 + 서포트 2 = 3개로 늘었다 (4명 × 3 = 12)
+  check('👤 버튼 → 파티 모달 (4명 · 스킬 1 + 서포트 2 슬롯 · 탭 2개)',
+    partyUi.open && partyUi.rows.length === 4 && partyUi.slots.length === 12 &&
+    partyUi.slots.filter(s => /:support2$/.test(s)).length === 4 &&
     partyUi.tabs[0] && partyUi.tabs[1],
     JSON.stringify(partyUi));
 

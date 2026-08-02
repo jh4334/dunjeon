@@ -47,7 +47,7 @@ const RICH_SAVE = {
   partyIds: ['blade', 'priest', 'mage', 'necro'],
   passiveNodes: [],
   passivePts: 25,
-  gems: ['fireball', 'multi', 'frost'],
+  gems: ['fireball', 'aw_meteor', 'amp', 'echo', 'holy', 'extend'],   // M7b: 스킬 + 각성 + 서포트 2칸
   records: { classBest: { knight: 15, blade: 12 }, veins: 120, azurite: 900, bestKills: 88 },
   settings: { sound: true, bgm: true, shake: true, hitstop: true },
   hints: { firstDungeon: true, firstLevel: true, firstGold: true, guideDone: true, guideStarted: true },
