@@ -3,17 +3,20 @@
 귀여운 쿼터뷰(아이소메트릭) **로그라이트 파티 던전 크롤러**입니다.
 초원을 탐험하다 해골 입구로 들어가면 절차 생성 던전이 펼쳐지고, 죽어도 골드·경험·빌드는 남아 다음 런이 수월해집니다.
 
+[![Tests](https://github.com/jh4334/dunjeon/actions/workflows/test.yml/badge.svg)](https://github.com/jh4334/dunjeon/actions/workflows/test.yml)
+[![Deploy](https://github.com/jh4334/dunjeon/actions/workflows/deploy.yml/badge.svg)](https://github.com/jh4334/dunjeon/actions/workflows/deploy.yml)
+
 **▶ 플레이: https://jh4334.github.io/dunjeon/** (main 브랜치 push 시 GitHub Pages로 자동 배포)
 
 빌드 과정 없는 순수 HTML/CSS/JS(Canvas) 한 페이지입니다. 모바일에서는 하단 D-패드로 조작합니다.
 
-| 초원 | 용암 바이옴 전투 | 심연 동굴 |
+| 타이틀 | 파티 편성 | 패시브 트리 |
 |---|---|---|
-| ![초원](docs/shot-overworld.png) | ![용암 바이옴 전투](docs/shot-lava-combat.png) | ![심연 동굴](docs/shot-abyss-cave.png) |
+| ![타이틀](docs/shot-title.png) | ![파티 편성](docs/shot-party.png) | ![패시브 트리](docs/shot-tree.png) |
 
-| 갈림길 | 파티 & 빌드 | 보스전 |
+| 보스전 | 광산 어둠 | 주간 포탈 |
 |---|---|---|
-| ![갈림길](docs/shot-pathchoice.png) | ![파티 & 빌드](docs/shot-party-build.png) | ![보스전](docs/shot-boss.png) |
+| ![보스전](docs/shot-boss.png) | ![광산 어둠](docs/shot-darkness.png) | ![주간 포탈](docs/shot-weekly.png) |
 
 ## 로그라이트 루프
 
@@ -315,6 +318,16 @@
 아이콘은 캔버스로 만든 PNG를 `docs/icon-192.png` · `docs/icon-512.png` 로 저장소에 포함했습니다.
 service worker 는 **https(또는 localhost)에서만** 등록하고 `file://` 에서는 건너뜁니다.
 
+## 📊 이번 런 분석 (M6 · 런 텔레메트리)
+
+런 한 판 동안 층별 기록을 모아 **정산 모달 안의 접이식 섹션**으로 보여줍니다.
+`state.run.telemetry` 에만 있으므로 런이 끝나면 사라집니다 — **저장하지 않습니다**(전멸/탈출 정산에서만 표시).
+
+- **총 소요** · 층 수 · 받은 피해 · 다운 횟수
+- **층별 체류 바** — 층마다 머문 시간을 가장 오래 머문 층 기준 비율 막대로 (받은 피해도 함께)
+- **최다 피해원 TOP3** — 몬스터 타입(`👹 해골 궁수`) · `⚠️ 예고 장판` · `☠️ 지형 피해` · `👁 어둠` · `🧪 지속 피해`
+- **다운 원인** — 쓰러진 원인별 횟수 태그
+
 ## 조작법
 
 | 조작 | 설명 |
@@ -353,8 +366,32 @@ localStorage 키 `dunjeon-save` 하나에 자동 저장합니다(3초마다, 변
 - 🏆 도전 과제 달성(`achv`) · 칭호(`title`) · 📖 도감(`codex`)
 - 🌀 주간 체크포인트(`weeklyDepth`) · 이번 주 기록(`records.weekly`) · 참여 주차 목록 · 누적 카운터(킬/골드/보스/엘리트/플레어/상인/제단)
 
-축복·유물·던전 진행 상황은 런 한정이라 저장하지 않습니다. 구버전 세이브도 그대로 로드되며,
+축복·유물·던전 진행 상황은 런 한정이라 저장하지 않습니다.
 설정의 **데이터 초기화**는 이 키만 지웁니다(같은 도메인의 다른 데이터는 건드리지 않음).
+
+### 세이브 버전 (M6)
+
+payload 에 `v` 필드가 들어갑니다. 현재 **`v: 3`** (`SAVE_VERSION`, `js/core.js`).
+로드는 **순수 함수 마이그레이션 체인**을 거칩니다.
+
+```
+v 없음(= v1) ─migrateV1toV2→ v2 ─migrateV2toV3→ v3 ─sanitizeSave→ state 반영
+```
+
+| 버전 | 구조 |
+|---|---|
+| v1 | Phase 3 시절 — `meta.classes`(직업 해금) · `classId`(리더) · `passives`(3갈래 수치) |
+| v2 | M3.5b — `roster` / `partyIds` / `passiveNodes` |
+| v3 | M6 — 누락 필드 기본값이 payload 안에서 채워진 상태 |
+
+- **구버전 세이브 데이터 손실 0.** v1 의 `meta.classes` → `roster`, `classId` → 리더 슬롯,
+  `passives` 3+2+1 → 트리 노드 6개(가지 초입 사슬)로 그대로 승계하고, 남은 패시브 포인트는 레벨에서 소급 지급합니다.
+- **손상 세이브**(JSON 파싱 실패 · 최상위 타입 오류 · `lv` 타입 오류)는 안전 기본값으로 복구하고
+  콘솔에 경고를 **한 줄만** 남깁니다. 이후 저장이 정상 payload 로 덮어씁니다.
+- **전방 호환** — `v > 3` 인 세이브(미래 버전)는 마이그레이션 없이 그대로 읽고,
+  우리가 모르는 최상위 필드는 `state.saveExtra` 에 보관했다가 다시 저장할 때 되돌려 씁니다.
+  버전 번호도 낮추지 않습니다.
+- `sanitizeSave` 는 버전과 무관하게 항상 마지막에 돌며 범위 밖 수치/엉뚱한 타입만 눌러 담습니다.
 
 ## 실행 방법
 
@@ -365,9 +402,41 @@ python3 -m http.server 8000
 # → http://localhost:8000
 ```
 
+## 개발 · 테스트
+
+게임 자체는 **런타임 의존성이 0** 입니다(`index.html` 만 열면 돌아갑니다).
+`package.json` 은 오직 테스트용이고 playwright 는 `devDependencies` 에만 있습니다.
+
+```bash
+npm i                                   # playwright (devDependency)
+npx playwright install chromium         # 번들 크로미움 내려받기
+
+npm test                                # 전 스위트 순차 실행 (tests/run-all.js)
+node tests/run-all.js m6 m5             # 이름으로 일부만
+CHROME_BIN=/path/to/headless_shell npm test   # 이미 설치된 크로미움 사용
+```
+
+- `CHROME_BIN` 이 있으면 그 실행 파일을, 없으면 playwright 번들 브라우저를 씁니다 (`tests/env.js`).
+  CI 는 `npx playwright install chromium --with-deps` 로 받은 기본 브라우저를 쓰므로 `CHROME_BIN` 을 세우지 않습니다.
+- 게임 URL 은 `file://` + `path.resolve(__dirname, '../index.html')` + `#notitle`(타이틀 건너뛰기)로 만듭니다 — 체크아웃 위치와 무관합니다.
+- 스크린샷/로그 산출물은 `tests/out/` 에 떨어지고 `.gitignore` 됩니다.
+- 러너는 스위트를 **순차 실행**하고(브라우저가 겹치지 않게), 끝나면 요약 표를 찍습니다.
+  하나라도 실패하면 `exit 1` 로 전파합니다.
+- README 스크린샷은 `node tests/shots.js` 로 다시 찍습니다(480×900 · `docs/shot-*.png`).
+
+| 스위트 | 범위 |
+|---|---|
+| `test-phase1` `test-phase2` `test-phase3` | 전투 긴장감 · 맵 다양성 · 직업/젬/패시브 |
+| `test-review1` ~ `test-review4` | 리뷰-수정 루프 회귀 |
+| `test-delve` | 광산 — 깊이 선택 · 광맥 채굴 · 레이아웃 |
+| `test-m1` ~ `test-m5` (`m35a`/`m35b` 포함) | 아주라이트·어둠 / 장비 / 보스 / 대사·편성·트리 / 주간·과제·도감 / 타이틀·BGM·PWA |
+| `test-m6` | 세이브 버전·마이그레이션 · 런 텔레메트리 · CI 설정 |
+
 ## 배포
 
-`.github/workflows/deploy.yml` — main 브랜치에 push되면 GitHub Actions가 정적 파일을 GitHub Pages로 배포합니다. (첫 배포 시 워크플로가 Pages를 자동 활성화)
+- `.github/workflows/deploy.yml` — main 브랜치에 push되면 GitHub Actions가 정적 파일을 GitHub Pages로 배포합니다. (첫 배포 시 워크플로가 Pages를 자동 활성화)
+- `.github/workflows/test.yml` — PR과 main push에서 전 스위트를 돌립니다(타임아웃 30분). 배포 워크플로와 완전히 독립입니다.
+- 릴리스 때는 `sw.js` 의 `CACHE` 버전을 올려 캐시를 갱신합니다 (현재 **`dunjeon-v6`**).
 
 ## 구조
 
@@ -377,7 +446,9 @@ style.css       # HUD / 모달 / 타이틀 / 코치마크 스타일
 js/             # 게임 로직 (아래 순서대로 로드)
 manifest.webmanifest  # PWA 매니페스트 (standalone · 아이콘 192/512)
 sw.js           # service worker (캐시 우선 + 버전 키 · https 에서만 등록)
-docs/           # README용 스크린샷 + PWA 아이콘(icon-192/512.png)
+docs/           # README용 스크린샷 6장(shot-*.png · tests/shots.js 로 재촬영) + PWA 아이콘(icon-192/512.png)
+tests/          # playwright 스위트 16개 + 공용 env.js + run-all.js 러너 (게임 런타임과 무관)
+package.json    # devDependency(playwright) / npm test — 게임은 의존성 0
 ```
 
 ### js/ — 로드 순서와 책임
@@ -389,7 +460,7 @@ docs/           # README용 스크린샷 + PWA 아이콘(icon-192/512.png)
 |---|---|---|
 | 1 | `js/roster.js` | 캐릭터 22종 정의(역할 태그 · 성격군 · 스탯 · 고유 능력 · 외형 · 해금 조건) · `charDef`/`charHasRole` |
 | 2 | `js/tree.js` | 패시브 트리 58노드 — 노드/간선 그래프 · 가지별 색 · 구 패시브 사슬(`LEGACY_CHAIN`) · `passiveReachable` |
-| 3 | `js/core.js` | 상수(TILE/T/SIGHT…) · 유틸(rand/clamp/iso…) · `state` · 난이도 · 로스터/편성/젬/트리 로직 · `party`/`leader`/스탯(maxHp/atkPow/goldMult) · 실드 · 아주라이트 · 타격감 · 이펙트 버퍼 · 세이브(load/save) |
+| 3 | `js/core.js` | 상수(TILE/T/SIGHT…) · 유틸(rand/clamp/iso…) · `state` · 난이도 · 로스터/편성/젬/트리 로직 · `party`/`leader`/스탯(maxHp/atkPow/goldMult) · 실드 · 아주라이트 · 타격감 · 이펙트 버퍼 · **세이브 버전/마이그레이션**(`migrateSave`) · **런 텔레메트리** |
 | 4 | `js/dialogue.js` | 상황별 캐릭터 대사 테이블 · **성격군 공용 풀**(PERSONA_DIALOGUE) + **캐릭터 전용 대사**(CHAR_LINES) · `sayEvent`/`sayIdle`/`sayBoss` |
 | 5 | `js/items.js` | 장비 — 슬롯/레어리티/베이스/접사 16종/고유 7종 · **캐릭터 단위 장비 칸** · 인벤토리(상한 40) · 드랍 테이블 · `equipStat` 합산 캐시 |
 | 6 | `js/audio.js` | WebAudio SFX 신스 (오실레이터 + 노이즈 + 엔벨로프) · 🎵 **BGM 3트랙 루프 + 크로스페이드** |

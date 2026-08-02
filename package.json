@@ -1,0 +1,12 @@
+{
+  "name": "dunjeon",
+  "version": "1.0.0",
+  "private": true,
+  "description": "던전 (DunJeon) — 빌드 없는 순수 HTML/CSS/JS 캔버스 로그라이트. 이 package.json 은 테스트(playwright)에만 쓰인다.",
+  "scripts": {
+    "test": "node tests/run-all.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  }
+}

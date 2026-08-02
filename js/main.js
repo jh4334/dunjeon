@@ -420,6 +420,19 @@ window.GAME = {
   floaterDraws: () => floaterDraws,
   floaters: () => floaters.map(f => ({ txt: f.txt, dmg: !!f.dmg })),
 
+  /* ---- M6: 세이브 버전 / 마이그레이션 훅 ---- */
+  SAVE_KEY, SAVE_VERSION, SAVE_KNOWN_KEYS,
+  saveVersionOf, migrateV1toV2, migrateV2toV3, sanitizeSave, migrateSave,
+  readRawSave, loadSave, savePayload, flushSave,
+  saveVer: () => state.saveVer,
+  saveExtra: () => Object.assign({}, state.saveExtra),
+  markSaveDirty: () => { saveDirty = true; },
+  /* ---- M6: 런 텔레메트리 훅 ---- */
+  teleNew, teleFloor, teleDamage, teleKill, teleDown, teleFinish,
+  teleTopCauses, teleCauseLabel, teleCauseOf, TELE_CAUSE_LABEL,
+  telemetry: () => (state.run && state.run.telemetry) || null,
+  teleSectionHtml, fmtDur,
+
   // 바이옴/특수 층을 강제로 불러온다 (테스트용)
   loadFloor: (biome, kind, floor) => {
     state.world = genFloor(biome, kind, floor || state.world.floor || 1);

@@ -190,7 +190,12 @@ function applyDarkDamage(d) {
     if (m.down || m.invulnT > 0) return;
     m.hp -= d;
     hit++;
-    if (m.hp <= 0) { m.hp = 0; m.down = true; m.reviveT = 0; sayEvent('dark_down', m, { force: true, allowDown: true }); }
+    teleDamage('dark', d);                 // M6 텔레메트리 — 어둠 피해
+    if (m.hp <= 0) {
+      m.hp = 0; m.down = true; m.reviveT = 0;
+      teleDown('dark');
+      sayEvent('dark_down', m, { force: true, allowDown: true });
+    }
   });
   if (hit) addFloater(leader.px, leader.py - 34, `👁 ${Math.max(1, Math.round(d))}`, '#c08aff', 13);
   if (aliveMembers().length === 0) partyWipe();
