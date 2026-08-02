@@ -85,6 +85,8 @@ const BUFF_POOL = [
 ];
 function openBuffChoice() {
   if (!state.run) return;
+  // M5 첫 런 가이드 ③ — 축복 설명 코치마크를 먼저 띄우고, 닫으면 이 모달이 열린다
+  if (typeof guideBuffIntro === 'function' && guideBuffIntro(openBuffChoice)) return;
   // M4 주간 '금욕' — 층 축복을 아예 고를 수 없다 (대신 보상 +50%)
   if (weeklyMods().noBuff) { toast('🧘 금욕 — 이번 주는 축복을 받을 수 없습니다'); return; }
   const opts = [...BUFF_POOL].sort(() => Math.random() - .5).slice(0, 3);
@@ -1201,12 +1203,19 @@ function wipeSaveData() {
   // 오리진 전체를 비우지 않고 게임이 쓰는 키만 지운다
   try { SAVE_KEYS.forEach(k => localStorage.removeItem(k)); } catch (e) { /* 무시 */ }
   saveDirty = false;
+  // M5: 초기화 뒤에는 타이틀 화면부터 시작해야 하므로 #notitle / #new 해시를 지운다
+  try { if (location.hash) location.hash = ''; } catch (e) { /* 무시 */ }
   RELOAD.fn();
 }
 const SETTING_DEFS = [
-  { k: 'sound',   icon: '🔊', name: '사운드',       desc: '타격·획득·레벨업 효과음' },
-  { k: 'shake',   icon: '📳', name: '화면 흔들림',  desc: '강타/보스 처치 시 카메라 진동' },
-  { k: 'hitstop', icon: '⏸️', name: '히트스톱',     desc: '치명타 순간 아주 짧은 정지' },
+  { k: 'sound',    icon: '🔊', name: '사운드',        desc: '타격·획득·레벨업 효과음' },
+  // M5 — BGM 은 SFX 와 별도 토글 (기본 ON · 저장된다)
+  { k: 'bgm',      icon: '🎵', name: '배경음악',      desc: '초원·광산·보스 3트랙 (효과음보다 작게)' },
+  { k: 'shake',    icon: '📳', name: '화면 흔들림',   desc: '강타/보스 처치 시 카메라 진동' },
+  { k: 'hitstop',  icon: '⏸️', name: '히트스톱',      desc: '치명타 순간 아주 짧은 정지' },
+  // M5 QoL 2종
+  { k: 'speed2x',  icon: '⏩', name: '전투 속도 2배', desc: '자동 전투 방치용 — 게임 진행만 2배 (화면은 그대로)' },
+  { k: 'noDmgNum', icon: '🔢', name: '데미지 숫자 끄기', desc: '피해량 숫자를 화면에 띄우지 않습니다' },
 ];
 function openSettings() {
   if (state.transitioning) return;
@@ -1226,6 +1235,7 @@ function openSettings() {
           if (d.k === 'shake' && !state.settings.shake) { state.shakeT = 0; state.shakeMag = 0; state.shakeX = 0; state.shakeY = 0; }
           if (d.k === 'hitstop' && !state.settings.hitstop) state.hitStop = 0;
           if (d.k === 'sound' && state.settings.sound) { initAudio(); sfx('ui'); }
+          if (d.k === 'bgm') bgmApplySetting();                 // M5: 즉시 켜짐/꺼짐
           saveDirty = true;
           render();
         });
@@ -1585,6 +1595,7 @@ function updateHud() {
   updatePartyBadge();
   checkGoldHint();
   checkAchievements();        // M4: 누적형 과제는 HUD 틱(0.2초)에서 일괄 판정
+  bgmAutoScene();             // M5: 초원/광산/보스 BGM 씬 추적 (바뀌면 1.5초 크로스페이드)
 }
 /* ---- 👁 어둠 게이지 / 🔥 플레어 HUD (광산 층에서만) ---- */
 function updateDarkHud() {

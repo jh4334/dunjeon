@@ -1,7 +1,7 @@
 /* =====================================================================
  * 던전 (DunJeon) — 입력 · 잡담 · 메인 루프 · 부트스트랩 · window.GAME 디버그 훅
- * 로드 순서 10번(마지막). 여기서 loadSave()/gotoOverworld() 로 게임을 시작하므로
- * 앞의 모든 파일이 먼저 로드되어 있어야 한다.
+ * 로드 순서 16번(마지막). 여기서 loadSave()/gotoOverworld()/bootTitle() 로 게임을
+ * 시작하므로 앞의 모든 파일이 먼저 로드되어 있어야 한다.
  * =================================================================== */
 'use strict';
 
@@ -65,28 +65,36 @@ function updateInput() {
   }
 }
 
-/* ---------------- 메인 루프 ---------------- */
+/* ---------------- 메인 루프 ----------------
+ * M5 QoL: '전투 속도 2배'는 게임 로직에 들어가는 dt 만 배속한다.
+ * 렌더/카메라/입력/이펙트 수명은 실제 dt 그대로라 화면은 평소와 똑같이 부드럽다. */
+const GAME_SPEED_FAST = 2;
+function gameSpeed() { return state.settings.speed2x ? GAME_SPEED_FAST : 1; }
+
 let lastT = performance.now();
 let hudT = 0, minimapT = 0;
 function frame(now) {
   const dt = Math.min((now - lastT) / 1000, 0.05);
   lastT = now;
   state.time += dt;
+  const ldt = dt * gameSpeed();            // 로직 전용 dt (배속 적용)
 
   // 히트스톱: 전투/이동 업데이트만 잠깐 멈춘다 (렌더·이펙트는 계속 흐른다)
   if (state.hitStop > 0) state.hitStop = Math.max(0, state.hitStop - dt);
 
   if (!state.paused && state.hitStop <= 0) {
+    state.logicTime += ldt;
     updateInput();
     updateAuto();
     const wasMoving = leader.moving;
-    updateEntityMove(leader, dt, leaderStepTime());
+    updateEntityMove(leader, ldt, leaderStepTime());
     if (wasMoving && !leader.moving) onLeaderArrive();
-    updateFollowers(dt);
-    updateCombat(dt);
-    updateMining(dt);
-    updateDarkness(dt);
-    updateChatter(dt);
+    updateFollowers(ldt);
+    updateCombat(ldt);
+    updateMining(ldt);
+    updateDarkness(ldt);
+    updateChatter(ldt);
+    updateGuide(dt);                       // 가이드 타이밍은 실제 시간 기준
   }
 
   // 카메라
@@ -117,10 +125,12 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
-/* ---------------- 시작 ---------------- */
+/* ---------------- 시작 ----------------
+ * M5: 부트 직후에는 타이틀 화면이 뜬다 (게임 중 새로고침해도 항상 타이틀부터).
+ * 테스트/디버그는 URL 해시 #notitle 또는 GAME.skipTitle() 로 곧장 들어온다. */
 loadSave();
 gotoOverworld();
-toast('🌿 방향키/WASD로 이동 · 갱도 입구로 들어가면 광산!');
+bootTitle();
 requestAnimationFrame(frame);
 
 // 디버그/테스트용
@@ -384,6 +394,32 @@ window.GAME = {
   runInfoTab: () => runInfoTab, RUNINFO_TABS, RUNINFO_TAB_ID,
   renderAchvTab, renderCodexTab,
   DARK_SURVIVE_AT,
+
+  /* ---- M5: 타이틀 / 첫 런 가이드 / BGM / PWA / QoL 훅 ---- */
+  // 타이틀
+  bootTitle, showTitle, hideTitle, skipTitle, titleActive, startGame,
+  titleContinue, titleNewGame, savePeek, hasSaveData,
+  gameStarted: () => gameStarted,
+  drawTitleParty,
+  // 첫 런 가이드 · 코치마크
+  GUIDE_STEPS, GUIDE_KEYS, COACH_AUTO_MS,
+  guideBegin, guideState, guideStep, guideFire, guideSkipTo, guideArrowOn, guideBuffIntro, updateGuide,
+  startGuide: () => { state.hints.guideStarted = true; delete state.hints.guideDone; saveDirty = true; return guideBegin(); },
+  showCoach, closeCoach, coachActive, coachInfo, placeCoach,
+  guideArrowShown: () => guideArrowShown,
+  // BGM
+  BGM_MASTER, BGM_FADE, BGM_KEYS, BGM_NAMES,
+  bgmSetScene, bgmStop, bgmInfo, bgmSceneFor, bgmAutoScene, bgmApplySetting, bgmFadeP, bgmFading,
+  bgmAuto, BGM_BUILD,
+  // PWA
+  registerSW, swInfo, swSupported,
+  // QoL
+  GAME_SPEED_FAST, gameSpeed,
+  renderCount: () => renderCount,
+  dmgFloaterDraws: () => dmgFloaterDraws,
+  floaterDraws: () => floaterDraws,
+  floaters: () => floaters.map(f => ({ txt: f.txt, dmg: !!f.dmg })),
+
   // 바이옴/특수 층을 강제로 불러온다 (테스트용)
   loadFloor: (biome, kind, floor) => {
     state.world = genFloor(biome, kind, floor || state.world.floor || 1);
