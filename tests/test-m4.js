@@ -292,19 +292,24 @@ const MAKE_RUN = () => {
     check('룰⑥ 실효과 — 장비 드랍 확률 절반 (표본 4000)',
       gold.onHit < gold.offHit * 0.72 && gold.onHit > gold.offHit * 0.28, `${gold.offHit} → ${gold.onHit}`);
 
-    // ⑦ 짙은 안개 — 시야 -2 · 전 바이옴 어둠
+    // ⑦ 짙은 안개 — 시야 -2 · M7a: 전역 어둠을 '갱도 강도'로 승격
     const fog = await page.evaluate(async (arg) => {
       const G = window.GAME;
       G.loadFloor('catacomb', 'safe', 4);
-      const offSight = G.sightRadius(), offDark = G.darkActive();
+      const off = { sight: G.sightRadius(), dark: G.darkActive(), prof: G.darkProfile() };
       G.state.run.weekly = arg.week; G.bumpWeekly();
-      const onSight = G.sightRadius(), onDark = G.darkActive();
+      const on = { sight: G.sightRadius(), dark: G.darkActive(), prof: G.darkProfile() };
       G.state.run.weekly = null; G.bumpWeekly();
-      return { offSight, onSight, offDark, onDark, backSight: G.sightRadius(), backDark: G.darkActive() };
+      const back = { sight: G.sightRadius(), dark: G.darkActive(), prof: G.darkProfile() };
+      return { off, on, back };
     }, { week: weekOf.fog });
-    check('룰⑦ 실효과 — 시야 반경 -2', near(fog.onSight, fog.offSight - 2, 0.001), `${fog.offSight} → ${fog.onSight}`);
-    check('룰⑦ 실효과 — 갱도가 아닌 바이옴에서도 어둠 발동',
-      fog.offDark === false && fog.onDark === true && fog.backDark === false, JSON.stringify(fog));
+    check('룰⑦ 실효과 — 시야 반경 -2', near(fog.on.sight, fog.off.sight - 2, 0.001), `${fog.off.sight} → ${fog.on.sight}`);
+    check('룰⑦ 실효과 — 갱도 밖 순한 어둠(상한 6)을 갱도 강도(상한 10)로 승격',
+      fog.off.dark === true && fog.off.prof.mine === false && fog.off.prof.max === 6 &&
+      fog.on.dark === true && fog.on.prof.mine === true && fog.on.prof.max === 10 &&
+      fog.on.prof.dmgMul === 1 && fog.on.prof.grace === 6 &&
+      fog.back.prof.mine === false && fog.back.prof.max === 6,
+      JSON.stringify(fog));
 
     // ③ 심연 개방 — 1층부터 심연 · 몬스터 깊이 +2
     const abyss = await page.evaluate(async (arg) => {
@@ -419,13 +424,13 @@ const MAKE_RUN = () => {
       const m = G.weeklyMods();
       return {
         active: m.active, reward: G.rewardMult(), sight: G.sightRadius(),
-        dark: G.darkActive(), abyssFloor: G.abyssFloor(), theme: G.state.world.theme.name,
+        dark: G.darkActive(), darkMine: G.darkProfile().mine, abyssFloor: G.abyssFloor(), theme: G.state.world.theme.name,
         dealt: m.dealtMul, taken: m.takenMul, drop: m.dropMul,
       };
     });
     check('일반 런 무영향 — 모든 룰 검증 후에도 기본 수치 그대로',
       !backNormal.active && near(backNormal.reward, 1) && near(backNormal.sight, 4.4) &&
-      backNormal.dark === false && backNormal.abyssFloor === 9 && !/심연/.test(backNormal.theme) &&
+      backNormal.darkMine === false && backNormal.abyssFloor === 9 && !/심연/.test(backNormal.theme) &&
       backNormal.dealt === 1 && backNormal.taken === 1 && backNormal.drop === 1, JSON.stringify(backNormal));
     await page.close();
   }
@@ -598,7 +603,10 @@ const MAKE_RUN = () => {
       return {
         n: ids.length,
         uniq: new Set(ids).size,
-        allFields: G.ACHIEVEMENTS.every(a => a.id && a.name && a.desc && a.icon && a.goal > 0 && typeof a.prog === 'function'),
+        // M7a: 목표치는 숫자 또는 '데이터 개수를 세는 함수'(도감 등) — achvGoal() 이 흡수한다
+        allFields: G.ACHIEVEMENTS.every(a => a.id && a.name && a.desc && a.icon && G.achvGoal(a) > 0 && typeof a.prog === 'function'),
+        fnGoals: G.ACHIEVEMENTS.filter(a => typeof a.goal === 'function').map(a => a.id),
+        monsallGoal: G.achvGoal(G.ACHV_BY_ID.monsall),
         cats,
         catKeys: G.ACHV_CATS.map(c => c.k),
         validCat: G.ACHIEVEMENTS.every(a => G.ACHV_CATS.some(c => c.k === a.cat)),
@@ -607,6 +615,9 @@ const MAKE_RUN = () => {
     });
     check('도전 과제 30종이 정의된다', meta.n === 30 && meta.uniq === 30, `${meta.n}/${meta.uniq}`);
     check('과제 전부 id·이름·설명·아이콘·목표치·진행함수를 갖는다', meta.allFields, '');
+    check('과제 — 몬스터 도감 목표치는 하드코딩이 아니라 동적 계산 (몬스터 종수)',
+      meta.fnGoals.indexOf('monsall') >= 0 && meta.monsallGoal >= 40,
+      JSON.stringify({ fn: meta.fnGoals, goal: meta.monsallGoal }));
     check('카테고리 5종(전투/수집/광산/빌드/진행)에 모두 배분된다',
       meta.validCat && meta.catKeys.length === 5 && Object.keys(meta.cats).length === 5, JSON.stringify(meta.cats));
     check('보상 구간 5/10/20/30 = ◆50/100/200/400 + 칭호',
@@ -919,8 +930,9 @@ const MAKE_RUN = () => {
     });
     check('state.codex 구조 = { mons, relics, gems, uniques }', shape.keys === 'gems,mons,relics,uniques', shape.keys);
     check('새 세이브 — 도감이 비어 있고 수집률 0%', shape.empty && shape.pct === 0, JSON.stringify(shape));
-    check('도감 총 항목 = 몬스터 11 + 유물 6 + 젬 9 + 고유 7 = 33',
-      shape.total === 33 && shape.monKeys === 11, JSON.stringify(shape));
+    // M7a: 몬스터 41종(일반) + 보스 5종 = 46 → 총 46 + 6 + 9 + 7 = 68
+    check('도감 총 항목 = 몬스터 46 + 유물 6 + 젬 9 + 고유 7 = 68',
+      shape.total === 68 && shape.monKeys === 46, JSON.stringify(shape));
 
     const reg = await page.evaluate(() => {
       const G = window.GAME;
@@ -948,8 +960,8 @@ const MAKE_RUN = () => {
     check('도감 — 몬스터 처치 수가 누적된다 (슬라임 3킬)', reg.slime === 3 && reg.bat === 0, JSON.stringify(reg));
     check('도감 — 젬/유물/고유 장비가 획득 경로에서 등록된다',
       reg.gem && reg.relic && reg.uniq, JSON.stringify(reg));
-    check('도감 — 수집률이 등록 수에 맞게 계산된다 (4/33 = 12%)',
-      reg.got === 4 && reg.pct === Math.floor(4 / 33 * 100), `${reg.got}/33 = ${reg.pct}%`);
+    check('도감 — 수집률이 등록 수에 맞게 계산된다 (4/68)',
+      reg.got === 4 && reg.pct === Math.floor(4 / 68 * 100), `${reg.got}/68 = ${reg.pct}%`);
 
     // 중복 등록 방지
     const dup = await page.evaluate(() => {
@@ -993,8 +1005,8 @@ const MAKE_RUN = () => {
         bar: !!document.getElementById('codexBar'),
       };
     });
-    check('도감 탭 — 4개 섹션(몬스터11/유물6/젬9/고유7)이 모두 렌더된다',
-      ui.sections.join() === '11,6,9,7', ui.sections.join());
+    check('도감 탭 — 4개 섹션(몬스터46/유물6/젬9/고유7)이 모두 렌더된다',
+      ui.sections.join() === '46,6,9,7', ui.sections.join());
     check('도감 탭 — 미조우 항목은 검은 실루엣 + ???',
       ui.unknown > 0 && ui.unknownSilhouette && ui.unknownName, JSON.stringify({ u: ui.unknown, s: ui.unknownSilhouette }));
     check('도감 탭 — 조우한 몬스터는 이름과 처치 수가 보인다',

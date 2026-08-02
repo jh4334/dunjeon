@@ -26,10 +26,15 @@ function updateEntityMove(e, dt, stepTime) {
 }
 
 // 장비 '이동 속도 +%'(리더 장비)도 걸음 간격을 줄인다
-function leaderStepTime() { return STEP_TIME / (1 + 0.12 * relicCount('boots')) / passiveSpeedMult() / equipSpeedMul(); }
+// M7a: 거미줄에 걸리면 이동 간격이 늘어난다 (memberSlowMul = 1.8)
+function leaderStepTime() {
+  return STEP_TIME * memberSlowMul(leader) / (1 + 0.12 * relicCount('boots')) / passiveSpeedMult() / equipSpeedMul();
+}
 
 function tryLeaderStep(dx, dy) {
   if (leader.moving || state.transitioning) return false;
+  // M7a: 익사귀에게 붙잡히거나(rootT) 감전되면(stunT) 발이 묶인다
+  if (memberRooted(leader)) return false;
   const wld = state.world;
   const tx = leader.gx + dx, ty = leader.gy + dy;
   const sxd = dx - dy;  // 화면상 가로 이동량
@@ -68,7 +73,9 @@ function collectItemsNear() {
       sfx('heal');
     } else {
       let g = it.type === 'chest' ? irand(30, 80) : irand(5, 15);
-      g = Math.floor(g * goldMult() * (it.mult || 1));
+      // M7a: 심층 보상도 몬스터와 같은 지수 곡선을 탄다 (깊이 10 이하는 배율 1)
+      const depthMul = wld.mode === 'dungeon' ? depthReward(wld.floor || 1) : 1;
+      g = Math.floor(g * goldMult() * (it.mult || 1) * depthMul);
       state.gold += g;
       if (state.run) state.run.goldGained += g;
       bumpRecord('goldTotal', g);              // M4: 누적 획득 골드 (도전 과제)
@@ -182,6 +189,8 @@ function aliveMembers() { return party.filter(m => !m.down); }
 function damageMonster(mon, dmg, color, opt) {
   if (mon.hp <= 0) return;
   opt = opt || {};
+  // M7a: 갱도 두더지가 땅속에 있는 동안은 때릴 수 없다 (지상으로 나와야 한다)
+  if (mon.hidden && !opt.force) return;
   // M3: 그림자 군주 — 분신이 살아 있는 동안 본체는 무적
   if (mon.invuln && !opt.force) {
     if (!opt.silent && Math.random() < 0.25) addFloater(mon.px, mon.py - 30, '무적', '#c9a4ff', 12);
@@ -209,6 +218,7 @@ function damageMonster(mon, dmg, color, opt) {
   }
   if (mon.hp <= 0) {
     if (!mon.boss) sfx('kill');               // 보스는 처치 팡파레로 대체
+    onMonsterDeath(mon);                      // M7a: 시체 표식 · 사망 장판(화상/포자)
     const rm = mon.rewardMult || 1;
     const gainedXp = Math.floor(mon.xp * rewardMult() * floorRisk());
     state.xp += gainedXp;
@@ -769,6 +779,31 @@ function updateHazards(dt) {
       sfx('hit');
       continue;
     }
+    // M7a 거미줄 — 밟고 있는 파티원의 이동 간격을 늦춘다 (피해 없음)
+    if (h.type === 'web') {
+      h.life -= dt;
+      if (h.life <= 0) { list.splice(i, 1); continue; }
+      party.forEach(m => {
+        if (m.down || m.gx !== h.gx || m.gy !== h.gy) return;
+        applyMemberSlow(m, h.slow || 1.2, m.slowT > 0.4);
+      });
+      continue;
+    }
+    // M7a 화상 장판 — 서 있으면 0.7초마다 지진다
+    if (h.type === 'burn') {
+      h.life -= dt;
+      if (h.life <= 0) { list.splice(i, 1); continue; }
+      h.tick = Math.max(0, (h.tick || 0) - dt);
+      if (h.tick > 0) continue;
+      const on = party.filter(m => !m.down && m.gx === h.gx && m.gy === h.gy);
+      if (!on.length) continue;
+      h.tick = HAZARDS.burn.tick;
+      on.forEach(m => damageMember(m, h.dmg, null, { cause: 'hazard' }));
+      addFloater(isoX(h.gx, h.gy), isoY(h.gx, h.gy) - 22, '🔥 화상!', '#ff9a5a', 13);
+      addSparkle(isoX(h.gx, h.gy), isoY(h.gx, h.gy), '#ff9a5a');
+      sfx('hit');
+      continue;
+    }
     if (h.type === 'spore') {
       // 터뜨리는 것은 파티가 밟았을 때만 (몬스터가 지나다닐 때마다 터지면 주변이 늘 독지대가 된다).
       // 다만 터진 뒤의 독 구름은 반경 1칸 안의 몬스터에게도 걸린다 — 유인해서 쓸 수 있다.
@@ -794,17 +829,19 @@ function updateProjectiles(dt) {
     list.splice(i, 1);
     if (p.kind === 'bomb') { explodeBomb(p); continue; }
     const wx = isoX(p.gx, p.gy), wy = isoY(p.gx, p.gy);
-    addSparkle(wx, wy, '#ffd7a0');
+    const icon = p.icon || '🏹';
+    addSparkle(wx, wy, p.color || '#ffd7a0');
     const hit = party.filter(m => !m.down && m.gx === p.gx && m.gy === p.gy);
     if (hit.length) {
       // 화살 1발은 한 명만 맞힌다 (파티가 한 칸에 겹쳐 서 있어도 4배로 아프지 않게).
       // 겹쳐 있으면 가장 앞에 선 리더를 노린다.
       const tgt = hit.indexOf(leader) >= 0 ? leader : pick(hit);
       damageMember(tgt, p.dmg, p.src && p.src.hp > 0 ? p.src : null);
-      addFloater(wx, wy - 26, '🏹 명중!', '#ff7a7a', 13);
+      if (p.dot) addDot(tgt, p.dmg * p.dot.dps, p.dot.dur, p.dot.k || 'shot');
+      addFloater(wx, wy - 26, `${icon} 명중!`, '#ff7a7a', 13);
       sfx('hit');
     } else {
-      addFloater(wx, wy - 26, '🏹 빗나감!', '#8dffb0', 12);
+      addFloater(wx, wy - 26, `${icon} 빗나감!`, '#8dffb0', 12);
     }
   }
 }
@@ -903,7 +940,8 @@ function memberBase(m, mods) {
   const c = charDef(m.id);
   const mul = c.kind === 'melee' ? c.melee : 1;
   const proj = c.kind === 'ranged' ? passiveProjMult() : 1;
-  return atkPow(m) * mul * mods.dmg * proj;
+  // M7a: 저주 사제 오라에 걸려 있으면 공격력 -20%
+  return atkPow(m) * mul * mods.dmg * proj * curseMult(m);
 }
 // 캐릭터별 공격 간격 (수정 지팡이 유물은 마법 역할에만 적용 — 기존 규칙 그대로)
 function charCd(m) {
@@ -1222,17 +1260,22 @@ function updateCombat(dt) {
   updateHazards(dt);
   updateProjectiles(dt);
   updateShamanAura(wld, dt);
+  // M7a: 저주 사제 오라(파티 공격력 -20%) / 구울의 먹이가 되는 시체 수명
+  updateCurseAura(wld, dt);
+  updateCorpses(wld, dt);
 
   // 파티 공격 — 캐릭터별 공격 형태(CHAR_ATTACK)로 분기한다
   updateShields(dt);
   party.forEach(m => {
     if (m.invulnT > 0) m.invulnT = Math.max(0, m.invulnT - dt);
     if (m.down) return;
-    updateMemberDots(m, dt);          // 독 도트 (포자 / 히드라)
+    updateMemberStatus(m, dt);        // M7a: 둔화/속박/감전/저주 감쇠
+    updateMemberDots(m, dt);          // 독 도트 (포자 / 히드라 / 화상)
     if (m.down) return;
     const c = charDef(m.id);
     const mods = gemMods(m);
     m.atkCd -= dt;
+    if (m.stunT > 0) return;          // 감전 — 공격도 멈춘다
     if (m.atkCd > 0) return;
     if (c.kind === 'heal') { priestHeal(m, mods); return; }
     // 근접 배율 0 (칼리) 은 공격 대신 오라로 싸운다
@@ -1241,7 +1284,7 @@ function updateCombat(dt) {
     // 사거리 안에서 가장 가까운 적 — 단, 무적인 적(분신 소환 중인 보스)은 뒤로 미룬다
     let best = null, bd = 99, bestInv = true;
     mons.forEach(mon => {
-      if (mon.hp <= 0) return;
+      if (mon.hp <= 0 || mon.hidden) return;   // 땅속의 두더지는 조준되지 않는다
       const d = cheb(m.gx, m.gy, mon.gx, mon.gy);
       if (d > range) return;
       const inv = !!mon.invuln;
@@ -1293,9 +1336,12 @@ function updateCombat(dt) {
     }
     // M3: 보스 고유 기믹 (골렘 레이저·가시 / 그림자 분신 / 격노)
     if (mon.boss) updateBossAI(mon, dt);
-    // M3: 해골 궁수 사격 / 자폭 광충 점화 (자폭하면 이번 프레임에 정리)
-    if (mon.type === 'archer') updateArcher(mon, dt);
-    if (mon.type === 'bugbomb' && updateBugbomb(mon, dt)) continue;
+    // M3/M7a: 원거리 사격(궁수·뼈 투척꾼·잉걸불·수정 전갈·광기 광부)
+    //         / 자폭(광충·폭발 딱정벌레·가스 주머니 — 자폭하면 이번 프레임에 정리)
+    if (mon.ranged) updateArcher(mon, dt);
+    if (mon.selfBlast && updateBugbomb(mon, dt)) continue;
+    // M7a: 신규 몬스터 고유 행동 (끌어당김/감전/거미줄/땅파기/점멸/소환/광역 강타…)
+    if (updateMonsterKit(mon, dt)) continue;
     // M3: 히드라 — 머리별 공격 (물기/독 뱉기/물대포)
     if (mon.heads && mon.atkCd <= 0 && hydraAttack(mon)) {
       mon.atkCd = HYDRA_ATK_CD * bossRate(mon) / (mon.atkSpeed || 1);
@@ -1303,12 +1349,19 @@ function updateCombat(dt) {
     }
 
     // 인접 파티원 / 해골 미니언 공격 (미니언이 어그로를 대신 받는다)
-    const targets = mon.noMelee ? [] : aliveMembers().filter(a => cheb(a.gx, a.gy, mon.gx, mon.gy) <= 1);
-    const kins = mon.noMelee ? [] : (wld.minions || []).filter(k => k.hp > 0 && cheb(k.gx, k.gy, mon.gx, mon.gy) <= 1);
+    // M7a: 어둠 추적자는 광원 안에서 공격하지 않는다 (겁먹고 물러난다)
+    const shy = mon.lightShy && typeof nearLight === 'function' && nearLight(mon.gx, mon.gy);
+    const noMelee = mon.noMelee || shy;
+    const targets = noMelee ? [] : aliveMembers().filter(a => cheb(a.gx, a.gy, mon.gx, mon.gy) <= 1);
+    const kins = noMelee ? [] : (wld.minions || []).filter(k => k.hp > 0 && cheb(k.gx, k.gy, mon.gx, mon.gy) <= 1);
     if ((targets.length || kins.length) && mon.atkCd <= 0) {
       const raw = monAtk(mon) * rand(0.8, 1.15);
       if (kins.length && (!targets.length || Math.random() < 0.7)) damageMinion(pick(kins), raw);
-      else damageMember(pick(targets), raw, mon);
+      else {
+        const tgt = pick(targets);
+        damageMember(tgt, raw, mon);
+        onMonsterMeleeHit(mon, tgt, raw);      // M7a: 화상 도트 / 둔화 / 넉백
+      }
       // '흡혈의' 어픽스
       if (mon.leech && mon.hp > 0) {
         const heal = raw * mon.leech;
@@ -1330,23 +1383,12 @@ function updateCombat(dt) {
       const d = cheb(mon.gx, mon.gy, k.gx, k.gy);
       if (d < gd) { gd = d; goal = k; }
     });
-    let dx = 0, dy = 0;
-    if (mon.aggro && mon.type === 'archer') {
-      // 해골 궁수: 4칸을 유지한다 — 너무 가까우면 후퇴, 멀면 접근, 사거리 안이면 정지
-      if (gd < ARCHER_MIN) { dx = Math.sign(mon.gx - goal.gx); dy = Math.sign(mon.gy - goal.gy); mon.retreating = true; }
-      else if (gd > ARCHER_RANGE) { dx = Math.sign(goal.gx - mon.gx); dy = Math.sign(goal.gy - mon.gy); mon.retreating = false; }
-      else mon.retreating = false;
-      if (dx && dy) (Math.random() < .5) ? dx = 0 : dy = 0;
-    } else if (mon.aggro && gd > 1) {
-      dx = Math.sign(goal.gx - mon.gx); dy = Math.sign(goal.gy - mon.gy);
-      if (dx && dy) (Math.random() < .5) ? dx = 0 : dy = 0;
-    } else if (!mon.aggro && Math.random() < .5) {
-      const dir = pick([[1, 0], [-1, 0], [0, 1], [0, -1]]);
-      dx = dir[0]; dy = dir[1];
-    }
+    // 이동 방향 — 거리 유지(원거리) / 지그재그(지네) / 측면(참게) / 광원 회피(어둠 추적자)
+    const step = monsterStepDir(mon, goal, gd);
+    let dx = step.dx, dy = step.dy;
     if (dx || dy) {
-      const blocked = (x, y) => !walkable(wld, x, y) || monsterAt(wld, x, y) ||
-        minionAt(wld, x, y) || party.some(p => p.gx === x && p.gy === y);
+      // 벽 통과(망령·재의 망령·광기 광부)는 monBlocked 안에서 처리된다
+      const blocked = (x, y) => monBlocked(wld, mon, x, y);
       let tx = mon.gx + dx, ty = mon.gy + dy;
       if (blocked(tx, ty) && mon.aggro) {
         // 막히면 다른 축/옆으로 우회 (끝까지 쫓아오게 · 궁수는 반대로 물러나게)
