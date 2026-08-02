@@ -356,6 +356,34 @@ window.GAME = {
   floorDrops: () => (state.world.items || []).filter(i => i.type === 'equip'),
   // 저장 / 뱃지
   saveItemsPayload, loadItemsSave, sanitizeItem, newItemCount, markItemsSeen,
+  /* ---- M4: 주간 모드 / 도전 과제 / 도감 훅 ---- */
+  // 주간 모드
+  WEEKLY_RULES, WEEKLY_RULE_KEYS, WEEKLY_BY_KEY, WEEKLY_RULE_COUNT, WEEKLY_REWARDS,
+  WEEKLY_MODS_NEUTRAL, isoWeekKey, isoWeekParts, hashStr,
+  curWeek, setWeekOverride, weekOverride: () => weekOverride,
+  weeklyRulesFor, weeklyRuleDefs, weeklyModsOf, weeklyPreview, weeklyMods, weeklyActive,
+  abyssFloor, monsterFloor, bumpWeekly,
+  weeklyRecord, weeklyMaxDepth, setWeeklyDepth, recordWeeklyDepth, noteWeeklyRun,
+  weeklyInfo, openWeeklyGate, enterWeekly: d => { state.cameFromDungeon = false; enterWeekly(d); },
+  weeklyPick: () => weeklyPick,
+  // 도전 과제
+  ACHIEVEMENTS, ACHV_BY_ID, ACHV_IDS, ACHV_CATS, ACHV_TIERS,
+  achvDone, achvCount, achvProgress, achvReady, nextAchvTier, achvTierFor,
+  grantAchv, grantAchvTiers, checkAchievements, noteEvent, bumpRecord, noteKill,
+  achv: () => Object.assign({}, state.achv),
+  // 도감
+  codexMonKeys, codexMon, codexMonKills, codexKnows, codexAdd,
+  codexRelic, codexGem, codexUnique, codexTotals, retroCodex,
+  codex: () => JSON.parse(JSON.stringify(state.codex)),
+  RELICS, RELIC_BY_KEY, RELIC_KEYS,
+  // 저장 / 골격
+  ensureMeta, saveMetaPayload, loadMetaSave, grantAzurite,
+  // 룰 효과 검증에 필요한 기존 함수 노출
+  rewardMult, rollDrop, partyWipe, xpNeed,
+  // UI 탭
+  runInfoTab: () => runInfoTab, RUNINFO_TABS, RUNINFO_TAB_ID,
+  renderAchvTab, renderCodexTab,
+  DARK_SURVIVE_AT,
   // 바이옴/특수 층을 강제로 불러온다 (테스트용)
   loadFloor: (biome, kind, floor) => {
     state.world = genFloor(biome, kind, floor || state.world.floor || 1);

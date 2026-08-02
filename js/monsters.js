@@ -75,8 +75,8 @@ function bossTypeFor(biomeKey, floor) {
     const b = BOSSES[k];
     if (b.biomes && b.biomes.length && b.biomes.indexOf(biomeKey) >= 0) return k;
   }
-  // 심연(9층+)은 어느 바이옴이든 그림자 군주가 나온다
-  if (floor >= ABYSS_FLOOR) return 'shadow';
+  // 심연(9층+ · 주간 '심연 개방'이면 1층+)은 어느 바이옴이든 그림자 군주가 나온다
+  if (floor >= abyssFloor()) return 'shadow';
   return floor >= 6 ? 'lich' : 'slimeking';        // 기존 폴백 규칙
 }
 

@@ -71,6 +71,7 @@ function collectItemsNear() {
       g = Math.floor(g * goldMult() * (it.mult || 1));
       state.gold += g;
       if (state.run) state.run.goldGained += g;
+      bumpRecord('goldTotal', g);              // M4: 누적 획득 골드 (도전 과제)
       addFloater(isoX(it.gx, it.gy), isoY(it.gx, it.gy) - 18, `+${g}`, '#ffd75e', 14);
       addSparkle(isoX(it.gx, it.gy), isoY(it.gx, it.gy), '#ffd75e');
       sfx('gold');
@@ -110,7 +111,7 @@ function onLeaderArrive() {
     enterDungeon();
     return;
   }
-  // 깊이 기록판 — 인접하면 1회 열린다 (벗어났다 다시 오면 다시 열린다)
+  // 깊이 기록판 / M4 주간 포탈 — 인접하면 1회 열린다 (벗어났다 다시 오면 다시 열린다)
   if (wld.mode === 'overworld') {
     const rs = wld.props.find(p => p.type === 'records');
     if (rs) {
@@ -118,6 +119,12 @@ function onLeaderArrive() {
       if (!adj) rs.open = false;
       // 자동 탐험 중에는 열지 않는다 (모달이 자동 진행을 멈추지 않도록)
       else if (!rs.open && !state.auto && !modalIsOpen()) { rs.open = true; openRecords(); return; }
+    }
+    const wk = wld.props.find(p => p.type === 'weekly');
+    if (wk) {
+      const adj = cheb(wk.gx, wk.gy, leader.gx, leader.gy) <= 1;
+      if (!adj) wk.open = false;
+      else if (!wk.open && !state.auto && !modalIsOpen()) { wk.open = true; openWeeklyGate(); return; }
     }
   }
   if (wld.mode === 'dungeon') {
@@ -181,6 +188,7 @@ function damageMonster(mon, dmg, color, opt) {
     return;
   }
   const src = opt.src || null;
+  dmg *= weeklyMods().dealtMul;               // M4 주간 '유리 정신' — 주는 피해 2배
   const crit = !opt.noCrit && Math.random() < (0.08 * runBuff('crit') + passiveCrit() + equipCrit(src));
   // 장비 '치명타 피해 +%' 는 기본 2배에 곱해진다
   if (crit) { dmg *= 2 * (1 + equipCritDmg(src)); addHitStop(); }      // 치명타 히트스톱
@@ -208,6 +216,7 @@ function damageMonster(mon, dmg, color, opt) {
       state.run.kills++;
       if (state.records && state.run.kills > (state.records.bestKills || 0)) state.records.bestKills = state.run.kills;
     }
+    noteKill(mon);                            // M4: 도감 등록 + 누적 킬/엘리트/보스 카운터
     addFloater(mon.px, mon.py - 40, `+${gainedXp} XP`, '#9be8ff', 12);
     // '아주라이트가 깃든' 어픽스 — 처치 시 아주라이트 드랍
     if (mon.azurite > 0) {
@@ -319,6 +328,8 @@ function damageMember(m, dmg, attacker, opt) {
   dmg *= (1 - equipDR(m));                    // 장비 '피해 감소 %'
   if (opt.telegraph) dmg *= (1 - equipTgCut(m)) * (1 - passiveTgCut());   // 장비/트리 텔레그래프 감소
   dmg *= diff().dmg;                          // 난이도 보정
+  dmg *= weeklyMods().takenMul;               // M4 주간 '유리 정신' — 받는 피해 2배
+  if (opt.telegraph && state.world) state.world.tgHits = (state.world.tgHits || 0) + 1;   // '무결점' 판정용
   if (opt.capFrac) dmg = Math.min(dmg, maxHp(m) * opt.capFrac);   // 원샷 방지 상한
   // 실드가 먼저 깎인다 (성기사/무녀/트리)
   const before = dmg;
@@ -1346,7 +1357,8 @@ function updateCombat(dt) {
 
   // 쓰러진 파티원 부활 — 전투 중에도 멈추지 않고 '절반 속도'로 진행한다.
   // (팩 어그로 이후 리더가 다운되면 런이 정지하던 문제 대응)
-  const downed = party.filter(m => m.down);
+  // M4 주간 '하드코어' 룰에서는 쓰러진 파티원이 다시 일어나지 않는다.
+  const downed = weeklyMods().noRevive ? [] : party.filter(m => m.down);
   if (downed.length) {
     const combatNear = mons.some(mon => mon.hp > 0 && cheb(mon.gx, mon.gy, leader.gx, leader.gy) <= REVIVE_BLOCK_R);
     // '치유 역할' 태그를 가진 생존자가 있으면 그가 일으킨다.
@@ -1376,9 +1388,12 @@ function updateCombat(dt) {
 }
 
 function partyWipe() {
+  // M4 주간 '하드코어': 부활 수단을 모두 무시하고 즉시 정산한다
+  if (weeklyMods().noRevive) { showRunSummary(false); return; }
   // 패시브 '불굴': 런당 1회, HP 1로 버틴다
   if (hasUnyielding() && state.run && !state.run.unyielding) {
     state.run.unyielding = true;
+    state.run.saved = true;                     // M4: '전멸 없이' 과제에서는 구제도 전멸로 친다
     party.forEach(m => { m.down = false; m.hp = 1; });
     party.forEach(m => addSparkle(m.px, m.py, '#8fe0ff'));
     addFloater(leader.px, leader.py - 60, '🛡️ 불굴!', '#8fe0ff', 16);
@@ -1389,6 +1404,7 @@ function partyWipe() {
   // 불사조 깃털: 전멸을 1회 무효화
   if (relicCount('feather') > 0) {
     state.run.relics.feather--;
+    state.run.saved = true;                     // M4: '전멸 없이' 과제에서는 구제도 전멸로 친다
     party.forEach(m => { m.down = false; m.hp = maxHp(m) * 0.6; });
     party.forEach(m => addSparkle(m.px, m.py, '#ffb347'));
     toast('🪶 불사조 깃털이 파티를 되살렸다!');

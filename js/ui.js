@@ -85,6 +85,8 @@ const BUFF_POOL = [
 ];
 function openBuffChoice() {
   if (!state.run) return;
+  // M4 주간 '금욕' — 층 축복을 아예 고를 수 없다 (대신 보상 +50%)
+  if (weeklyMods().noBuff) { toast('🧘 금욕 — 이번 주는 축복을 받을 수 없습니다'); return; }
   const opts = [...BUFF_POOL].sort(() => Math.random() - .5).slice(0, 3);
   openModal(`깊이 ${state.run.floor} — 축복을 선택하세요`, body => {
     const grid = document.createElement('div');
@@ -155,6 +157,8 @@ function openAltar(altar) {
       altar.used = true;
       state.gold -= cost;
       saveDirty = true;
+      bumpRecord('altarUses');                // M4: '도박 제단 10회' 과제
+      checkAchievements();
       closeModal();
       if (Math.random() < 0.5) {
         const o = pick(BUFF_POOL);
@@ -184,6 +188,9 @@ const RELICS = [
   { k: 'crystal', icon: '🔮', name: '마나 수정',   desc: '마법사 공격 속도 +20%' },
   { k: 'feather', icon: '🪶', name: '불사조 깃털', desc: '전멸 시 1회 부활' },
 ];
+const RELIC_BY_KEY = {};
+RELICS.forEach(r => { RELIC_BY_KEY[r.k] = r; });
+const RELIC_KEYS = RELICS.map(r => r.k);
 function openRelicChoice(title) {
   if (!state.run) return;
   const opts = [...RELICS].sort(() => Math.random() - .5).slice(0, 3);
@@ -196,6 +203,7 @@ function openRelicChoice(title) {
       btn.innerHTML = `<span class="bIcon">${o.icon}</span><b>${o.name}</b><small>${o.desc}</small><em>보유 ${state.run.relics[o.k] || 0}</em>`;
       btn.addEventListener('click', () => {
         state.run.relics[o.k] = (state.run.relics[o.k] || 0) + 1;
+        codexRelic(o.k);                      // M4: 유물 도감 등록
         addSparkle(leader.px, leader.py, '#ffb347');
         toast(`${o.icon} ${o.name} 획득!`);
         closeModal();
@@ -301,8 +309,11 @@ function openMerchant(p) {
           state.gold -= s.price;
           s.sold = true;
           saveDirty = true;
+          bumpRecord('shopBuys');             // M4: '상인 구매 20회' 과제
+          checkAchievements();
           if (s.kind === 'relic') {
             state.run.relics[s.k] = (state.run.relics[s.k] || 0) + 1;
+            codexRelic(s.k);
             toast(`${s.icon} ${s.name} 구매!`);
           } else if (s.kind === 'gem') {
             giveGem(s.k);
@@ -955,13 +966,56 @@ function openParty(tab) {
 /* =====================================================================
  * 리뷰 4차 — 런 정보(❗) / 설정(⚙️) 모달
  * =================================================================== */
-function openRunInfo() {
+/* M4 — ❗ 모달은 탭 3개다: [런 정보] [🏆 도전 과제] [📖 도감] */
+let runInfoTab = 'run';
+const RUNINFO_TABS = ['run', 'achv', 'codex'];
+const RUNINFO_TAB_ID = { run: 'riTabRun', achv: 'riTabAchv', codex: 'riTabCodex' };
+
+function openRunInfo(tab) {
   if (state.transitioning) return;
+  if (tab && RUNINFO_TABS.indexOf(tab) >= 0) runInfoTab = tab;
   const wld = state.world || {};
   const dungeon = wld.mode === 'dungeon';
   openModal(dungeon ? '❗ 런 정보' : '❗ 모험 정보', body => {
+    const render = () => {
+      body.innerHTML = '';
+      const tabs = document.createElement('div');
+      tabs.className = 'tabRow';
+      tabs.id = 'riTabs';
+      const labels = {
+        run: dungeon ? '런 정보' : '모험 정보',
+        achv: `🏆 도전 과제 (${achvCount()}/${ACHIEVEMENTS.length})`,
+        codex: `📖 도감 (${codexTotals().pct}%)`,
+      };
+      RUNINFO_TABS.forEach(k => {
+        const b = document.createElement('button');
+        b.className = 'tabBtn' + (runInfoTab === k ? ' on' : '');
+        b.id = RUNINFO_TAB_ID[k];
+        b.dataset.tab = k;
+        b.textContent = labels[k];
+        b.addEventListener('click', () => { runInfoTab = k; render(); });
+        tabs.appendChild(b);
+      });
+      body.appendChild(tabs);
+      if (runInfoTab === 'achv') renderAchvTab(body);
+      else if (runInfoTab === 'codex') renderCodexTab(body);
+      else renderRunTab(body);
+      const close = document.createElement('button');
+      close.className = 'modalBtn';
+      close.id = 'runInfoClose';
+      close.textContent = '닫기';
+      close.addEventListener('click', closeModal);
+      body.appendChild(close);
+    };
+
+    const renderRunTab = body => {
     const rows = [];
     rows.push(['난이도', `${diff().icon} ${diff().name}`]);
+    if (weeklyActive()) {
+      rows.push(['모드', `🌀 주간 도전 ${state.run.weekly}`]);
+      rows.push(['이번 주 룰', weeklyRuleDefs(state.run.weekly).map(r => `${r.icon} ${r.name}`).join(' · ')]);
+    }
+    if (state.title) rows.push(['칭호', `🎖️ ${state.title}`]);
     if (dungeon) {
       const run = state.run || { kills: 0, goldGained: 0 };
       const pk = PATH_KINDS[wld.kind] || PATH_KINDS.safe;
@@ -1026,13 +1080,118 @@ function openRunInfo() {
     hint.className = 'sumHint';
     hint.textContent = dungeon ? '탈출하면 축복·유물은 사라지고 골드와 경험은 남아요.' : '광산에 들어가면 축복과 유물을 모을 수 있어요.';
     body.appendChild(hint);
-    const close = document.createElement('button');
-    close.className = 'modalBtn';
-    close.id = 'runInfoClose';
-    close.textContent = '닫기';
-    close.addEventListener('click', closeModal);
-    body.appendChild(close);
+    };  /* renderRunTab */
+
+    render();
   }, { key: 'runinfo' });
+}
+
+/* ---- 🏆 도전 과제 탭 ---- */
+function renderAchvTab(body) {
+  checkAchievements();
+  const done = achvCount(), total = ACHIEVEMENTS.length;
+  const next = nextAchvTier();
+  const head = document.createElement('div');
+  head.id = 'achvHead';
+  head.innerHTML =
+    `<div class="sumRow"><span>달성</span><b id="achvCount">${done} / ${total}</b></div>` +
+    `<div class="sumRow"><span>칭호</span><b id="achvTitle">${state.title ? `🎖️ ${state.title}` : '없음'}</b></div>` +
+    `<div class="sumRow"><span>다음 보상</span><b id="achvNext">${next ? `${next.n}개 달성 · ◆ ${next.az} · 「${next.title}」` : '전부 달성!'}</b></div>` +
+    `<div id="achvBarWrap"><div id="achvBar" style="width:${total ? (done / total * 100).toFixed(1) : 0}%"></div></div>`;
+  body.appendChild(head);
+
+  ACHV_CATS.forEach(cat => {
+    const list = ACHIEVEMENTS.filter(a => a.cat === cat.k);
+    if (!list.length) return;
+    const h = document.createElement('div');
+    h.className = 'riHead';
+    h.dataset.cat = cat.k;
+    h.innerHTML = `${cat.icon} ${cat.name} <em>${list.filter(a => achvDone(a.id)).length}/${list.length}</em>`;
+    body.appendChild(h);
+    const wrap = document.createElement('div');
+    wrap.className = 'achvList';
+    wrap.dataset.cat = cat.k;
+    list.forEach(a => {
+      const ok = achvDone(a.id);
+      const pv = achvProgress(a.id);
+      const pct = clamp(pv / a.goal * 100, 0, 100);
+      const row = document.createElement('div');
+      row.className = 'achvRow' + (ok ? ' done' : '');
+      row.dataset.achv = a.id;
+      row.dataset.done = ok ? '1' : '0';
+      row.innerHTML =
+        `<span class="aIcon">${ok ? a.icon : '🔒'}</span>` +
+        `<div class="aInfo"><b>${a.name}</b><small>${a.desc}</small>` +
+        (a.goal > 1
+          ? `<div class="aBarWrap"><div class="aBar" style="width:${pct.toFixed(1)}%"></div></div>` +
+            `<em class="aProg">${fmt(pv)} / ${fmt(a.goal)}</em>`
+          : `<em class="aProg">${ok ? '달성' : '미달성'}</em>`) +
+        `</div><span class="aMark">${ok ? '✔' : ''}</span>`;
+      wrap.appendChild(row);
+    });
+    body.appendChild(wrap);
+  });
+}
+
+/* ---- 📖 도감 탭 ---- */
+function renderCodexTab(body) {
+  const tot = codexTotals();
+  const head = document.createElement('div');
+  head.id = 'codexHead';
+  head.innerHTML =
+    `<div class="sumRow"><span>전체 수집률</span><b id="codexPct">${tot.pct}% (${tot.got}/${tot.total})</b></div>` +
+    `<div id="codexBarWrap"><div id="codexBar" style="width:${tot.pct}%"></div></div>`;
+  body.appendChild(head);
+
+  const section = (title, id, cards) => {
+    const h = document.createElement('div');
+    h.className = 'riHead';
+    h.innerHTML = title;
+    body.appendChild(h);
+    const g = document.createElement('div');
+    g.className = 'codexGrid';
+    g.id = id;
+    g.innerHTML = cards.join('');
+    body.appendChild(g);
+  };
+
+  // 몬스터 (일반 + 보스) — 미조우는 검은 실루엣 + ???
+  const monKeys = codexMonKeys();
+  section(`👾 몬스터 <em>${tot.parts.mons.got}/${tot.parts.mons.total}</em>`, 'codexMons', monKeys.map(k => {
+    const kills = codexMonKills(k);
+    const boss = BOSS_KEYS.indexOf(k) >= 0;
+    const icon = boss ? (BOSSES[k].icon || '👑') : '👾';
+    return `<div class="cxCard${kills > 0 ? '' : ' unknown'}${boss ? ' boss' : ''}" data-mon="${k}" data-known="${kills > 0 ? '1' : '0'}">` +
+      `<span class="cxIcon">${kills > 0 ? icon : '❓'}</span>` +
+      `<b>${kills > 0 ? MONSTER_KO[k] : '???'}</b>` +
+      `<small>${kills > 0 ? `처치 ${fmt(kills)}` : '미확인'}</small></div>`;
+  }));
+
+  section(`🔮 유물 <em>${tot.parts.relics.got}/${tot.parts.relics.total}</em>`, 'codexRelics', RELICS.map(r => {
+    const on = codexKnows('relics', r.k);
+    return `<div class="cxCard${on ? '' : ' unknown'}" data-relic="${r.k}" data-known="${on ? '1' : '0'}">` +
+      `<span class="cxIcon">${on ? r.icon : '❓'}</span><b>${on ? r.name : '???'}</b>` +
+      `<small>${on ? r.desc : '미획득'}</small></div>`;
+  }));
+
+  section(`💠 스킬 젬 <em>${tot.parts.gems.got}/${tot.parts.gems.total}</em>`, 'codexGems', GEMS.map(g => {
+    const on = codexKnows('gems', g.k);
+    return `<div class="cxCard${on ? '' : ' unknown'}" data-gem="${g.k}" data-known="${on ? '1' : '0'}">` +
+      `<span class="cxIcon">${on ? g.icon : '❓'}</span><b>${on ? g.name : '???'}</b>` +
+      `<small>${on ? g.desc : '미획득'}</small></div>`;
+  }));
+
+  section(`🩸 고유 장비 <em>${tot.parts.uniques.got}/${tot.parts.uniques.total}</em>`, 'codexUniques', UNIQUES.map(u => {
+    const on = codexKnows('uniques', u.k);
+    return `<div class="cxCard${on ? '' : ' unknown'}" data-unique="${u.k}" data-known="${on ? '1' : '0'}">` +
+      `<span class="cxIcon">${on ? u.icon : '❓'}</span><b>${on ? u.name : '???'}</b>` +
+      `<small>${on ? u.desc : '미획득'}</small></div>`;
+  }));
+
+  const hint = document.createElement('p');
+  hint.className = 'sumHint';
+  hint.textContent = '처치·획득하면 자동으로 등록됩니다. 검은 실루엣은 아직 만나지 못한 항목이에요.';
+  body.appendChild(hint);
 }
 
 // 데이터 초기화 후 새로고침 — 테스트에서 대체할 수 있도록 간접 참조로 둔다
@@ -1425,6 +1584,7 @@ function updateHud() {
   syncTopHud();               // 좁은 폭에서 좌상단 줄 아래 요소들을 밀어 준다
   updatePartyBadge();
   checkGoldHint();
+  checkAchievements();        // M4: 누적형 과제는 HUD 틱(0.2초)에서 일괄 판정
 }
 /* ---- 👁 어둠 게이지 / 🔥 플레어 HUD (광산 층에서만) ---- */
 function updateDarkHud() {

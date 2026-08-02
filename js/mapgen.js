@@ -27,6 +27,8 @@ function newWorld(mode, w, h) {
     riskMult: 1,          // 층 단위 보상 배율
     arena: null,          // 도전방 웨이브 상태
     maxDist: 0,
+    // M4: 이 층에서 텔레그래프에 맞은 횟수 (0이면 '무결점 보스전' 과제 달성)
+    tgHits: 0,
   };
 }
 const idx = (wld, x, y) => y * wld.w + x;
@@ -76,6 +78,18 @@ function genOverworld() {
     if (wld.props.some(p => p.gx === x && p.gy === y)) continue;
     wld.props.push({ type: 'records', gx: x, gy: y, solid: true });
     wld.records = { x, y };
+    break;
+  }
+
+  // M4 주간 게이트 — 캠프 반대편 가까이에 세우는 보라 포탈. 인접하면 주간 도전 모달이 열린다.
+  const wkSpots = [[-2, 0], [2, 0], [0, -2], [0, 2], [-3, 0], [0, 3], [-2, 2], [2, -2], [3, 0], [0, -3]];
+  for (const [dx, dy] of wkSpots) {
+    const x = wld.spawn.x + dx, y = wld.spawn.y + dy;
+    if (tileAt(wld, x, y) !== T.GRASS) continue;
+    if (wld.props.some(p => p.gx === x && p.gy === y)) continue;
+    if (cheb(x, y, ex, ey) < 3) continue;
+    wld.props.push({ type: 'weekly', gx: x, gy: y, solid: true });
+    wld.weekly = { x, y };
     break;
   }
 
@@ -182,9 +196,9 @@ function abyssTheme(theme) {
   return out;
 }
 const abyssCache = {};
-// 층에 맞는 최종 테마 (9층부터 심연 변형)
+// 층에 맞는 최종 테마 (9층부터 심연 변형 — 주간 '심연 개방'이면 1층부터)
 function themeForFloor(theme, floor) {
-  if (!theme || floor < ABYSS_FLOOR) return theme;
+  if (!theme || floor < abyssFloor()) return theme;
   return abyssCache[theme.name] || (abyssCache[theme.name] = abyssTheme(theme));
 }
 function dungeonTheme(floor) {
@@ -637,8 +651,9 @@ function populateFloor(wld, biome, kind, floor, cells) {
     wld.stairs = null;
     wld.stairsPending = { x: far.x, y: far.y };
     // M3: 바이옴 전속 보스 (매칭 없으면 기존 규칙으로 폴백)
+    // M4: 주간 '심연 개방'은 monsterFloor()가 깊이를 +2 해 스케일까지 올린다
     wld.bossType = bossTypeFor(biome.key, floor);
-    wld.monsters.push(makeMonster(wld.bossType, floor, far.x, far.y));
+    wld.monsters.push(makeMonster(wld.bossType, monsterFloor(floor), far.x, far.y));
   } else {
     // 보물방 포함 — 계단은 처음부터 열려 있다
     wld.stairs = { x: far.x, y: far.y };
@@ -664,7 +679,10 @@ function populateFloor(wld, biome, kind, floor, cells) {
   // --- 몬스터 팩 (뭉쳐 배치 → 한 마리가 어그로되면 팩 전원이 달려든다) ---
   if (normal) {
     const types = floorMonsterTypes(floor, biome.key);
-    const eliteP = (floor >= 2 ? 0.12 : 0) * (risk ? 2 : 1);
+    // M4 주간: '엘리트 광란'은 엘리트 확률 ×2, '군단'은 팩 크기 +2, '심연 개방'은 몬스터 깊이 +2
+    const wm = weeklyMods();
+    const mfloor = monsterFloor(floor);
+    const eliteP = (floor >= 2 ? 0.12 : 0) * (risk ? 2 : 1) * wm.eliteMul;
     const packCount = clamp(3 + Math.floor(floor / 3), 3, 5) + (risk ? 1 : 0);
     for (let p = 0; p < packCount; p++) {
       const anchor = takeCell(wld, cells, occ, 8, null);
@@ -679,11 +697,11 @@ function populateFloor(wld, biome, kind, floor, cells) {
       }
       shuffle(spots);
       const packId = ++packSeq;
-      const size = Math.min(irand(3, 6), spots.length);
+      const size = Math.min(irand(3, 6) + wm.packBonus, spots.length);
       for (let i = 0; i < size; i++) {
-        const mon = makeMonster(pick(types), floor, spots[i].x, spots[i].y);
+        const mon = makeMonster(pick(types), mfloor, spots[i].x, spots[i].y);
         mon.packId = packId;
-        if (Math.random() < eliteP) makeElite(mon, floor);
+        if (Math.random() < eliteP) makeElite(mon, mfloor);
         wld.monsters.push(mon);
         occ[spots[i].y * wld.w + spots[i].x] = 1;
       }

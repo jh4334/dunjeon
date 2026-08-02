@@ -482,6 +482,7 @@ function giveItem(it) {
   const inv = invList();
   if (findItem(it.id)) it.id = nextItemId();      // id 충돌 방지
   inv.push(it);
+  if (it.unique) codexUnique(it.unique);          // M4: 고유 장비 도감 등록
   state.newItems = (state.newItems || 0) + 1;
   trimInventory();
   updatePartyBadge();
@@ -607,7 +608,8 @@ function dropItemAt(item, gx, gy) {
   return drop;
 }
 function rollDrop(chance, ilvl, opt) {
-  if (!(Math.random() < chance)) return null;
+  // M4 주간 '황금광' — 장비 드랍 확률 절반 (일반 런에서는 dropMul === 1)
+  if (!(Math.random() < chance * weeklyMods().dropMul)) return null;
   return rollItem(ilvl, opt);
 }
 function rollMonsterDrop(mon, floor) {

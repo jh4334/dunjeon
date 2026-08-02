@@ -784,3 +784,68 @@ html, body {
   .charGrid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
   .treeWrap { height: 40vh; }
 }
+
+/* =====================================================================
+ * M4 — 주간 도전 게이트 / 도전 과제 / 도감
+ * =================================================================== */
+/* ---- 주간 게이트 모달 ---- */
+.wkGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 6px 0 10px; }
+.wkCard {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 10px 6px; text-align: center;
+  background: rgba(48, 26, 74, 0.92);
+  border: 2px solid #a06ede; border-radius: 10px;
+}
+.wkCard .bIcon { font-size: 26px; }
+.wkCard b { font-size: 13px; color: #e9d6ff; }
+.wkCard small { font-size: 11px; color: #c3a8e6; line-height: 1.35; }
+
+/* ---- 도전 과제 탭 ---- */
+#achvBarWrap, #codexBarWrap {
+  height: 8px; margin: 6px 0 2px; border-radius: 5px; overflow: hidden;
+  background: rgba(10, 24, 30, 0.9); border: 1px solid #2d5b64;
+}
+#achvBar { height: 100%; background: linear-gradient(90deg, #ffb347, #ffe88a); transition: width .3s; }
+#codexBar { height: 100%; background: linear-gradient(90deg, #6a8fff, #9be8ff); transition: width .3s; }
+.achvList { display: flex; flex-direction: column; gap: 6px; }
+.achvRow {
+  display: flex; align-items: center; gap: 9px; padding: 8px 10px;
+  background: rgba(16, 34, 42, 0.9);
+  border: 1px solid #2d5b64; border-radius: 8px;
+  opacity: .72;
+}
+.achvRow.done { opacity: 1; border-color: #ffe88a; background: rgba(46, 40, 18, 0.85); }
+.achvRow .aIcon { font-size: 20px; width: 26px; text-align: center; flex: none; }
+.achvRow .aInfo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.achvRow .aInfo b { font-size: 13px; color: #e6f6f3; }
+.achvRow .aInfo small { font-size: 11px; color: #9dc4c0; }
+.achvRow .aProg { font-style: normal; font-size: 10px; color: #7ee8d8; }
+.achvRow .aMark { color: #ffe88a; font-size: 15px; width: 16px; text-align: right; flex: none; }
+.aBarWrap {
+  height: 5px; border-radius: 4px; overflow: hidden; margin-top: 2px;
+  background: rgba(8, 20, 26, 0.9); border: 1px solid #24484f;
+}
+.aBar { height: 100%; background: linear-gradient(90deg, #4aa3b8, #7ee8d8); }
+
+/* ---- 도감 탭 ---- */
+.codexGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 6px; }
+.cxCard {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 8px 5px; text-align: center;
+  background: rgba(16, 34, 42, 0.9);
+  border: 1px solid #2d5b64; border-radius: 8px;
+}
+.cxCard.boss { border-color: #e8b34a; }
+.cxCard .cxIcon { font-size: 22px; }
+.cxCard b { font-size: 12px; color: #e6f6f3; }
+.cxCard small { font-size: 10px; color: #9dc4c0; line-height: 1.3; }
+/* 미확인 — 검은 실루엣 */
+.cxCard.unknown { background: rgba(8, 12, 16, 0.95); border-color: #1e2b31; }
+.cxCard.unknown .cxIcon { filter: brightness(0) saturate(0); opacity: .55; }
+.cxCard.unknown b { color: #55656e; }
+.cxCard.unknown small { color: #3f4d55; }
+
+@media (max-width: 480px) {
+  .wkGrid { grid-template-columns: 1fr; }
+  .codexGrid { grid-template-columns: repeat(auto-fill, minmax(94px, 1fr)); }
+}

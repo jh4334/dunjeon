@@ -34,7 +34,8 @@ function placeParty(wld, x, y) {
   autoPath = null; autoTier = null;
   // 어둠 게이지는 층마다 초기화 · 광산 층에 들어서면 플레어 자동 보충
   resetDarkness();
-  if (wld.mode === 'dungeon' && wld.biome === 'mine') refillFlares();
+  // (주간 '짙은 안개'는 전 바이옴에서 어둠이 도므로 darkActive() 기준으로 보충한다)
+  if (wld.mode === 'dungeon' && darkActive()) refillFlares();
   reveal(wld, x, y);
   // 바이옴 첫 진입 대사 (런타임 기억 — 세이브하지 않는다)
   if (wld.mode === 'dungeon') sayBiomeEntry(wld.biome);
@@ -63,14 +64,19 @@ function setLastDepth(d) {
   const v = clamp(Math.floor(d) || 1, 1, 999);
   if (state.lastDepth !== v) { state.lastDepth = v; saveDirty = true; }
 }
-/* ---- 깊이 기록 갱신 (전체 최고 + 직업별 최고) — 런 진행 중 자동으로 불린다 ---- */
+/* ---- 깊이 기록 갱신 (전체 최고 + 직업별 최고) — 런 진행 중 자동으로 불린다 ----
+ * M4: 주간 런은 일반 광산과 기록이 분리된다 → records.weekly 로만 간다. */
 function recordDepth(d) {
   const v = clamp(Math.floor(d) || 1, 1, 999);
+  // '전멸 없이 깊이 10' — 구제(불굴/깃털)를 쓰지 않은 런에서만 인정 (주간/일반 공통 · 1회만)
+  if (v >= 10 && state.run && !state.run.saved && !ensureMeta().evt.noWipe10) noteEvent('noWipe10');
+  if (weeklyActive()) { recordWeeklyDepth(v); return false; }
   let changed = false;
   if (v > (state.best || 0)) { state.best = v; changed = true; }
   const cb = state.records.classBest || (state.records.classBest = {});
   if (v > (cb[state.classId] || 0)) { cb[state.classId] = v; changed = true; }
   if (changed) saveDirty = true;
+  checkAchievements();
   return changed;
 }
 
@@ -92,6 +98,40 @@ function enterDungeon(depth) {
     updateHudMode();
     // 최초 광산 입장 1회 — 빌드 시스템 안내 (깊이 안내 토스트 뒤에 이어서)
     hintOnce('firstDungeon', '👤 버튼에서 젬 장착과 패시브를 찍을 수 있어요!', 2600);
+    scheduleModal('buff', 500, openBuffChoice);
+  });
+}
+
+/* =====================================================================
+ * M4 — 주간 도전 런 (초원 보라 포탈)
+ * 일반 광산과 완전히 분리된 런이다:
+ *   · 체크포인트  state.weeklyDepth   (일반 lastDepth 는 건드리지 않는다)
+ *   · 깊이 기록   state.records.weekly = { week, depth, got }  (주 바뀌면 리셋)
+ *   · 최고 깊이(state.best) / 리더별 기록은 갱신하지 않는다
+ * 룰은 state.run.weekly(주차 문자열) 하나로 켜지고, weeklyMods() 가 전부 흡수한다.
+ * =================================================================== */
+function enterWeekly(depth) {
+  if (!state.difficultyPicked) { openDifficulty(() => enterWeekly(depth)); return; }
+  const rec = weeklyRecord();
+  const week = rec.week;
+  const max = weeklyMaxDepth();
+  const start = clamp(Math.floor(depth || state.weeklyDepth || 1), 1, max);
+  transition(() => {
+    // weekly 를 먼저 세워야 층 생성(엘리트/팩/심연)에도 주간 룰이 적용된다
+    state.run = {
+      floor: start, buffs: { atk: 0, hp: 0, heal: 0, gold: 0, crit: 0, def: 0 },
+      relics: {}, kills: 0, goldGained: 0, azuriteGained: 0, weekly: week,
+    };
+    bumpWeekly();
+    noteWeeklyRun(week);
+    state.world = genDungeon(start, { biome: 'mine', kind: 'safe' });
+    placeParty(state.world, state.world.spawn.x, state.world.spawn.y);
+    setWeeklyDepth(start);
+    recordWeeklyDepth(start);
+    const rules = weeklyRuleDefs(week).map(r => `${r.icon} ${r.name}`).join(' · ');
+    toast(`🌀 주간 도전 ${week} — ${rules}`);
+    if (Math.random() < .7) sayEvent('enter', null, { force: true });
+    updateHudMode();
     scheduleModal('buff', 500, openBuffChoice);
   });
 }
@@ -173,8 +213,10 @@ function descend(choice) {
     if (state.run) state.run.floor = next;
     state.world = genDungeon(next, ch);
     placeParty(state.world, state.world.spawn.x, state.world.spawn.y);
-    setLastDepth(next);
-    const newBest = next > (state.best || 0);
+    // M4: 주간 런은 체크포인트도 기록도 주간 쪽으로 간다
+    const wk = weeklyActive();
+    const newBest = wk ? (next > weeklyRecord().depth) : (next > (state.best || 0));
+    if (wk) setWeeklyDepth(next); else setLastDepth(next);
     recordDepth(next);
     if (newBest) addFloater(leader.px, leader.py - 60, '🏆 최고 기록!', '#ffe88a', 15);
     const w = state.world;
@@ -195,15 +237,22 @@ function escapeDungeon() {
 function showRunSummary(escaped) {
   const run = state.run || { floor: state.world.floor || 1, kills: 0, goldGained: 0, azuriteGained: 0 };
   if (state.records && run.kills > (state.records.bestKills || 0)) state.records.bestKills = run.kills;
+  // M4: 주간 런이면 정산 표를 주간 기록 기준으로 바꾼다 (state.run 을 지우기 전에 읽는다)
+  const wkWeek = run.weekly || '';
+  const wkRec = wkWeek ? weeklyRecord() : null;
   state.run = null;
+  bumpWeekly();
+  checkAchievements();
   // 런이 끝났으므로 예약된 축복/유물 모달은 의미가 없다 — 전부 취소하고 정산을 최우선으로 띄운다
   cancelPendingModals(false);
   const lost = escaped ? 0 : Math.floor(state.gold * diff().wipeLoss);
   if (!escaped) sfx('wipe');
-  openModal(escaped ? '🏃 광산 탈출!' : '💀 파티 전멸…', body => {
+  openModal((wkWeek ? '🌀 주간 도전 — ' : '') + (escaped ? '🏃 광산 탈출!' : '💀 파티 전멸…'), body => {
     body.innerHTML = `
       <div class="sumRow"><span>도달 깊이</span><b>깊이 ${run.floor}</b></div>
-      <div class="sumRow"><span>최고 기록</span><b>깊이 ${state.best}</b></div>
+      ${wkWeek
+        ? `<div class="sumRow" id="sumWeek"><span>주간 ${wkWeek} 최고</span><b>깊이 ${wkRec ? wkRec.depth : run.floor}</b></div>`
+        : `<div class="sumRow"><span>최고 기록</span><b>깊이 ${state.best}</b></div>`}
       <div class="sumRow"><span>처치한 몬스터</span><b>${run.kills}</b></div>
       <div class="sumRow"><span>획득 골드</span><b>+${fmt(run.goldGained)}</b></div>
       <div class="sumRow"><span>획득 아주라이트</span><b id="sumAz">+${fmt(run.azuriteGained || 0)} ◆</b></div>
