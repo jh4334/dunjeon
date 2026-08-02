@@ -5,19 +5,15 @@
  * =================================================================== */
 'use strict';
 
-/* ---------------- 잡담 ---------------- */
+/* ---------------- 잡담 ----------------
+ * 대사 자체는 dialogue.js 가 관리한다 (상황별 풀 · 캐릭터별 반복 방지 · 이벤트 쿨다운).
+ * 여기서는 '유휴 잡담을 언제 시도할지'만 정한다 — 빈도는 기존과 동일하게 9~16초. */
 let chatterT = rand(6, 10);
-const CHATTER = {
-  overworld: ['날씨가 좋네요!', '소풍 온 것 같아요~', '사과 주워가도 될까요?', '광산은 저쪽이에요!'],
-  dungeon: ['발밑 조심하세요…', '여긴 좀 어둡네요…', '뭔가 소리가 들려요…', '보물 냄새가 나요!'],
-};
 function updateChatter(dt) {
   chatterT -= dt;
   if (chatterT > 0) return;
   chatterT = rand(9, 16);
-  const who = pick(aliveMembers());
-  if (!who) return;
-  say(who, pick(CHATTER[state.world.mode]));
+  sayIdle();
 }
 
 /* ---------------- 입력 ---------------- */
@@ -188,6 +184,26 @@ window.GAME = {
   autoDodgeStep, telegraphCount, updateAuto, autoDest: () => autoDest(state.world),
   autoPath: () => autoPath,
   placeMine, explodeMine, mines: () => mineList(),
+  /* ---- M3.5a: 자동 풀 루팅 훅 ---- */
+  AUTO_ADJ_DIST, AUTO_NEAR_DIST,
+  autoPlan: () => autoPlan(state.world),
+  autoTier: () => autoTier,
+  seenRewards: () => seenRewards(state.world),
+  rewardGoalSet: goals => Array.from(rewardGoalSet(state.world, goals || rushRewards(state.world))),
+  autoLeftovers: () => autoLeftovers(state.world),
+  collectItemsNear,
+  /* ---- M3.5a: 폭탄 투척 훅 ---- */
+  BOMB_RANGE, BOMB_CD, BOMB_FLIGHT, BOMB_MULT,
+  bombTarget, throwBomb, explodeBomb,
+  bombCd: () => leader.bombCd || 0,
+  /* ---- M3.5a: 대사 엔진 훅 ---- */
+  DIALOGUE, SAY_HIST_MAX, SAY_EVENT_CD, SAY_IDLE_BLOCK,
+  sayEvent, sayBoss, sayBiomeEntry, sayIdle, resetDialogue, noticeDiscoveries,
+  dialogueLines, dialogueChars, dialogueLineCount, pickLine, sayEventReady, sayHistoryOf,
+  say, bubbles: () => bubbles.map(b => ({ id: b.who && b.who.id, txt: b.txt })),
+  clearBubbles: () => { bubbles.length = 0; },
+  chatterT: v => { if (v !== undefined) chatterT = v; return chatterT; },
+  updateChatter,
   bladeAura: () => bladeAura(gemMods(leader)),
   updateClassAbilities,
   // 역할별 공격 로직 (젬 효과 검증용)

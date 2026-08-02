@@ -29,12 +29,15 @@ function placeParty(wld, x, y) {
   });
   for (let i = 0; i < 12; i++) trail.push({ x, y });
   // 직업 능력 상태 초기화 (미니언/지뢰는 층을 넘어가지 않는다)
-  leader.summonT = 0; leader.auraT = 0; leader.mineCd = 0;
+  leader.summonT = 0; leader.auraT = 0; leader.mineCd = 0; leader.bombCd = 0;
   wld.minions = []; wld.mines = [];
+  autoPath = null; autoTier = null;
   // 어둠 게이지는 층마다 초기화 · 광산 층에 들어서면 플레어 자동 보충
   resetDarkness();
   if (wld.mode === 'dungeon' && wld.biome === 'mine') refillFlares();
   reveal(wld, x, y);
+  // 바이옴 첫 진입 대사 (런타임 기억 — 세이브하지 않는다)
+  if (wld.mode === 'dungeon') sayBiomeEntry(wld.biome);
   state.cam.x = isoX(x, y);
   state.cam.y = isoY(x, y);
 }
@@ -85,7 +88,7 @@ function enterDungeon(depth) {
     setLastDepth(start);
     recordDepth(start);
     toast(`⛏️ 깊이 ${start} — ${state.world.theme.name}`);
-    if (Math.random() < .7) say(pick(party.slice(1)), pick(['으스스해요…', '조심해서 가요!', '몬스터 냄새가 나요…']));
+    if (Math.random() < .7) sayEvent('enter', null, { force: true });
     updateHudMode();
     // 최초 광산 입장 1회 — 빌드 시스템 안내 (깊이 안내 토스트 뒤에 이어서)
     hintOnce('firstDungeon', '👤 버튼에서 젬 장착과 패시브를 찍을 수 있어요!', 2600);
@@ -177,10 +180,10 @@ function descend(choice) {
     const w = state.world;
     const pk = PATH_KINDS[w.kind] || PATH_KINDS.safe;
     toast(`⬇️ 깊이 ${next} — ${pk.icon} ${w.theme.name}`);
-    if (w.stairsPending) say(leader, '보스가 있는 갱도야… 조심하자!');
-    else if (w.kind === 'challenge') say(leader, '입구가 닫혔어! 싸워서 뚫는 수밖에!');
-    else if (w.kind === 'treasure') say(party[3], '보물이다! …함정도 잔뜩이지만요.');
-    else if (w.kind === 'risk') say(party[1], '기운이 심상치 않아요… 대신 벌이는 좋겠죠?');
+    if (w.stairsPending) sayEvent('path_boss', null, { force: true });
+    else if (w.kind === 'challenge') sayEvent('path_challenge', null, { force: true });
+    else if (w.kind === 'treasure') sayEvent('path_treasure', null, { force: true });
+    else if (w.kind === 'risk') sayEvent('path_risk', null, { force: true });
     updateHudMode();
     scheduleModal('buff', 500, openBuffChoice);
   });
@@ -298,26 +301,113 @@ function hazardAvoid(wld) {
   if (!set.size) return null;
   return (x, y) => set.has(y * wld.w + x);
 }
-// 탐험률이 이만큼을 넘으면 남은 frontier 대신 계단(보스)으로 향한다
+// 탐험률이 이만큼을 넘으면 남은 frontier 대신 보상·계단(보스)으로 향한다
 const AUTO_RUSH_PCT = 0.92;
+// 보상 경로 편입 거리 (BFS 스텝 수) — 인접 / 가까움
+const AUTO_ADJ_DIST = 1;
+const AUTO_NEAR_DIST = 8;
 function autoDest(wld) {
   if (wld.mode !== 'dungeon') return wld.entrance;
   const boss = wld.monsters.find(m => m.boss && m.hp > 0);
   return wld.stairs || (boss && { x: boss.gx, y: boss.gy }) || null;
 }
-/* 계단 직행(92% 러시) 중에도 맵에 남은 보상은 챙긴다.
- * 대상: 남은 아이템 · 아직 안 들른 도박 제단(골드가 있을 때) · 아직 안 들른 상인 */
+/* 층에 남아 있는 회수 대상 전부.
+ * 대상: 남은 아이템(골드/상자/포션/장비 드랍) · 미채굴 광맥
+ *     · 아직 안 들른 도박 제단(골드가 있을 때) · 아직 안 들른 상인
+ * radius = 그 칸에서 몇 칸 떨어져도 회수되는지 (아이템/광맥은 1칸, 상인/제단은 밟아야 한다) */
 function rushRewards(wld) {
   const goals = [];
-  wld.items.forEach(it => goals.push({ x: it.gx, y: it.gy }));
+  wld.items.forEach(it => goals.push({ x: it.gx, y: it.gy, kind: it.type, radius: 1 }));
   const altarCost = 30 * (wld.floor || 1);
   wld.props.forEach(p => {
-    if (p.type === 'altar' && !p.used && !p.seen && state.gold >= altarCost) goals.push({ x: p.gx, y: p.gy });
-    else if (p.type === 'merchant' && !p.visited) goals.push({ x: p.gx, y: p.gy });
-    else if (p.type === 'vein' && !p.mined) goals.push({ x: p.gx, y: p.gy });
+    if (p.type === 'altar' && !p.used && !p.seen && state.gold >= altarCost) goals.push({ x: p.gx, y: p.gy, kind: 'altar', radius: 0 });
+    else if (p.type === 'merchant' && !p.visited) goals.push({ x: p.gx, y: p.gy, kind: 'merchant', radius: 0 });
+    else if (p.type === 'vein' && !p.mined) goals.push({ x: p.gx, y: p.gy, kind: 'vein', radius: 1 });
   });
   return goals;
 }
+/* M3.5a: '이미 발견한(seen)' 보상만 — 탐험 중에는 본 것만 주우러 간다.
+ * (아직 안 본 구석의 보상까지 쫓아가면 전지적으로 보여서 탐험 연출이 깨진다) */
+function seenRewards(wld) {
+  return rushRewards(wld).filter(g => wld.seen[idx(wld, g.x, g.y)]);
+}
+/* 보상 목록 → BFS 목표 칸 집합.
+ * 보상 칸이 걸을 수 있으면 그 칸 자체가 목표. 걸을 수 없으면(벽/용암 위 드랍 등)
+ * 회수 반경 안의 걸을 수 있는 칸을 목표로 삼는다 → '도달 불가'는 집합이 비는 것으로 드러난다. */
+function rewardGoalSet(wld, goals) {
+  const set = new Set();
+  goals.forEach(g => {
+    if (walkable(wld, g.x, g.y)) { set.add(g.y * wld.w + g.x); return; }
+    const r = g.radius || 0;
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      const x = g.x + dx, y = g.y + dy;
+      if (x < 0 || y < 0 || x >= wld.w || y >= wld.h) continue;
+      if (walkable(wld, x, y)) set.add(y * wld.w + x);
+    }
+  });
+  return set;
+}
+/* 아직 회수하지 못한 '도달 가능한' 보상 — 층 이탈 보장 검증/로그용.
+ * 벽이나 용암으로 봉쇄돼 길이 없는 보상은 포기 대상이므로 여기 잡히지 않는다. */
+function autoLeftovers(wld) {
+  const w = wld || state.world;
+  if (!w || w.mode !== 'dungeon') return [];
+  return rushRewards(w).filter(g => {
+    const set = rewardGoalSet(w, [g]);
+    if (!set.size) return false;
+    if (set.has(leader.gy * w.w + leader.gx)) return true;      // 이미 회수 범위 안
+    return !!bfsPath(w, leader.gx, leader.gy, (x, y) => set.has(y * w.w + x));
+  });
+}
+/* ---- 자동 탐험 계획 ----
+ * 우선순위: 인접 보상 > 가까운 보상(≤8) > frontier 탐험 > 원거리 보상 > 계단/보스.
+ * 즉 계단으로 향하기 전에 반드시 '도달 가능한 보상 0'을 통과한다(층 이탈 보장).
+ * 92% 러시는 "frontier 단계를 건너뛴다"로 일반화됐다 — 보상 회수는 언제나 먼저다. */
+function autoPlan(wld) {
+  const ok = p => (p && p.length ? p : null);
+  // M3: 해저드(독안개 포자·수정 가시·분출구)는 가능하면 우회 — 길이 없으면 그대로 간다
+  const avoid = hazardAvoid(wld);
+  const bfs = goalFn => (avoid ? ok(bfsPath(wld, leader.gx, leader.gy, goalFn, avoid)) : null) ||
+    ok(bfsPath(wld, leader.gx, leader.gy, goalFn));
+  const frontier = () => bfs((x, y) => !wld.seen[idx(wld, x, y)]);
+  const dest = autoDest(wld);
+  const toDest = () => (dest ? bfs((x, y) => x === dest.x && y === dest.y) : null);
+
+  if (wld.mode !== 'dungeon') {
+    const fr = frontier();
+    if (fr) return { tier: 'frontier', path: fr };
+    const d = toDest();
+    return d ? { tier: 'dest', path: d } : { tier: null, path: null };
+  }
+
+  // 1·2단계 — 이미 발견한 보상: 인접이면 즉시, 8칸 안이면 들렀다 간다
+  let near = null;
+  const seenSet = rewardGoalSet(wld, seenRewards(wld));
+  if (seenSet.size) {
+    near = bfs((x, y) => seenSet.has(y * wld.w + x));
+    if (near) {
+      if (near.length <= AUTO_ADJ_DIST) return { tier: 'adjacent', path: near };
+      if (near.length <= AUTO_NEAR_DIST) return { tier: 'near', path: near };
+    }
+  }
+  // 3단계 — frontier 탐험 (92% 러시 / 도전방 봉쇄 중에는 건너뛴다)
+  const pct = wld.walkTotal ? wld.seenCount / wld.walkTotal : 0;
+  const rush = wld.kind !== 'treasure' && pct >= AUTO_RUSH_PCT;
+  if (!rush) {
+    const fr = frontier();
+    if (fr) return { tier: 'frontier', path: fr };
+  }
+  // 4단계 — 원거리 보상: 아직 못 본 구석의 보상까지 포함해 층을 비운다
+  const all = rushRewards(wld);
+  const allSet = rewardGoalSet(wld, all);
+  const far = (allSet.size === seenSet.size && near) ? near :
+    (allSet.size ? bfs((x, y) => allSet.has(y * wld.w + x)) : null);
+  if (far) return { tier: 'far', path: far };
+  // 5단계 — 계단/보스 (여기까지 왔다면 도달 가능한 보상은 0)
+  const d = toDest();
+  return d ? { tier: 'dest', path: d } : { tier: null, path: null };
+}
+let autoTier = null;
 function updateAuto() {
   if (!state.auto || leader.moving || state.transitioning) return;
   const wld = state.world;
@@ -339,32 +429,12 @@ function updateAuto() {
   }
   if (!autoPath || !autoPath.length) {
     autoPath = null;                       // 빈 배열도 '경로 없음'으로 취급
-    const dest = autoDest(wld);
-    // 이미 목적지 칸에 서 있으면 빈 경로가 나오므로 null 로 정규화한다
-    const ok = p => (p && p.length ? p : null);
-    // M3: 해저드(독안개 포자·수정 가시·분출구)는 가능하면 우회 — 길이 없으면 그대로 간다
-    const avoid = hazardAvoid(wld);
-    const bfs = goalFn => (avoid ? ok(bfsPath(wld, leader.gx, leader.gy, goalFn, avoid)) : null) ||
-      ok(bfsPath(wld, leader.gx, leader.gy, goalFn));
-    const pathTo = d => bfs((x, y) => x === d.x && y === d.y);
-    // 템포: 던전을 92% 이상 봤으면 남은 구석 대신 계단/보스로 (보물방은 100% 회수)
-    const pct = wld.walkTotal ? wld.seenCount / wld.walkTotal : 0;
-    const rush = wld.mode === 'dungeon' && wld.kind !== 'treasure' && pct >= AUTO_RUSH_PCT;
-    if (rush) {
-      // 계단으로 직행하기 전에 가장 가까운 남은 보상부터 회수한다 (도달 불가면 그냥 계단행)
-      const goals = rushRewards(wld);
-      if (goals.length) {
-        const set = new Set(goals.map(g => g.y * wld.w + g.x));
-        autoPath = bfs((x, y) => set.has(y * wld.w + x));
-      }
-      if (!autoPath && dest) autoPath = pathTo(dest);
-    }
-    if (!autoPath) {
-      const frontier = (x, y) => !wld.seen[idx(wld, x, y)];
-      autoPath = bfs(frontier);
-    }
-    // 다 봤으면 목적지로 (던전: 계단 또는 보스 / 초원: 입구)
-    if (!autoPath && dest) autoPath = pathTo(dest);
+    // 같은 칸/인접 칸에 남은 드랍이 있으면 걷기 전에 먼저 줍는다
+    // (상자에서 튀어나온 장비를 한 칸 더 걸어야 줍던 문제 대응)
+    if (wld.mode === 'dungeon') collectItemsNear();
+    const plan = autoPlan(wld);
+    autoTier = plan.tier;
+    autoPath = plan.path;
     if (!autoPath) return;
   }
   const next = autoPath[0];
