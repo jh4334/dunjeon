@@ -76,8 +76,9 @@ const WEEKLY_RULES = [
   { k: 'goldrush', icon: '💰', name: '황금광',
     desc: '골드·아주라이트 2배 · 장비 드랍 절반',
     mods: { goldMul: 2, azMul: 2, dropMul: 0.5 } },
+  // M7a: 어둠은 이제 전 바이옴 기본 기능이라, 이 룰은 '순한 어둠 → 갱도 강도 승격'이 된다
   { k: 'fog',      icon: '🌫️', name: '짙은 안개',
-    desc: '시야 -2 · 어둠 게이지가 전 바이옴에서 발동',
+    desc: '시야 -2 · 전 바이옴 어둠이 갱도 강도로 승격',
     mods: { sight: -2, dark: true } },
   { k: 'legion',   icon: '⚔️', name: '군단',
     desc: '몬스터 팩 크기 +2',
@@ -334,7 +335,8 @@ const ACHIEVEMENTS = [
   { id: 'uniq7', cat: 'collect', icon: '🏮', name: '전설의 보관자', desc: '고유 장비 7종을 모두 얻는다', goal: 7, prog: () => R() && state.codex.uniques.length },
   { id: 'gems9', cat: 'collect', icon: '💠', name: '젬 마스터', desc: '스킬 젬 9종을 모두 얻는다', goal: 9, prog: () => R() && state.codex.gems.length },
   { id: 'relics6', cat: 'collect', icon: '🔮', name: '유물 연구가', desc: '유물 6종을 모두 얻는다', goal: 6, prog: () => R() && state.codex.relics.length },
-  { id: 'monsall', cat: 'collect', icon: '📖', name: '몬스터 도감', desc: '모든 몬스터를 도감에 등록한다', goal: 11, prog: () => codexTotals().parts.mons.got },
+  // M7a: 몬스터가 늘어날 때마다 목표치도 따라 오른다 (하드코딩 11 → 동적 계산)
+  { id: 'monsall', cat: 'collect', icon: '📖', name: '몬스터 도감', desc: '모든 몬스터를 도감에 등록한다', goal: () => codexMonKeys().length, prog: () => codexTotals().parts.mons.got },
   /* ---- 광산 4 ---- */
   { id: 'veins50', cat: 'mine', icon: '⛏️', name: '광부', desc: '광맥을 누적 50회 채굴한다', goal: 50, prog: () => R().veins },
   { id: 'dark8', cat: 'mine', icon: '👁', name: '어둠을 견디다', desc: '어둠 8스택을 버티고 회복한다', goal: 1, prog: () => R().evt.dark8 },
@@ -369,6 +371,12 @@ const ACHV_TIERS = [
   { n: 30, az: 400, title: '던전의 전설' },
 ];
 
+/* M7a: 목표치가 데이터 개수에 딸린 과제(몬스터 도감 등)는 goal 을 함수로 둔다 */
+function achvGoal(a) {
+  const g = a && a.goal;
+  if (typeof g !== 'function') return g || 0;
+  try { return Number(g()) || 0; } catch (e) { return 0; }
+}
 function achvDone(id) { ensureMeta(); return !!state.achv[id]; }
 function achvCount() { ensureMeta(); return ACHV_IDS.filter(id => !!state.achv[id]).length; }
 function achvProgress(id) {
@@ -376,11 +384,11 @@ function achvProgress(id) {
   if (!a) return 0;
   let v = 0;
   try { v = Number(a.prog()) || 0; } catch (e) { v = 0; }
-  return clamp(v, 0, a.goal);
+  return clamp(v, 0, achvGoal(a));
 }
 function achvReady(id) {
   const a = ACHV_BY_ID[id];
-  return !!a && achvProgress(id) >= a.goal;
+  return !!a && achvProgress(id) >= achvGoal(a);
 }
 /* 다음 보상 구간 */
 function nextAchvTier() {
@@ -456,7 +464,7 @@ function checkAchievements() {
     for (let i = 0; i < ACHIEVEMENTS.length; i++) {
       const a = ACHIEVEMENTS[i];
       if (state.achv[a.id]) continue;
-      if (achvProgress(a.id) >= a.goal) { if (grantAchv(a.id)) n++; }
+      if (achvProgress(a.id) >= achvGoal(a)) { if (grantAchv(a.id)) n++; }
     }
   } catch (e) { /* 판정 실패는 게임 진행을 막지 않는다 */ }
   if (!outer) {

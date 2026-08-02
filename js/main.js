@@ -433,6 +433,31 @@ window.GAME = {
   telemetry: () => (state.run && state.run.telemetry) || null,
   teleSectionHtml, fmtDur,
 
+  /* ---- M7a: 몬스터 풀 5배 / 심층 지수 스케일링 / 어둠 전역화 훅 ---- */
+  // 몬스터 표
+  M7_MONSTERS, M7_BY_KEY, M7_KEYS, biomeMonsterPool,
+  MONSTER_TYPES: MONSTER_KEYS,                 // 일반 몬스터 전체 키 (도감 = 이것 + 보스)
+  initM7Kit, updateMonsterKit, monsterStepDir, monBlocked,
+  onMonsterMeleeHit, onMonsterDeath, updateCorpses, corpses: () => (state.world.corpses || []),
+  updateCurseAura, curseMult, CURSE_PCT,
+  applyMemberSlow, applyMemberRoot, applyMemberStun, updateMemberStatus,
+  memberRooted, memberSlowMul, MEMBER_SLOW_MUL,
+  monFeed, spawnWeb, monSporeCast, monPull, pullMember, monShock, monGrab, monWave, monWail,
+  monBlinkStep, castMonSmash, monSurface, CORPSE_LIFE,
+  shotDef, blastDef, rollDeepAffix, affixCountFor, summonMinionOf: summonMinion,
+  M7_ART, drawM7Monster,
+  // 심층 지수 스케일링
+  DEPTH_EXP_FROM, DEPTH_EXP_BASE, DEPTH_EXP_CASUAL, DEPTH_ILVL_K,
+  DEEP_AFFIX_MIN_FLOOR, DEEP_AFFIX_MIN, DEEP_MOB_AFFIX_FLOOR, DEEP_MOB_AFFIX_P,
+  depthExpBase, depthScale, depthReward, depthIlvl, dropIlvlFor,
+  // 어둠 전역화
+  DARK_SOFT_MAX, DARK_SOFT_GRACE, DARK_SOFT_DMG_MUL, DARK_SOFT_AUTO_FLARE,
+  LIGHT_PROP_TYPES, BRAZIER_COUNT, BURN_DMG,
+  darkProfile: w => darkProfile(w), darkMineGrade: w => darkMineGrade(w), darkMax, darkAutoAt,
+  braziers: () => state.world.props.filter(p => p.type === 'brazier'),
+  // 도감/과제
+  achvGoal,
+
   // 바이옴/특수 층을 강제로 불러온다 (테스트용)
   loadFloor: (biome, kind, floor) => {
     state.world = genFloor(biome, kind, floor || state.world.floor || 1);

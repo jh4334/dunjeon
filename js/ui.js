@@ -1116,7 +1116,8 @@ function renderAchvTab(body) {
     list.forEach(a => {
       const ok = achvDone(a.id);
       const pv = achvProgress(a.id);
-      const pct = clamp(pv / a.goal * 100, 0, 100);
+      const goal = achvGoal(a);              // M7a: 데이터 개수에 딸린 목표(도감 등)는 함수
+      const pct = clamp(pv / goal * 100, 0, 100);
       const row = document.createElement('div');
       row.className = 'achvRow' + (ok ? ' done' : '');
       row.dataset.achv = a.id;
@@ -1124,9 +1125,9 @@ function renderAchvTab(body) {
       row.innerHTML =
         `<span class="aIcon">${ok ? a.icon : '🔒'}</span>` +
         `<div class="aInfo"><b>${a.name}</b><small>${a.desc}</small>` +
-        (a.goal > 1
+        (goal > 1
           ? `<div class="aBarWrap"><div class="aBar" style="width:${pct.toFixed(1)}%"></div></div>` +
-            `<em class="aProg">${fmt(pv)} / ${fmt(a.goal)}</em>`
+            `<em class="aProg">${fmt(pv)} / ${fmt(goal)}</em>`
           : `<em class="aProg">${ok ? '달성' : '미달성'}</em>`) +
         `</div><span class="aMark">${ok ? '✔' : ''}</span>`;
       wrap.appendChild(row);
@@ -1597,17 +1598,23 @@ function updateHud() {
   checkAchievements();        // M4: 누적형 과제는 HUD 틱(0.2초)에서 일괄 판정
   bgmAutoScene();             // M5: 초원/광산/보스 BGM 씬 추적 (바뀌면 1.5초 크로스페이드)
 }
-/* ---- 👁 어둠 게이지 / 🔥 플레어 HUD (광산 층에서만) ---- */
+/* ---- 👁 어둠 게이지 / 🔥 플레어 HUD ----
+ * M7a: 어둠이 전 바이옴으로 확장되면서 던전 층이면 항상 노출된다.
+ * 게이지 눈금은 층 프로파일의 상한(갱도 10 / 그 외 6)을 기준으로 그린다. */
 function updateDarkHud() {
-  const mine = darkActive();
+  const prof = darkProfile();
+  const on = prof.active;
   const panel = el('darkPanel'), fbtn = el('flareBtn'), vig = el('vignette');
-  panel.classList.toggle('hidden', !mine);
-  fbtn.classList.toggle('hidden', !mine);
-  if (!mine) { vig.classList.add('hidden'); return; }
+  panel.classList.toggle('hidden', !on);
+  fbtn.classList.toggle('hidden', !on);
+  panel.classList.toggle('soft', on && !prof.mine);      // 순한 어둠(갱도 밖) 표시
+  if (!on) { vig.classList.add('hidden'); return; }
   const s = state.darkStack || 0;
   el('darkVal').textContent = s.toFixed(1);
-  el('darkBar').style.width = clamp(s / DARK_MAX * 100, 0, 100) + '%';
-  const danger = s >= DARK_WARN_AT;
+  const mx = el('darkMax');
+  if (mx) mx.textContent = '/' + prof.max;
+  el('darkBar').style.width = clamp(s / prof.max * 100, 0, 100) + '%';
+  const danger = s >= (prof.mine ? DARK_WARN_AT : DARK_SOFT_MAX - 2);
   panel.classList.toggle('danger', danger);
   vig.classList.toggle('hidden', !danger);
   el('flareVal').textContent = String(state.flares);

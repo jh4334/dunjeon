@@ -155,6 +155,8 @@ const BIOMES = {
   },
 };
 const BIOME_KEYS = Object.keys(BIOMES);
+// M7a: 갱도 밖 바이옴에 놓는 화톳불(광원) 개수 — 어둠 전역화의 안전 지대
+const BRAZIER_COUNT = [3, 5];
 // 통행을 막는 갱도 프롭 (배치 시 연결성 검사를 거친다)
 const SOLID_DECOS = { timber: 1, minecart: 1 };
 
@@ -216,12 +218,17 @@ const HAZARDS = {
   spore: { key: 'spore', name: '독안개 포자', icon: '🍄', biome: 'cave', count: [6, 10], dur: 3, radius: 1 },
   // 수정 가시 지대 — 크리스탈 골렘이 바닥에 깐다 (10초 지속)
   spike: { key: 'spike', name: '수정 가시',   icon: '💎', life: 10, tick: 0.8 },
+  // M7a 거미줄 — 무덤 거미/물거미가 깐다. 밟으면 이동 간격이 느려진다 (피해 없음)
+  web:   { key: 'web',   name: '거미줄',      icon: '🕸️', life: 8, slow: 1.2 },
+  // M7a 화상 장판 — 화염 정령이 죽으면서 남긴다. 서 있으면 지진다
+  burn:  { key: 'burn',  name: '화상 장판',   icon: '🔥', life: 6, tick: 0.7 },
 };
 const HAZARD_KEYS = Object.keys(HAZARDS);
 const HAZARD_BY_BIOME = { lava: 'vent', cave: 'spore' };
 const VENT_DMG = f => 9 + 5.5 * f;      // 분출 피해 (층 비례)
 const SPORE_DPS = f => 2 + 1.4 * f;     // 독 도트 초당 피해
 const SPIKE_DMG = f => 6 + 3.5 * f;     // 가시 지대 밟았을 때 피해 (골렘이 직접 지정하기도 한다)
+const BURN_DMG = f => 4 + 2.6 * f;      // M7a 화상 장판 틱 피해 (화염 정령이 직접 지정하기도 한다)
 
 function hazardList(wld) { return (wld && wld.hazards) || []; }
 function hazardAt(wld, x, y) {
@@ -250,6 +257,13 @@ function spawnHazard(type, x, y, opt) {
   } else if (type === 'spike') {
     h.life = opt.life || d.life;
     h.dmg = opt.dmg || SPIKE_DMG(floor);
+    h.tick = 0;
+  } else if (type === 'web') {
+    h.life = opt.life || d.life;
+    h.slow = opt.slow || d.slow;
+  } else if (type === 'burn') {
+    h.life = opt.life || d.life;
+    h.dmg = opt.dmg || BURN_DMG(floor);
     h.tick = 0;
   }
   wld.hazards.push(h);
@@ -702,6 +716,7 @@ function populateFloor(wld, biome, kind, floor, cells) {
         const mon = makeMonster(pick(types), mfloor, spots[i].x, spots[i].y);
         mon.packId = packId;
         if (Math.random() < eliteP) makeElite(mon, mfloor);
+        else rollDeepAffix(mon, mfloor);          // M7a: 깊이 20+ 일반 몹도 어픽스 1개
         wld.monsters.push(mon);
         occ[spots[i].y * wld.w + spots[i].x] = 1;
       }
@@ -745,6 +760,17 @@ function populateFloor(wld, biome, kind, floor, cells) {
     const c = takeCell(wld, cells, occ, 3, null);
     if (!c) break;
     wld.props.push({ type: 'vein', gx: c.x, gy: c.y, solid: false, mined: false, prog: 0 });
+  }
+  // --- M7a 화톳불 (갱도 밖 바이옴의 광원) ---
+  // 어둠이 전 바이옴으로 확장되면서, 갱도의 수정 랜턴에 해당하는 안전 지대가 필요해졌다.
+  // 갱도는 기존 lantern 을 그대로 쓰므로 여기서는 나머지 바이옴에만 놓는다.
+  if (normal && biome.key !== 'mine') {
+    const bn = irand(BRAZIER_COUNT[0], BRAZIER_COUNT[1]);
+    for (let i = 0; i < bn; i++) {
+      const c = takeCell(wld, cells, occ, 6, null);
+      if (!c) break;
+      wld.props.push({ type: 'brazier', gx: c.x, gy: c.y, solid: false });
+    }
   }
   // --- 바이옴 전용 장식 프롭 (버팀목/광차는 길을 막지 않는 자리에만) ---
   const dn = irand(biome.decoCount[0], biome.decoCount[1]);

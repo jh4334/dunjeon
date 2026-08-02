@@ -79,6 +79,9 @@ html, body {
   transition: width .2s;
 }
 #darkPanel.danger { border-color: #e06ff0; box-shadow: 0 0 12px rgba(200, 110, 240, .6); }
+/* M7a: 갱도 밖 바이옴의 '순한 어둠' — 테두리를 흐리게 눌러 강도 차이를 보여 준다 */
+#darkPanel.soft { border-color: #6a5a86; background: rgba(14, 10, 22, 0.8); }
+#darkPanel.soft.danger { border-color: #b06fd0; }
 
 /* 🔥 플레어 버튼 (광산 층에서만) */
 #flareBtn {

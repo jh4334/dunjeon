@@ -25,6 +25,8 @@ function placeParty(wld, x, y) {
   party.forEach((m, i) => {
     m.gx = x; m.gy = y + Math.min(i, 0);
     m.moving = false; m.moveT = 1; m.invulnT = 0;
+    // M7a: 몬스터가 건 상태이상(둔화/속박/감전/저주)은 층을 넘어가지 않는다
+    m.slowT = 0; m.rootT = 0; m.stunT = 0; m.curseT = 0;
     m.px = isoX(m.gx, m.gy); m.py = isoY(m.gx, m.gy);
   });
   for (let i = 0; i < 12; i++) trail.push({ x, y });
@@ -58,7 +60,12 @@ function gotoOverworld() {
  * 최고 깊이(best)가 2 이상일 때만 선택할 거리가 생기므로 그때부터 모달을 띄운다. */
 function maxDepth() { return Math.max(1, state.best || 0); }
 function depthChoiceAvailable() { return maxDepth() >= 2; }
-function recLvForDepth(d) { return Math.max(1, d * 2); }        // 권장 레벨 ≈ 깊이 × 2
+/* 권장 레벨 — 깊이 10 까지는 기존대로 ×2, 그 아래로는 몬스터와 같은 지수 곡선을 탄다.
+ * 난이도와 무관하게 일정한 표기가 되도록 계수는 항상 1.05 를 쓴다. */
+function recLvForDepth(d) {
+  const f = Math.max(1, Math.floor(d) || 1);
+  return Math.max(1, Math.round(f * 2 * depthScale(f, DEPTH_EXP_BASE)));
+}
 function depthTooDeep(d) { return recLvForDepth(d) > state.lv + 2; }
 function setLastDepth(d) {
   const v = clamp(Math.floor(d) || 1, 1, 999);
@@ -519,7 +526,8 @@ function updateAuto() {
   if (leader.down) { autoPath = null; return; }
   if (autoDodgeStep()) return;                 // 강타 장판 회피가 최우선
   // 어둠이 위험 수위에 닿으면 플레어를 터뜨려 안전 지대를 만든다
-  if (darkActive() && state.darkStack >= DARK_AUTO_FLARE && state.flares > 0) {
+  // (M7a: 임계값은 층 프로파일이 정한다 — 갱도 6스택 / 그 외 바이옴 4스택)
+  if (darkActive() && state.darkStack >= darkAutoAt() && state.flares > 0) {
     if (useFlare()) return;
   }
   // 광맥 옆에 섰으면 채굴이 끝날 때까지 기다린다 (updateMining 이 진행을 담당)

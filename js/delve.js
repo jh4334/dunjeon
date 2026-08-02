@@ -125,7 +125,7 @@ function updateMining(dt) {
  *  · 광원 반경 안에서는 스택이 초당 2씩 빠진다 → "광원 근처는 안전, 구석은 위험".
  *  · 플레어는 그 자리에 영구 광원을 만든다 (소지 2 + 플레어 주머니 Lv).
  * =================================================================== */
-const DARK_MAX = 10;               // 스택 상한
+const DARK_MAX = 10;               // 스택 상한 (갱도 기준)
 const DARK_SURVIVE_AT = 8;         // M4: 이 스택을 찍고 살아 돌아오면 '어둠을 견디다' 달성
 const DARK_RATE = 1;               // 어둠 속: 초당 스택 +1
 const DARK_RECOVER = 2;            // 광원 근처: 초당 스택 -2
@@ -134,14 +134,47 @@ const LIGHT_R = 5;                 // 광원 반경 (체비셰프 거리)
 const DARK_DMG_PER_STACK = 0.6;    // 스택 1당 초당 피해 (깊이 1 기준)
 const DARK_DEPTH_MUL = 0.25;       // 깊이 1당 피해 배율 가산
 const DARK_WARN_AT = 5;            // 이 스택부터 보라 비네트 + 경고음 1회
-const DARK_AUTO_FLARE = 6;         // 자동 탐험이 플레어를 터뜨리는 스택
+const DARK_AUTO_FLARE = 6;         // 자동 탐험이 플레어를 터뜨리는 스택 (갱도)
 const FLARE_BASE = 2;              // 기본 플레어 소지 수
+
+/* =====================================================================
+ * M7a — 어둠 전역화
+ * 어둠은 이제 던전의 모든 바이옴에서 돈다. 다만 갱도 밖은 '순한 버전'이다:
+ *   유예 8초(갱도 6) · 피해 계수 60% · 스택 상한 6(갱도 10) · 자동 플레어 4스택
+ * 갱도(mine)와 주간 '짙은 안개'는 기존 강도 그대로다
+ * (안개 룰은 이제 "전역 어둠을 갱도 강도로 승격"이라는 뜻이 된다).
+ * =================================================================== */
+const DARK_SOFT_MAX = 6;           // 갱도 밖 스택 상한
+const DARK_SOFT_GRACE = 8;         // 갱도 밖 유예(초)
+const DARK_SOFT_DMG_MUL = 0.6;     // 갱도 밖 피해 계수
+const DARK_SOFT_AUTO_FLARE = 4;    // 갱도 밖 자동 플레어 스택 (상한 6보다 낮게)
 
 function darkActive() {
   const w = state.world;
-  // M4 주간 '짙은 안개' — 갱도(mine) 뿐 아니라 모든 광산 바이옴에서 어둠이 발동한다
-  return !!(w && w.mode === 'dungeon' && (w.biome === 'mine' || weeklyMods().dark));
+  return !!(w && w.mode === 'dungeon');
 }
+/* 지금 층의 어둠이 '갱도 강도'인가 — 갱도이거나 주간 '짙은 안개'가 걸렸을 때 */
+function darkMineGrade(wld) {
+  const w = wld || state.world;
+  if (!w || w.mode !== 'dungeon') return false;
+  return w.biome === 'mine' || !!weeklyMods().dark;
+}
+/* 층별 어둠 프로파일 — 상한/유예/피해 계수/자동 플레어 임계값을 한곳에서 정한다 */
+function darkProfile(wld) {
+  const w = wld || state.world;
+  const active = !!(w && w.mode === 'dungeon');
+  const mine = active && darkMineGrade(w);
+  return {
+    active, mine,
+    biome: (w && w.biome) || null,
+    max: mine ? DARK_MAX : DARK_SOFT_MAX,
+    grace: mine ? DARK_GRACE : DARK_SOFT_GRACE,
+    dmgMul: mine ? 1 : DARK_SOFT_DMG_MUL,
+    autoAt: mine ? DARK_AUTO_FLARE : DARK_SOFT_AUTO_FLARE,
+  };
+}
+function darkMax() { return darkProfile().max; }
+function darkAutoAt() { return darkProfile().autoAt; }
 function maxFlares() { return FLARE_BASE + mineLv('pouch'); }
 // 광원 반경 — 「등불지기」를 착용하면 +2
 function lightRadius() { return LIGHT_R + (anyUnique('lantern') ? UNIQ_LIGHT_BONUS : 0); }
@@ -151,13 +184,16 @@ function refillFlares() {
   if (state.flares < n) { state.flares = n; saveDirty = true; }
   return state.flares;
 }
-/* 영구 광원 목록 — 수정 랜턴 / 플레어 / 채굴 완료된 광맥 / 입구(스폰) / 계단 */
+/* 광원이 되는 프롭 — 수정 랜턴(갱도) / 화톳불(그 외 바이옴) / 던져 둔 플레어 */
+const LIGHT_PROP_TYPES = ['lantern', 'brazier', 'flare'];
+/* 영구 광원 목록 — 랜턴·화톳불 / 플레어 / 채굴 완료된 광맥 / 입구(스폰) / 계단 */
 function lightSources(wld) {
   const w = wld || state.world;
   const out = [];
   if (!w || w.mode !== 'dungeon') return out;
   w.props.forEach(p => {
-    if (p.type === 'lantern' || p.type === 'flare') out.push({ x: p.gx, y: p.gy, k: p.type });
+    // M7a: brazier(화톳불) = 갱도 밖 바이옴의 랜턴
+    if (LIGHT_PROP_TYPES.indexOf(p.type) >= 0) out.push({ x: p.gx, y: p.gy, k: p.type });
     else if (p.type === 'vein' && p.mined) out.push({ x: p.gx, y: p.gy, k: 'vein' });
   });
   if (w.spawn) out.push({ x: w.spawn.x, y: w.spawn.y, k: 'entrance' });
@@ -168,13 +204,13 @@ function nearLight(x, y, wld) {
   const R = lightRadius();
   return lightSources(wld).some(s => cheb(s.x, s.y, x, y) <= R);
 }
-// 어둠 피해(초당). 캐주얼은 절반.
+// 어둠 피해(초당). 캐주얼은 절반. M7a: 갱도 밖 바이옴은 계수 60%.
 function darkDps(stack, floor) {
   const w = state.world;
   const s = (stack === undefined || stack === null) ? state.darkStack : stack;
   const f = (floor === undefined || floor === null) ? ((w && w.floor) || 1) : floor;
   const casual = state.difficulty === 'casual' ? 0.5 : 1;
-  return Math.max(0, s) * DARK_DMG_PER_STACK * (1 + DARK_DEPTH_MUL * (f - 1)) * casual;
+  return Math.max(0, s) * DARK_DMG_PER_STACK * (1 + DARK_DEPTH_MUL * (f - 1)) * casual * darkProfile().dmgMul;
 }
 function darkRecoverMul() { return anyUnique('lantern') ? UNIQ_DARK_RECOVER_MUL : 1; }
 function resetDarkness() {
@@ -202,7 +238,8 @@ function applyDarkDamage(d) {
   return hit;
 }
 function updateDarkness(dt) {
-  if (!darkActive()) {                       // 광산 외 바이옴/초원 — 완전 비활성
+  const prof = darkProfile();
+  if (!prof.active) {                        // 초원/타이틀 등 던전 밖 — 완전 비활성
     if (state.darkStack !== 0 || state.darkAway !== 0) resetDarkness();
     state.darkSafe = true;
     return 0;
@@ -216,9 +253,9 @@ function updateDarkness(dt) {
     state.darkStack = Math.max(0, state.darkStack - DARK_RECOVER * darkRecoverMul() * dt);
   } else {
     state.darkAway += dt;
-    if (state.darkAway >= DARK_GRACE) {
+    if (state.darkAway >= prof.grace) {
       // 장비 '어둠 저항 %' — 스택이 차오르는 속도를 늦춘다
-      state.darkStack = Math.min(DARK_MAX, state.darkStack + DARK_RATE * (1 - equipDarkRes()) * (1 - passiveDarkRes()) * dt);
+      state.darkStack = Math.min(prof.max, state.darkStack + DARK_RATE * (1 - equipDarkRes()) * (1 - passiveDarkRes()) * dt);
       // 스택 피해는 1초 간격으로 묶어서 (플로터 도배 방지)
       state.darkTick += dt;
       while (state.darkTick >= 1) { state.darkTick -= 1; applyDarkDamage(darkDps()); }
@@ -230,7 +267,9 @@ function updateDarkness(dt) {
     state.darkHigh = false;
     if (aliveMembers().length > 0) noteEvent('dark8');
   }
-  if (state.darkStack < DARK_WARN_AT) state.darkWarned = false;
+  // 경고 임계 — 갱도는 5스택, 순한 어둠(상한 6)은 4스택
+  const warnAt = prof.mine ? DARK_WARN_AT : DARK_SOFT_MAX - 2;
+  if (state.darkStack < warnAt) state.darkWarned = false;
   else if (!state.darkWarned) {
     state.darkWarned = true;
     sfx('dark');
@@ -263,7 +302,7 @@ function useFlare() {
  * 프롭 개수가 바뀌면(플레어 설치/계단 등장) 자동으로 다시 만든다. */
 function litList(w) {
   if (!w.__lit || w.__litN !== w.props.length) {
-    w.__lit = w.props.filter(p => p.type === 'flare' || p.type === 'lantern').map(p => ({ x: p.gx, y: p.gy }));
+    w.__lit = w.props.filter(p => LIGHT_PROP_TYPES.indexOf(p.type) >= 0).map(p => ({ x: p.gx, y: p.gy }));
     w.__litN = w.props.length;
   }
   return w.__lit;
