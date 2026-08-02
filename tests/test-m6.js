@@ -25,9 +25,18 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 /* 초기화 + 세이브 시드 — 첫 로드에서만 (reload 로 저장 왕복을 볼 수 있게).
  * 가드를 localStorage 에 두는 이유: file:// 문서에서는 sessionStorage 가 새로고침 뒤
  * 남아 있지 않을 수 있어 시드가 두 번 심어질 수 있다. */
+/* 시드는 '첫 진입 1회'만 심는다.
+ * addInitScript 는 page.reload() 때도 다시 도는데, file:// 문서에서는 새로고침 직후
+ * 초기화 플래그 읽기가 간헐적으로 비어 보인다. 그때 clear() 가 돌면 방금 저장한
+ * 세이브가 날아가 '왕복' 검증이 흔들린다. 그래서 플래그를 세 겹으로 본다.
+ *   · sessionStorage 플래그 (새로고침에 살아남고 clear() 영향 없음)
+ *   · localStorage 플래그
+ *   · 이미 세이브가 있으면 어떤 경우에도 건드리지 않는다 */
 const SEED = arg => {
   try {
-    if (localStorage.getItem('__m6init')) return;
+    if (sessionStorage.getItem('__m6init')) return;
+    if (localStorage.getItem('__m6init') || localStorage.getItem('dunjeon-save')) return;
+    sessionStorage.setItem('__m6init', '1');
     localStorage.clear();
     localStorage.setItem('__m6init', '1');
     if (!arg) return;
@@ -676,7 +685,8 @@ const V2_SAVE = {
   {
     const sw = fs.readFileSync(path.join(SRC, 'sw.js'), 'utf8');
     const m = sw.match(/const CACHE = '([^']+)'/);
-    check('릴리스 — sw.js 캐시 버전이 dunjeon-v6', m && m[1] === 'dunjeon-v6', m && m[1]);
+    // M7b: js/gems.js 추가 배포 → 캐시 버전 v7
+    check('릴리스 — sw.js 캐시 버전이 dunjeon-v7', m && m[1] === 'dunjeon-v7', m && m[1]);
     const jsFiles = fs.readdirSync(path.join(SRC, 'js')).filter(f => f.endsWith('.js'));
     check('릴리스 — sw PRECACHE 가 js/ 전 모듈을 담고 있다',
       jsFiles.every(f => sw.indexOf('js/' + f) >= 0), String(jsFiles.length));
@@ -702,12 +712,12 @@ const V2_SAVE = {
     check('CI — tests/out 과 node_modules 는 .gitignore', /tests\/out/.test(gi) && /node_modules/.test(gi));
 
     const runner = fs.readFileSync(path.join(SRC, 'tests/run-all.js'), 'utf8');
-    // M7a: test-m7a 가 추가되어 17개
-    check('CI — 러너가 17개 스위트를 순차 실행한다',
-      (runner.match(/'test-[a-z0-9]+'/g) || []).length === 17,
+    // M7b: test-m7b 가 추가되어 18개
+    check('CI — 러너가 18개 스위트를 순차 실행한다',
+      (runner.match(/'test-[a-z0-9]+'/g) || []).length === 18,
       String((runner.match(/'test-[a-z0-9]+'/g) || []).length));
     const suiteFiles = fs.readdirSync(path.join(SRC, 'tests')).filter(f => /^test-.*\.js$/.test(f));
-    check('CI — tests/ 에 17개 스위트 파일이 이관되어 있다', suiteFiles.length === 17, String(suiteFiles.length));
+    check('CI — tests/ 에 18개 스위트 파일이 이관되어 있다', suiteFiles.length === 18, String(suiteFiles.length));
     const hard = suiteFiles.filter(f => {
       const s = fs.readFileSync(path.join(SRC, 'tests', f), 'utf8');
       return /\/opt\/pw-browsers|file:\/\/\/home\//.test(s);

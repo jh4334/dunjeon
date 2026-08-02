@@ -588,8 +588,9 @@ function pngSize(file) {
     const sw = fs.readFileSync(path.join(SRC, 'sw.js'), 'utf8');
     const jsFiles = fs.readdirSync(path.join(SRC, 'js')).filter(f => f.endsWith('.js')).sort();
     const missing = jsFiles.filter(f => sw.indexOf(`'js/${f}'`) < 0);
+    // M7b: 젬 표를 js/gems.js 로 분리해 17개 모듈
     check('PWA — sw.js 캐시 목록에 js/ 전 모듈이 들어 있다',
-      missing.length === 0 && jsFiles.length === 16, `${jsFiles.length}개 · 누락 ${JSON.stringify(missing)}`);
+      missing.length === 0 && jsFiles.length === 17, `${jsFiles.length}개 · 누락 ${JSON.stringify(missing)}`);
     check('PWA — sw.js 캐시 목록에 셸(index/style/manifest/아이콘) 포함',
       ["'./'", "'index.html'", "'style.css'", "'manifest.webmanifest'", "'docs/icon-192.png'", "'docs/icon-512.png'"]
         .every(k => sw.indexOf(k) >= 0), 'ok');

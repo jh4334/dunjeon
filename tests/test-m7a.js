@@ -1181,8 +1181,9 @@ const LAB = `(() => {
       };
     });
     check('도감 — 신규 35종이 전부 도감 키에 들어간다', codex.hasNew && codex.n === 46, String(codex.n));
-    check('도감 — 총 항목이 동적으로 늘었다 (몬스터 46 + 유물 6 + 젬 9 + 고유 7 = 68)',
-      codex.total === 68 && codex.monTotal === 46, JSON.stringify({ total: codex.total }));
+    // M7b: 젬이 9 → 54종으로 늘어 총계도 113 이 되었다
+    check('도감 — 총 항목이 동적으로 늘었다 (몬스터 46 + 유물 6 + 젬 54 + 고유 7 = 113)',
+      codex.total === 113 && codex.monTotal === 46, JSON.stringify({ total: codex.total }));
     check('도감 — 신규 몬스터도 처치 경로에서 자동 등록된다',
       codex.got === 3 && codex.kills.every(v => v === 1), JSON.stringify(codex.kills));
     check("과제 '몬스터 도감' 목표치가 하드코딩 11 → 동적 46 으로 갱신",

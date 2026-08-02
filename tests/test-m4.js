@@ -930,9 +930,9 @@ const MAKE_RUN = () => {
     });
     check('state.codex 구조 = { mons, relics, gems, uniques }', shape.keys === 'gems,mons,relics,uniques', shape.keys);
     check('새 세이브 — 도감이 비어 있고 수집률 0%', shape.empty && shape.pct === 0, JSON.stringify(shape));
-    // M7a: 몬스터 41종(일반) + 보스 5종 = 46 → 총 46 + 6 + 9 + 7 = 68
-    check('도감 총 항목 = 몬스터 46 + 유물 6 + 젬 9 + 고유 7 = 68',
-      shape.total === 68 && shape.monKeys === 46, JSON.stringify(shape));
+    // M7a: 몬스터 41종(일반) + 보스 5종 = 46 · M7b: 젬 9 → 54종 → 총 46 + 6 + 54 + 7 = 113
+    check('도감 총 항목 = 몬스터 46 + 유물 6 + 젬 54 + 고유 7 = 113',
+      shape.total === 113 && shape.monKeys === 46, JSON.stringify(shape));
 
     const reg = await page.evaluate(() => {
       const G = window.GAME;
@@ -960,8 +960,8 @@ const MAKE_RUN = () => {
     check('도감 — 몬스터 처치 수가 누적된다 (슬라임 3킬)', reg.slime === 3 && reg.bat === 0, JSON.stringify(reg));
     check('도감 — 젬/유물/고유 장비가 획득 경로에서 등록된다',
       reg.gem && reg.relic && reg.uniq, JSON.stringify(reg));
-    check('도감 — 수집률이 등록 수에 맞게 계산된다 (4/68)',
-      reg.got === 4 && reg.pct === Math.floor(4 / 68 * 100), `${reg.got}/68 = ${reg.pct}%`);
+    check('도감 — 수집률이 등록 수에 맞게 계산된다 (4/113)',
+      reg.got === 4 && reg.pct === Math.floor(4 / 113 * 100), `${reg.got}/113 = ${reg.pct}%`);
 
     // 중복 등록 방지
     const dup = await page.evaluate(() => {
@@ -1005,8 +1005,8 @@ const MAKE_RUN = () => {
         bar: !!document.getElementById('codexBar'),
       };
     });
-    check('도감 탭 — 4개 섹션(몬스터46/유물6/젬9/고유7)이 모두 렌더된다',
-      ui.sections.join() === '46,6,9,7', ui.sections.join());
+    check('도감 탭 — 4개 섹션(몬스터46/유물6/젬54/고유7)이 모두 렌더된다',
+      ui.sections.join() === '46,6,54,7', ui.sections.join());
     check('도감 탭 — 미조우 항목은 검은 실루엣 + ???',
       ui.unknown > 0 && ui.unknownSilhouette && ui.unknownName, JSON.stringify({ u: ui.unknown, s: ui.unknownSilhouette }));
     check('도감 탭 — 조우한 몬스터는 이름과 처치 수가 보인다',
