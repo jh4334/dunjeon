@@ -194,8 +194,8 @@ const LAB = `(() => {
     check('젬 표 — 스킬 21종 전부 태그를 갖고, 태그는 GEM_TAGS 안에 있다', tbl.allTagged, '');
     check('젬 표 — 모든 젬에 이름/아이콘/설명 · 서포트는 needs 선언', tbl.allNamed && tbl.supNeeds, '');
     check('젬 표 — 스킬 21종 전부 실행부(SKILL_CAST)가 있다', tbl.casts.length === 0, JSON.stringify(tbl.casts));
-    check('도감 — 젬 항목이 54종으로 늘고 총계에 반영된다 (46+6+54+7=113)',
-      tbl.codexGemTotal === 54 && tbl.codexTotal === 113, `${tbl.codexGemTotal} / ${tbl.codexTotal}`);
+    check('도감 — 젬 항목이 54종으로 늘고 총계에 반영된다 (48+6+54+9=117)',
+      tbl.codexGemTotal === 54 && tbl.codexTotal === 117, `${tbl.codexGemTotal} / ${tbl.codexTotal}`);
 
     // 역할 제한 (fit 배열 지원)
     const fit = await page.evaluate(() => {

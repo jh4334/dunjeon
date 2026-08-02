@@ -218,9 +218,10 @@ window.GAME = {
   addShield, absorbShield, updateShields, partyCdAura,
   shields: () => party.map(m => ({ id: m.id, shield: m.shield, t: m.shieldT })),
 
-  /* ---- M3.5b: PoE식 패시브 트리 (58노드) ---- */
+  /* ---- M3.5b→M7c: PoE식 패시브 트리 (290노드 · 클러스터) ---- */
   PASSIVE_TREE, PASSIVE_NODES, PASSIVE_BY_ID, PASSIVE_LINKS, PASSIVE_ADJ,
   PASSIVE_ROOT, PASSIVE_TAKEABLE, LEGACY_CHAIN, BRANCH_COLOR, BRANCH_NAME,
+  PASSIVE_CLUSTERS, PASSIVE_CLUSTER_BY_KEY, CLUSTER_SPECS, SOCKET_IDS, MOD_INFO, modsDesc,
   passiveReachable, treeStats, hasKeystone, keystonesTaken,
   nodeTaken, nodeReachable, canTakeNode, takeNode, pruneOrphans,
   respecTree, respec: respecTree, respecCost, RESPEC_COST_PER, bumpTree,
@@ -229,6 +230,37 @@ window.GAME = {
   passiveGemMul, passiveTgCut, passiveDarkRes, passiveLeech, passiveMinionMult,
   passiveProjMult, passiveAuraMult, passiveMiningMult, passiveShopMult,
   passiveShieldMult, passiveReviveMult, passiveTelegraphMult, passiveMonHpMult, loneMult,
+
+  /* ==== M7c: 트리 확장 · 룬 소켓 · 포인트 공급 ==== */
+  RUNE_DEFS, RUNE_BY_KEY, RUNE_KEYS,
+  ensureRunes, runeOwned, runeAvailable, runesSocketed, runeTotal, giveRune, rollRuneKey,
+  socketRune, unsocketRune, socketRuneOf,
+  runes: () => Object.assign({}, state.runes),
+  sockets: () => Object.assign({}, state.sockets),
+  DEPTH_MILESTONES, DEPTH_MILESTONE_PTS, UBER_KILL_PTS,
+  grantDepthMilestones, grantPassivePts, milestonesGot,
+  passiveCritDmg, passiveElemMult, passiveDotMult, passiveRegenRate, bastionMult, darkImmune,
+  UNDYING_REGEN, BLOOD_MAGIC_COST, WARLORD_MINION_BONUS, BASTION_STILL, BASTION_MOVE,
+
+  /* ==== M7c: 환영 모드 (Delirium) ==== */
+  MIRROR_CHANCE, DELIRIUM_TIERS, DELIRIUM_TIER_MAX, DELIRIUM_MON_MUL, DELIRIUM_FOG_SPEED,
+  DELIRIUM_SPAWN_CD, DELIRIUM_DPS_BASE, DELIRIUM_DPS_CAP, DELIRIUM_FRAG_PER_TIER, DELIRIUM_FRAG_PER_KILL,
+  DELIRIUM_RUNE_P, DELIRIUM_RUNE_TIER, dropRune,
+  startDelirium, updateDelirium, endDelirium, deliriumActive, deliriumInfo, deliriumDps,
+  noteDeliriumKill, spawnPhantom, empowerForDelirium, inFog, phantomList, grantDeliriumReward,
+  delirium: () => (state.world && state.world.delirium) || null,
+  fragments, addFragments, spendFragments,
+  updateDeliriumHud,
+
+  /* ==== M7c: 우버 보스 ==== */
+  UBER_BOSSES, UBER_KEYS, UBER_DEPTH_UNLOCK, UBER_TICKET_COST, UBER_FLOOR, UBER_HP_MUL,
+  UBER_PHASES, UBER_PHASE_INVULN, UBER_WIPE_COUNT,
+  uberDef, uberUnlocked, uberTickets, craftUberTicket, uberRecords, uberCodexKeys, codexUber,
+  spawnUber, activeUber, updateUberAI, uberPhaseFor, uberEnterPhase,
+  uberRotateZone, uberChargeLine, uberRockfall, uberSummonCrystals, uberWipeCast, uberSafeCell,
+  onUberCrystalBreak, onUberDefeated, enterUber, uberEscape, uberActiveRun,
+  openUberGate, openUberResult,
+  UBER_UNIQUE_KEYS, DROP_UNIQUES, uniqueTakenMul, uniqueMiningMul,
   // 대사
   CHAR_LINES, PERSONA_DIALOGUE, charLineCount,
   // 리뷰 3차 수정 훅 (텔레그래프 상한 / 기사 스플래시)

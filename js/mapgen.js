@@ -96,6 +96,18 @@ function genOverworld() {
     break;
   }
 
+  // M7c 우버 제단 — 캠프에서 조금 떨어진 곳에 세운다. 인접하면 우버 게이트가 열린다.
+  const ubSpots = [[0, 3], [3, 0], [-3, 0], [0, -3], [3, 3], [-3, 3], [3, -3], [-3, -3], [4, 0], [0, 4]];
+  for (const [dx, dy] of ubSpots) {
+    const x = wld.spawn.x + dx, y = wld.spawn.y + dy;
+    if (tileAt(wld, x, y) !== T.GRASS) continue;
+    if (wld.props.some(p => p.gx === x && p.gy === y)) continue;
+    if (cheb(x, y, ex, ey) < 3) continue;
+    wld.props.push({ type: 'uberAltar', gx: x, gy: y, solid: true });
+    wld.uberAltar = { x, y };
+    break;
+  }
+
   // 장식물
   const decos = ['rock', 'stump', 'apple', 'bush', 'rune', 'rock', 'stump', 'bush'];
   let placed = 0, guard = 0;
@@ -686,6 +698,11 @@ function populateFloor(wld, biome, kind, floor, cells) {
   if (normal && Math.random() < 0.6) {
     const a = takeCell(wld, cells, occ, 5, null);
     if (a) wld.props.push({ type: 'altar', gx: a.x, gy: a.y, solid: false, used: false });
+  }
+  // --- M7c 환영의 거울 (일반 층 20% · 보스 층 제외) ---
+  if (normal && !bossFloor && Math.random() < MIRROR_CHANCE) {
+    const mr = takeCell(wld, cells, occ, 6, null);
+    if (mr) wld.props.push({ type: 'mirror', gx: mr.x, gy: mr.y, solid: false, used: false });
   }
   // --- 떠돌이 상인 (일반 층 어디든 20%) ---
   if (normal && !bossFloor && Math.random() < 0.2) {

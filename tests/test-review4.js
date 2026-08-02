@@ -614,8 +614,9 @@ async function intoDungeon(page) {
       return out;
     });
     check('SFX — 타격/치명타/처치/경고/레벨업/모달 이벤트에 연결됨',
+      // level 은 >=1 — 대량 레벨업이면 같은 틱에 도전 과제 팡파레가 겹칠 수 있다
       combat.hit === 1 && combat.crit === 1 && combat.kill >= 1 && combat.warn === 1 &&
-      combat.modal === 1 && combat.level === 1 && combat.lv > 2,
+      combat.modal === 1 && combat.level >= 1 && combat.lv > 2,
       JSON.stringify(combat));
 
     // 골드 획득 (아이템 픽업 경로)

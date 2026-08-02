@@ -1,10 +1,11 @@
-/* M3.5b — 캐릭터 22종 · 파티 편성 · PoE식 패시브 트리(58노드) 검증
+/* M3.5b — 캐릭터 22종 · 파티 편성 · PoE식 패시브 트리 검증
+ * (M7c 에서 트리가 290노드로 확장됐다 — 기존 58노드의 id/효과/연결은 불변)
  *  1) 캐릭터 정의 22종 / 역할 태그 / 고유 능력 / 해금 조건
  *  2) 파티 편성 (4명 · 리더 지정 · 중복/미보유 거부 · 던전 내 차단 · 모달 UI)
  *  3) 신규 능력 15종 각각 동작 (관통/광폭/실드/연타/광역/화상/슬로우/정령/버프/결계/회복병/감속/변신/펫/보물감각)
  *  4) 사제 없는 파티 부활 (기본 시간 2배)
  *  5) 장비·젬은 캐릭터 기준 저장 (기존 4인 키 승계)
- *  6) 트리 58노드 — 그래프 연결성 / 인접 규칙 / 키스톤 6종 트레이드오프 / 리스펙
+ *  6) 트리 그래프 — 연결성 / 인접 규칙 / 키스톤 트레이드오프 / 리스펙
  *  7) 구 passives(3갈래 0~5) 마이그레이션 — 포인트/수치 손실 0
  *  8) 구 세이브 로드 / 콘솔 에러 0
  */
@@ -940,7 +941,7 @@ const DUMMY = `((x, y, hp) => {
   }
 
   /* =====================================================================
-   * 6. 패시브 트리 — 58노드 그래프
+   * 6. 패시브 트리 — 클러스터 그래프 (M7c: 290노드)
    * =================================================================== */
   {
     const page = await freshPage(browser, errors);
@@ -955,10 +956,13 @@ const DUMMY = `((x, y, hp) => {
       G.PASSIVE_NODES.forEach(n => { branches[n.br] = (branches[n.br] || 0) + 1; });
       return { c, kinds, unique: new Set(ids).size, total: ids.length, branches };
     });
-    check('트리 — 소형 40 · 노터블 12 · 키스톤 6 = 58 노드 (+ 중앙 시작점)',
-      shape.c.small === 40 && shape.c.notable === 12 && shape.c.keystone === 6 &&
-      shape.c.total === 58 && shape.kinds.root === 1 && shape.total === 59 && shape.unique === 59,
+    // M7c: 클러스터 확장 — 소형 221 · 노터블 50 · 키스톤 15 · 소켓 4 = 290
+    check('트리 — 소형 221 · 노터블 50 · 키스톤 15 · 소켓 4 = 290 노드 (+ 중앙 시작점)',
+      shape.c.small === 221 && shape.c.notable === 50 && shape.c.keystone === 15 &&
+      shape.c.socket === 4 && shape.c.total === 290 && shape.kinds.root === 1 &&
+      shape.total === 291 && shape.unique === 291,
       JSON.stringify(shape.c));
+    // M7c: 기존 3가지 + 교차 경로의 노드 수는 그대로 (새 클러스터는 자기 가지 키를 쓴다)
     check('트리 — 3방향 큰 가지(공격/생존/유틸) + 가지 사이 교차 경로',
       shape.branches.atk === 15 && shape.branches.def === 15 && shape.branches.util === 15 &&
       shape.branches.cross === 13 && shape.branches.root === 1,
@@ -979,8 +983,8 @@ const DUMMY = `((x, y, hp) => {
       return { reach: reach.length, missing, badLink: badLink.length, orphan: orphan.length, crossLinks };
     });
     check('트리 그래프 — 모든 노드가 시작점에서 도달 가능 (고립 노드 0)',
-      graph.reach === 59 && graph.missing.length === 0 && graph.orphan === 0 && graph.badLink === 0,
-      JSON.stringify(graph));
+      graph.reach === 291 && graph.missing.length === 0 && graph.orphan === 0 && graph.badLink === 0,
+      JSON.stringify({ reach: graph.reach, missing: graph.missing.slice(0, 5), orphan: graph.orphan }));
     check('트리 그래프 — 가지 사이를 잇는 교차 간선이 존재 (교차 빌드 가능)',
       graph.crossLinks >= 6, String(graph.crossLinks));
 
@@ -1162,8 +1166,10 @@ const DUMMY = `((x, y, hp) => {
       G.state.paused = false;
       return { base, glass, lone, steel, blood, bloodNoGem, haste, tgReal, wealth, monReal, keys: G.PASSIVE_NODES.filter(n => n.kind === 'keystone').map(n => n.key) };
     }, [PREP]);
-    check('키스톤 6종 정의 (유리 대포/고독한 사냥꾼/강철 심장/피의 계약/시간 가속/부의 화신)',
-      key.keys.join(',') === 'glass,lone,steel,blood,haste,wealth', JSON.stringify(key.keys));
+    // M7c: 키스톤이 15종으로 늘었지만 기존 6종의 키/순서는 그대로 앞에 남아 있다
+    check('키스톤 기존 6종 정의 (유리 대포/고독한 사냥꾼/강철 심장/피의 계약/시간 가속/부의 화신)',
+      key.keys.slice(0, 6).join(',') === 'glass,lone,steel,blood,haste,wealth' && key.keys.length === 15,
+      JSON.stringify(key.keys.slice(0, 6)));
     check('키스톤 ① 유리 대포 — 주는 피해 +40% / 받는 피해 +25%',
       key.glass.has && near(key.glass.atk, 1.4, 0.002) && near(key.glass.taken, 1.25, 0.002),
       JSON.stringify({ atk: +key.glass.atk.toFixed(3), taken: +key.glass.taken.toFixed(3) }));
@@ -1217,8 +1223,8 @@ const DUMMY = `((x, y, hp) => {
       respec: document.getElementById('treeRespec').textContent,
     }));
     check('트리 UI — 노드 그래프 렌더 (소형/노터블/키스톤 구분 · 찍음/가능/잠김 상태)',
-      treeUi.map && treeUi.links && treeUi.nodes === 59 &&
-      treeUi.keystones === 6 && treeUi.notables === 12 && treeUi.smalls === 40 &&
+      treeUi.map && treeUi.links && treeUi.nodes === 291 &&
+      treeUi.keystones === 15 && treeUi.notables === 50 && treeUi.smalls === 221 &&
       treeUi.taken === 9 && treeUi.next > 0 && treeUi.far > 0,
       JSON.stringify(treeUi));
     check('트리 UI — 맵이 화면보다 커서 스크롤/패닝이 가능하다',

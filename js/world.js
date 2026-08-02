@@ -75,6 +75,8 @@ function setLastDepth(d) {
  * M4: 주간 런은 일반 광산과 기록이 분리된다 → records.weekly 로만 간다. */
 function recordDepth(d) {
   const v = clamp(Math.floor(d) || 1, 1, 999);
+  // M7c: 깊이 마일스톤(5/10/15/20/25/30) 최초 도달 — 주간/일반 공통으로 패시브 포인트 +2
+  grantDepthMilestones(v);
   // '전멸 없이 깊이 10' — 구제(불굴/깃털)를 쓰지 않은 런에서만 인정 (주간/일반 공통 · 1회만)
   if (v >= 10 && state.run && !state.run.saved && !ensureMeta().evt.noWipe10) noteEvent('noWipe10');
   if (weeklyActive()) { recordWeeklyDepth(v); return false; }
@@ -208,6 +210,8 @@ function defaultChoice(floor) {
 }
 // 계단을 밟았을 때 — 보스 깊이는 고정 진입, 그 외에는 갱도 분기 모달
 function onStairsStep() {
+  // M7c: 환영 안개는 층을 넘기 전에 정산한다 (계단을 밟으면 종료)
+  if (deliriumActive()) endDelirium('stairs');
   const next = state.world.floor + 1;
   if (next % 3 === 0) {
     toast('⚠️ 다음은 보스 갱도 — 분기 없이 진입합니다!');
@@ -243,6 +247,7 @@ function descend(choice) {
 }
 function escapeDungeon() {
   if (state.world.mode !== 'dungeon' || state.paused || state.transitioning) return;
+  if (deliriumActive()) endDelirium('escape');
   showRunSummary(true);
 }
 /* ---- M6: 이번 런 분석 (텔레메트리) ----

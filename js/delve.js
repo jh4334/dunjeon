@@ -23,7 +23,7 @@ let miningCur = null;              // 지금 캐고 있는 광맥 (렌더/테스
 // 실제 채널링 시간 — '단단한 곡괭이' Lv당 -0.2초 (하한 0.8초)
 function veinChannel() {
   // 트리 '채굴 속도 +%' 는 채널링 시간을 줄인다 (하한은 그대로)
-  return Math.max(VEIN_CHANNEL_MIN, (VEIN_CHANNEL - VEIN_PICK_STEP * mineLv('pickaxe')) / passiveMiningMult());
+  return Math.max(VEIN_CHANNEL_MIN, (VEIN_CHANNEL - VEIN_PICK_STEP * mineLv('pickaxe')) / passiveMiningMult() / uniqueMiningMul());
 }
 
 function veinList() {
@@ -239,7 +239,8 @@ function applyDarkDamage(d) {
 }
 function updateDarkness(dt) {
   const prof = darkProfile();
-  if (!prof.active) {                        // 초원/타이틀 등 던전 밖 — 완전 비활성
+  // 키스톤 「광부의 집념」 — 어둠 게이지 자체가 돌지 않는다 (이동 속도 -10% 가 대가)
+  if (!prof.active || darkImmune()) {        // 초원/타이틀 등 던전 밖 — 완전 비활성
     if (state.darkStack !== 0 || state.darkAway !== 0) resetDarkness();
     state.darkSafe = true;
     return 0;

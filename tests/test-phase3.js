@@ -910,7 +910,7 @@ const near = (a, b, eps) => Math.abs(a - b) <= (eps == null ? 1e-6 : eps);
   await page.evaluate(() => { window.GAME.state.passivePts = 20; window.GAME.state.passives = { atk: 0, def: 0, util: 0 }; });
   await page.click('#tabPassive');
   await sleep(250);
-  // M3.5b: 3갈래 직선 15노드 → 58노드 그래프 트리 맵 (.tNode / #nodeTake)
+  // M3.5b: 3갈래 직선 15노드 → 그래프 트리 맵 (.tNode / #nodeTake) · M7c: 290노드
   const passiveUi = await page.evaluate(() => ({
     map: !!document.getElementById('treeMap'),
     nodes: document.querySelectorAll('.tNode').length,
@@ -919,10 +919,10 @@ const near = (a, b, eps) => Math.abs(a - b) <= (eps == null ? 1e-6 : eps);
     a1: document.querySelector('.tNode[data-node="a1"]').dataset.state,
     a3: document.querySelector('.tNode[data-node="a3"]').dataset.state,
   }));
-  check('패시브 탭 — 58노드 트리 맵 · 인접 노드만 활성',
-    passiveUi.map && passiveUi.takeable === 58 && passiveUi.nodes === 59 &&
+  check('패시브 탭 — 290노드 트리 맵 · 인접 노드만 활성',
+    passiveUi.map && passiveUi.takeable === 290 && passiveUi.nodes === 291 &&
     passiveUi.a1 === 'next' && passiveUi.a3 === 'far',
-    JSON.stringify(passiveUi));
+    JSON.stringify({ n: passiveUi.nodes, t: passiveUi.takeable, a1: passiveUi.a1, a3: passiveUi.a3 }));
   await page.screenshot({ path: path.join(OUT, 'p3-passive-tree.png') });
 
   // 인접 규칙대로 찍기

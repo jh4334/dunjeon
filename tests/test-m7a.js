@@ -151,7 +151,8 @@ const LAB = `(() => {
     check('신규 몬스터 전원 고유 외형(베이스+팔레트) 정의', tbl.allArt, `베이스 ${tbl.bases.length}종`);
     check('외형 실루엣 베이스가 10종 이상으로 갈라진다', tbl.bases.length >= 10, tbl.bases.join(','));
     check('신규 몬스터 전원 행동 kit 을 갖는다 (빈 몹 없음)', tbl.allKit, '');
-    check('도감 총 몬스터 = 일반 41 + 보스 5 = 46', tbl.codexTotal === 46, String(tbl.codexTotal));
+    // M7c: 우버 보스 2종이 도감 키에 더해져 48
+    check('도감 총 몬스터 = 일반 41 + 보스 5 + 우버 2 = 48', tbl.codexTotal === 48, String(tbl.codexTotal));
 
     const pools = await page.evaluate(() => {
       const G = window.GAME;
@@ -1180,14 +1181,14 @@ const LAB = `(() => {
         goal: G.achvGoal(G.ACHV_BY_ID.monsall),
       };
     });
-    check('도감 — 신규 35종이 전부 도감 키에 들어간다', codex.hasNew && codex.n === 46, String(codex.n));
-    // M7b: 젬이 9 → 54종으로 늘어 총계도 113 이 되었다
-    check('도감 — 총 항목이 동적으로 늘었다 (몬스터 46 + 유물 6 + 젬 54 + 고유 7 = 113)',
-      codex.total === 113 && codex.monTotal === 46, JSON.stringify({ total: codex.total }));
+    check('도감 — 신규 35종이 전부 도감 키에 들어간다', codex.hasNew && codex.n === 48, String(codex.n));
+    // M7b: 젬 54종 · M7c: 우버 보스 2 + 우버 고유 2 → 48 + 6 + 54 + 9 = 117
+    check('도감 — 총 항목이 동적으로 늘었다 (몬스터 48 + 유물 6 + 젬 54 + 고유 9 = 117)',
+      codex.total === 117 && codex.monTotal === 48, JSON.stringify({ total: codex.total }));
     check('도감 — 신규 몬스터도 처치 경로에서 자동 등록된다',
       codex.got === 3 && codex.kills.every(v => v === 1), JSON.stringify(codex.kills));
-    check("과제 '몬스터 도감' 목표치가 하드코딩 11 → 동적 46 으로 갱신",
-      codex.goal === 46, String(codex.goal));
+    check("과제 '몬스터 도감' 목표치가 하드코딩 11 → 동적 48 으로 갱신",
+      codex.goal === 48, String(codex.goal));
 
     const retro = await page.evaluate(() => {
       const G = window.GAME;
@@ -1197,7 +1198,7 @@ const LAB = `(() => {
       return { got: t.parts.mons.got, total: t.parts.mons.total, slime: G.codexMonKills('slime') };
     });
     check('구 세이브 호환 — 기존 도감 기록은 보존되고 총수만 늘어난다 (미확인 = 신규)',
-      retro.got === 2 && retro.total === 46 && retro.slime === 12, JSON.stringify(retro));
+      retro.got === 2 && retro.total === 48 && retro.slime === 12, JSON.stringify(retro));
 
     const drop = await page.evaluate(() => {
       const G = window.GAME;

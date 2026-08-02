@@ -124,6 +124,11 @@ const UNIQUES = [
     desc: '광원 반경 +2 · 어둠 스택 감소 2배' },
   { k: 'gambler',  slot: 'trinket', base: 'ring',   icon: '🪙', name: '도박꾼의 동전',
     desc: '골드 획득 ±50% 랜덤 (획득마다 0.5~1.5배)' },
+  /* ---- M7c 우버 전용 (우버 보스 처치로만 나온다) ---- */
+  { k: 'voidcrown', slot: 'trinket', base: 'amulet', icon: '👑', name: '공허의 왕관', uber: 'veiga',
+    desc: '스킬 젬 효과 +40% · 착용자가 받는 피해 +12%' },
+  { k: 'morgpick',  slot: 'weapon',  base: 'staff',  icon: '⛏️', name: '모르그란의 곡괭이', uber: 'morgran',
+    desc: '채굴 속도 2배 · 파티 어둠 저항 +40%' },
 ];
 const UNIQUE_BY_KEY = {};
 UNIQUES.forEach(u => { UNIQUE_BY_KEY[u.k] = u; });
@@ -145,6 +150,13 @@ const HUNGRY_ATK = 0.4;
 const UNIQ_LIGHT_BONUS = 2;       // 등불지기
 const UNIQ_DARK_RECOVER_MUL = 2;
 const GAMBLER_RANGE = [0.5, 1.5]; // 도박꾼의 동전
+const UNIQ_CROWN_GEM = 1.4;       // 공허의 왕관 — 스킬 젬 효과
+const UNIQ_CROWN_TAKEN = 1.12;    // 공허의 왕관 — 받는 피해
+const UNIQ_PICK_MINING = 2;       // 모르그란의 곡괭이 — 채굴 속도
+const UNIQ_PICK_DARKRES = 40;     // 모르그란의 곡괭이 — 파티 어둠 저항 (%)
+/* 우버 전용 고유 — 일반 드랍 풀에서는 제외된다 */
+const UBER_UNIQUE_KEYS = UNIQUES.filter(u => u.uber).map(u => u.k);
+const DROP_UNIQUES = UNIQUES.filter(u => !u.uber);
 
 /* ---------------- 이름 생성 ---------------- */
 const RARE_WORD_A = ['황혼의', '심연의', '핏빛', '서리의', '폭풍의', '고대의',
@@ -226,11 +238,11 @@ function makeUnique(u, ilvl) {
 function rollItem(ilvl, opt) {
   opt = opt || {};
   const lv = clamp(Math.floor(ilvl) || 1, 1, 999);
-  if (opt.unique) return makeUnique(UNIQUE_BY_KEY[opt.unique] || pick(UNIQUES), lv);
+  if (opt.unique) return makeUnique(UNIQUE_BY_KEY[opt.unique] || pick(DROP_UNIQUES), lv);
   const rarity = RARITY[opt.rarity] ? opt.rarity : rollRarity(lv, opt);
   if (rarity === 'unique') {
-    const pool = opt.slot ? UNIQUES.filter(u => u.slot === opt.slot) : UNIQUES;
-    return makeUnique(pick(pool.length ? pool : UNIQUES), lv);
+    const pool = opt.slot ? DROP_UNIQUES.filter(u => u.slot === opt.slot) : DROP_UNIQUES;
+    return makeUnique(pick(pool.length ? pool : DROP_UNIQUES), lv);
   }
   const slot = SLOTS[opt.slot] ? opt.slot : pick(SLOT_KEYS);
   const base = opt.base ? baseOf(slot, opt.base) : pick(ITEM_BASES[slot]);
@@ -417,9 +429,16 @@ function equipCdMul(m)   { return 1 / (1 + equipStat(m, 'atkSpd') / 100); }
 function equipDR(m)      { return clamp(equipStat(m, 'dr') / 100, 0, 0.9); }
 function equipTgCut(m)   { return clamp(equipStat(m, 'tgReduce') / 100, 0, 0.9); }
 function equipLeech(m)   { return equipStat(m, 'leech') / 100; }
-function equipGemMul(m)  { return equipMul(m, 'gem'); }
+function equipGemMul(m)  { return equipMul(m, 'gem') * (hasUnique(m, 'voidcrown') ? UNIQ_CROWN_GEM : 1); }
+// 「공허의 왕관」 — 젬 효과가 크게 오르는 대신 착용자가 더 아프다
+function uniqueTakenMul(m) { return hasUnique(m, 'voidcrown') ? UNIQ_CROWN_TAKEN : 1; }
+// 「모르그란의 곡괭이」 — 채굴 속도 2배
+function uniqueMiningMul() { return anyUnique('morgpick') ? UNIQ_PICK_MINING : 1; }
 function equipReviveMul(){ return 1 + equipStatParty('revive') / 100; }
-function equipDarkRes()  { return clamp(equipStatParty('darkRes') / 100, 0, 0.9); }
+function equipDarkRes()  {
+  const uber = anyUnique('morgpick') ? UNIQ_PICK_DARKRES : 0;
+  return clamp((equipStatParty('darkRes') + uber) / 100, 0, 0.9);
+}
 
 /* ---- 「도박꾼의 동전」 — 골드 획득마다 0.5~1.5배 ---- */
 function gamblerMult() { return anyUnique('gambler') ? rand(GAMBLER_RANGE[0], GAMBLER_RANGE[1]) : 1; }

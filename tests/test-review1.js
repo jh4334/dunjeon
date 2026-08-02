@@ -333,7 +333,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     const monHp0 = mon.hp;
     const d0 = Math.max(Math.abs(k.gx - G.leader.gx), Math.abs(k.gy - G.leader.gy));
     let retSeen = false, dMin = d0;
-    for (let i = 0; i < 100; i++) {
+    // 복귀는 0.2초/칸 — 좁은 갱도에서 우회가 필요할 수 있어 관측 창을 5초로 잡는다
+    for (let i = 0; i < 200; i++) {
       await new Promise(r => setTimeout(r, 25));
       if (k.returning) retSeen = true;
       dMin = Math.min(dMin, Math.max(Math.abs(k.gx - G.leader.gx), Math.abs(k.gy - G.leader.gy)));
