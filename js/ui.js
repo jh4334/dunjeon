@@ -505,6 +505,13 @@ function openRoster(pickSlot) {
 function openClassChoice() { return openRoster(0); }
 
 /* ---- 파티 모달 (장비 / 젬 장착 / 패시브 트리) ---- */
+/* M7c 트리 뷰 상태 — 모달을 다시 열어도 줌/검색이 유지된다 */
+let treeZoom = 2;            // TREE_ZOOMS 인덱스 (기본 55%)
+let treeQuery = '';
+let treeFilter = 'all';      // all | notable | keystone | socket
+let treeFocus = null;        // 렌더 직후 스크롤을 맞출 노드
+let treeSearchFocus = false;
+let nodePick = null;         // 선택한 노드 id
 let partyTab = 'gem';
 const PARTY_TABS = ['gem', 'equip', 'passive'];
 const TAB_ID = { gem: 'tabGem', equip: 'tabEquip', passive: 'tabPassive' };
@@ -829,18 +836,38 @@ function openParty(tab) {
       body.appendChild(inv);
     };
 
-    /* =============== 🌳 패시브 트리 =============== */
-    const TREE_SCALE = 34, TREE_PAD = 70;
-    const treeX = n => (n.x + 11.6) * TREE_SCALE + TREE_PAD;
-    const treeY = n => (n.y + 9.8) * TREE_SCALE + TREE_PAD;
-    const TREE_W = Math.ceil((11.6 + 11.6) * TREE_SCALE + TREE_PAD * 2);
-    const TREE_H = Math.ceil((9.8 + 10.2) * TREE_SCALE + TREE_PAD * 2);
-    let nodePick = null;
+    /* =============== 🌳 패시브 트리 (M7c — 290노드 · 줌/검색/필터) =============== */
+    const TREE_BASE = 30, TREE_PAD = 60;
+    // 좌표계는 데이터 bbox 에서 자동으로 뽑는다 (클러스터가 늘어도 UI 수정이 필요 없다)
+    const TREE_MINX = Math.min.apply(null, PASSIVE_NODES.map(n => n.x));
+    const TREE_MAXX = Math.max.apply(null, PASSIVE_NODES.map(n => n.x));
+    const TREE_MINY = Math.min.apply(null, PASSIVE_NODES.map(n => n.y));
+    const TREE_MAXY = Math.max.apply(null, PASSIVE_NODES.map(n => n.y));
+    const TREE_ZOOMS = [0.22, 0.35, 0.55, 0.8, 1.15];  // 줌 아웃(전체) → 줌 인
+    const treeScale = () => TREE_BASE * TREE_ZOOMS[treeZoom];
+    // 여백도 줌을 따라간다 — 완전히 줌 아웃하면 트리 전체가 한 화면에 들어온다
+    const treePad = () => Math.round(TREE_PAD * TREE_ZOOMS[treeZoom]);
+    const treeX = n => (n.x - TREE_MINX) * treeScale() + treePad();
+    const treeY = n => (n.y - TREE_MINY) * treeScale() + treePad();
+    const treeW = () => Math.ceil((TREE_MAXX - TREE_MINX) * treeScale() + treePad() * 2);
+    const treeH = () => Math.ceil((TREE_MAXY - TREE_MINY) * treeScale() + treePad() * 2);
 
     const nodeState = id => {
       if (nodeTaken(id)) return 'taken';
       return nodeReachable(id) ? 'next' : 'far';
     };
+    // 검색/필터에 걸린 노드인가 (하이라이트 대상)
+    const treeMatch = nd => {
+      if (treeFilter === 'notable' && nd.kind !== 'notable') return false;
+      if (treeFilter === 'keystone' && nd.kind !== 'keystone') return false;
+      if (treeFilter === 'socket' && nd.kind !== 'socket') return false;
+      if (!treeQuery) return treeFilter !== 'all';
+      const q = treeQuery.toLowerCase();
+      return (nd.name || '').toLowerCase().indexOf(q) >= 0 ||
+             (nd.desc || '').toLowerCase().replace(/<br>/g, ' ').indexOf(q) >= 0;
+    };
+    const treeHighlighting = () => !!treeQuery || treeFilter !== 'all';
+
     const renderPassives = () => {
       const head = document.createElement('div');
       head.className = 'sumRow';
@@ -848,65 +875,118 @@ function openParty(tab) {
         `<span class="treeSpent" id="treeSpent">찍은 노드 ${passiveSpent()} / ${PASSIVE_TREE.counts.total}</span>`;
       body.appendChild(head);
 
+      /* ---- 도구 줄: 검색 · 필터 · 줌 ---- */
+      const tools = document.createElement('div');
+      tools.className = 'treeTools';
+      tools.id = 'treeTools';
+      tools.innerHTML =
+        `<input id="treeSearch" class="treeSearch" type="search" placeholder="🔍 노드 이름 검색" value="${treeQuery.replace(/"/g, '&quot;')}">
+         <div class="treeFilters" id="treeFilters">
+           <button class="tFilt${treeFilter === 'all' ? ' on' : ''}" data-filt="all">전체</button>
+           <button class="tFilt${treeFilter === 'notable' ? ' on' : ''}" data-filt="notable">◆ 노터블</button>
+           <button class="tFilt${treeFilter === 'keystone' ? ' on' : ''}" data-filt="keystone">★ 키스톤</button>
+           <button class="tFilt${treeFilter === 'socket' ? ' on' : ''}" data-filt="socket">🪬 소켓</button>
+         </div>
+         <div class="treeZoom" id="treeZoom">
+           <button class="tZoom" id="treeZoomOut" ${treeZoom <= 0 ? 'disabled' : ''}>➖</button>
+           <span id="treeZoomVal">${Math.round(TREE_ZOOMS[treeZoom] * 100)}%</span>
+           <button class="tZoom" id="treeZoomIn" ${treeZoom >= TREE_ZOOMS.length - 1 ? 'disabled' : ''}>➕</button>
+           <button class="tZoom" id="treeZoomFit">🗺️ 전체</button>
+         </div>`;
+      body.appendChild(tools);
+
       const wrap = document.createElement('div');
       wrap.className = 'treeWrap';
       wrap.id = 'treeWrap';
       const map = document.createElement('div');
       map.className = 'treeMap';
       map.id = 'treeMap';
-      map.style.width = TREE_W + 'px';
-      map.style.height = TREE_H + 'px';
+      const W = treeW(), H = treeH();
+      map.style.width = W + 'px';
+      map.style.height = H + 'px';
 
-      // 간선 (캔버스 1장)
+      // 간선 (캔버스 1장 — 노드가 290개라도 선은 한 번에 그린다)
       const cv = document.createElement('canvas');
       cv.className = 'treeLinks';
       cv.id = 'treeLinks';
-      cv.width = TREE_W; cv.height = TREE_H;
+      cv.width = W; cv.height = H;
       map.appendChild(cv);
       const g = cv.getContext('2d');
       PASSIVE_LINKS.forEach(([a, b]) => {
         const na = PASSIVE_BY_ID[a], nb = PASSIVE_BY_ID[b];
         if (!na || !nb) return;
         const on = (a === PASSIVE_ROOT || nodeTaken(a)) && (b === PASSIVE_ROOT || nodeTaken(b));
-        g.strokeStyle = on ? '#ffe88a' : 'rgba(180,190,210,0.22)';
-        g.lineWidth = on ? 3 : 2;
+        g.strokeStyle = on ? '#ffe88a' : 'rgba(180,190,210,0.18)';
+        g.lineWidth = on ? 3 : 1.6;
         g.beginPath();
         g.moveTo(treeX(na), treeY(na));
         g.lineTo(treeX(nb), treeY(nb));
         g.stroke();
       });
 
-      // 노드
+      // 노드 — 문서 조각 하나에 모아 한 번만 붙인다 (290개 리플로 방지)
+      const frag = document.createDocumentFragment();
+      const z = TREE_ZOOMS[treeZoom];
+      const hi = treeHighlighting();
+      let matched = 0;
       PASSIVE_NODES.forEach(nd => {
         const b = document.createElement('button');
         const st = nd.kind === 'root' ? 'taken' : nodeState(nd.id);
-        b.className = `tNode k-${nd.kind} s-${st} br-${nd.br}` + (nodePick === nd.id ? ' on' : '');
+        const isHit = hi && treeMatch(nd);
+        if (isHit) matched++;
+        b.className = `tNode k-${nd.kind} s-${st} br-${nd.br}` +
+          (nodePick === nd.id ? ' on' : '') + (isHit ? ' hit' : '') + (hi && !isHit ? ' dimmed' : '');
         b.dataset.node = nd.id;
         b.dataset.kind = nd.kind;
         b.dataset.branch = nd.br;
         b.dataset.state = st;
-        const size = nd.kind === 'keystone' ? 46 : nd.kind === 'notable' ? 36 : 24;
+        if (nd.cluster) b.dataset.cluster = nd.cluster;
+        const base = nd.kind === 'keystone' ? 44 : nd.kind === 'socket' ? 38 : nd.kind === 'notable' ? 32 : 20;
+        const size = Math.max(10, Math.round(base * z));
         b.style.width = size + 'px';
         b.style.height = size + 'px';
         b.style.left = (treeX(nd) - size / 2) + 'px';
         b.style.top = (treeY(nd) - size / 2) + 'px';
-        b.style.borderColor = BRANCH_COLOR[nd.br];
-        // 찍은 노드는 가지 색으로 채우고, 아직이면 글리프만 가지 색으로 남긴다
-        if (st === 'taken') { b.style.background = BRANCH_COLOR[nd.br]; b.style.color = '#0a151c'; }
-        else b.style.color = BRANCH_COLOR[nd.br];
-        b.title = `${nd.name} — ${nd.desc.replace(/<br>/g, ' / ')}`;
-        b.innerHTML = nd.kind === 'keystone' ? '★' : nd.kind === 'notable' ? '◆' : nd.kind === 'root' ? '⬤' : '';
+        b.style.borderColor = BRANCH_COLOR[nd.br] || '#e8e0d0';
+        if (st === 'taken') { b.style.background = BRANCH_COLOR[nd.br] || '#e8e0d0'; b.style.color = '#0a151c'; }
+        else b.style.color = BRANCH_COLOR[nd.br] || '#e8e0d0';
+        b.title = `${nd.name} — ${(nd.desc || '').replace(/<br>/g, ' / ')}`;
+        b.innerHTML = nd.kind === 'keystone' ? '★' : nd.kind === 'socket' ? '🪬'
+          : nd.kind === 'notable' ? '◆' : nd.kind === 'root' ? '⬤' : '';
         if (nd.kind !== 'root') b.addEventListener('click', () => {
           nodePick = (nodePick === nd.id) ? null : nd.id;
           render();
         });
-        map.appendChild(b);
+        frag.appendChild(b);
       });
+      map.appendChild(frag);
       wrap.appendChild(map);
       body.appendChild(wrap);
 
-      // 드래그 패닝 (모바일은 기본 스크롤도 동작)
-      let drag = null;
+      /* ---- 미니 오버뷰 (클러스터 배치도 — 눌러서 그 클러스터로 이동) ---- */
+      const mini = document.createElement('div');
+      mini.className = 'treeMini';
+      mini.id = 'treeMini';
+      const MW = 118, MH = 118;
+      const mx = v => ((v - TREE_MINX) / (TREE_MAXX - TREE_MINX)) * (MW - 14) + 7;
+      const my = v => ((v - TREE_MINY) / (TREE_MAXY - TREE_MINY)) * (MH - 14) + 7;
+      mini.innerHTML =
+        `<i class="miniDot root" style="left:${mx(0)}px;top:${my(0)}px"></i>` +
+        PASSIVE_CLUSTERS.map(c => {
+          const taken = c.nodes.filter(id => nodeTaken(id)).length;
+          return `<i class="miniDot${taken ? ' on' : ''}" data-mini="${c.k}" title="${c.name} (${taken}/${c.nodes.length})"
+            style="left:${mx(c.x)}px;top:${my(c.y)}px;background:${BRANCH_COLOR[c.br] || '#8fa'}"></i>`;
+        }).join('');
+      body.appendChild(mini);
+
+      /* ---- 상호작용 ---- */
+      const scrollToNode = nd => {
+        if (!nd) return;
+        wrap.scrollLeft = Math.max(0, treeX(nd) - wrap.clientWidth / 2);
+        wrap.scrollTop = Math.max(0, treeY(nd) - wrap.clientHeight / 2);
+      };
+      // 드래그 패닝 + 더블탭 줌
+      let drag = null, lastTap = 0;
       wrap.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, l: wrap.scrollLeft, t: wrap.scrollTop, moved: 0 }; });
       wrap.addEventListener('pointermove', e => {
         if (!drag) return;
@@ -916,14 +996,58 @@ function openParty(tab) {
         wrap.scrollTop = drag.t - dy;
       });
       const endDrag = () => { drag = null; };
-      wrap.addEventListener('pointerup', endDrag);
+      wrap.addEventListener('pointerup', e => {
+        const moved = drag && drag.moved > 6;
+        endDrag();
+        if (moved) return;
+        const now = Date.now();
+        if (now - lastTap < 320) {              // 더블탭 = 줌 토글 (전체 ↔ 상세)
+          lastTap = 0;
+          treeZoom = treeZoom === 0 ? TREE_ZOOMS.length - 3 : 0;
+          render();
+          return;
+        }
+        lastTap = now;
+      });
       wrap.addEventListener('pointerleave', endDrag);
       wrap.addEventListener('pointercancel', endDrag);
-      // 처음 열면 시작점이 가운데 오도록
+
+      tools.querySelector('#treeZoomOut').addEventListener('click', () => {
+        if (treeZoom > 0) { treeZoom--; render(); }
+      });
+      tools.querySelector('#treeZoomIn').addEventListener('click', () => {
+        if (treeZoom < TREE_ZOOMS.length - 1) { treeZoom++; render(); }
+      });
+      tools.querySelector('#treeZoomFit').addEventListener('click', () => { treeZoom = 0; render(); });
+      tools.querySelectorAll('[data-filt]').forEach(b => {
+        b.addEventListener('click', () => { treeFilter = b.dataset.filt; render(); });
+      });
+      const search = tools.querySelector('#treeSearch');
+      search.addEventListener('input', () => {
+        treeQuery = search.value.trim();
+        treeSearchFocus = true;
+        render();
+      });
+      mini.querySelectorAll('[data-mini]').forEach(d => {
+        d.addEventListener('click', () => {
+          const c = PASSIVE_CLUSTER_BY_KEY[d.dataset.mini];
+          if (!c) return;
+          nodePick = c.nodes[0] || null;
+          treeFocus = c.nodes[0] || null;
+          render();
+        });
+      });
+
+      // 첫 표시 위치: 검색 첫 매치 > 포커스 노드 > 선택 노드 > 시작점
       setTimeout(() => {
-        const st = PASSIVE_BY_ID[PASSIVE_ROOT];
-        wrap.scrollLeft = Math.max(0, treeX(st) - wrap.clientWidth / 2);
-        wrap.scrollTop = Math.max(0, treeY(st) - wrap.clientHeight / 2);
+        let target = PASSIVE_BY_ID[PASSIVE_ROOT];
+        if (treeFocus && PASSIVE_BY_ID[treeFocus]) { target = PASSIVE_BY_ID[treeFocus]; treeFocus = null; }
+        else if (treeQuery) {
+          const first = PASSIVE_NODES.find(n => treeMatch(n));
+          if (first) target = first;
+        } else if (nodePick && PASSIVE_BY_ID[nodePick]) target = PASSIVE_BY_ID[nodePick];
+        scrollToNode(target);
+        if (treeSearchFocus) { treeSearchFocus = false; try { search.focus(); } catch (e) { /* 무시 */ } }
       }, 0);
 
       // 선택 노드 상세
@@ -934,9 +1058,10 @@ function openParty(tab) {
       if (nd) {
         det.dataset.node = nd.id;
         const st = nodeState(nd.id);
-        const kindName = nd.kind === 'keystone' ? '키스톤' : nd.kind === 'notable' ? '노터블' : '소형';
-        det.innerHTML = `<div class="ndHead"><b style="color:${BRANCH_COLOR[nd.br]}">${nd.name}</b>` +
-          `<em>${BRANCH_NAME[nd.br]} · ${kindName}</em></div><p>${nd.desc}</p>`;
+        const kindName = nd.kind === 'keystone' ? '키스톤' : nd.kind === 'socket' ? '룬 소켓'
+          : nd.kind === 'notable' ? '노터블' : '소형';
+        det.innerHTML = `<div class="ndHead"><b style="color:${BRANCH_COLOR[nd.br] || '#e8e0d0'}">${nd.name}</b>` +
+          `<em>${BRANCH_NAME[nd.br] || '트리'} · ${kindName}</em></div><p>${nd.desc}</p>`;
         const take = document.createElement('button');
         take.className = 'modalBtn';
         take.id = 'nodeTake';
@@ -950,12 +1075,44 @@ function openParty(tab) {
             addSparkle(leader.px, leader.py, '#8fe0ff');
             toast(`🌳 ${nd.name}!`);
             sfx('levelup');
+            treeFocus = nd.id;
             render();
           }
         });
         det.appendChild(take);
+        // 소켓 노드 — 보유한 룬을 끼우고 뺀다
+        if (nd.kind === 'socket' && nodeTaken(nd.id)) {
+          const cur = socketRuneOf(nd.id);
+          const rw = document.createElement('div');
+          rw.className = 'runeRow';
+          rw.id = 'runeRow';
+          rw.dataset.socket = nd.id;
+          RUNE_DEFS.forEach(r => {
+            const avail = runeAvailable(r.k);
+            const on = cur === r.k;
+            const rb = document.createElement('button');
+            rb.className = 'runePick' + (on ? ' on' : '') + (!on && avail <= 0 ? ' dim' : '');
+            rb.dataset.rune = r.k;
+            rb.disabled = !on && avail <= 0;
+            rb.innerHTML = `<span class="gIcon">${r.icon}</span><b>${r.name}</b><small>${r.desc}</small><em>×${runeOwned(r.k)}</em>`;
+            rb.addEventListener('click', () => {
+              if (on) unsocketRune(nd.id); else socketRune(nd.id, r.k);
+              render();
+            });
+            rw.appendChild(rb);
+          });
+          det.appendChild(rw);
+          if (!runeTotal()) {
+            const rn = document.createElement('p');
+            rn.className = 'sumHint';
+            rn.id = 'runeNone';
+            rn.textContent = '룬이 없어요 — 환영 안개와 우버 보스에서 얻을 수 있습니다.';
+            det.appendChild(rn);
+          }
+        }
       } else {
-        det.innerHTML = '<p class="sumHint">노드를 눌러 효과를 확인하고 찍으세요. 인접한 노드만 찍을 수 있어요.</p>';
+        det.innerHTML = `<p class="sumHint">노드를 눌러 효과를 확인하고 찍으세요. 인접한 노드만 찍을 수 있어요.` +
+          (treeHighlighting() ? ` <b id="treeHitCount">${matched}개 일치</b>` : '') + `</p>`;
       }
       body.appendChild(det);
 
@@ -974,8 +1131,9 @@ function openParty(tab) {
       const legend = document.createElement('p');
       legend.className = 'sumHint';
       legend.id = 'treeLegend';
-      legend.innerHTML = `소형 ${PASSIVE_TREE.counts.small} · ◆ 노터블 ${PASSIVE_TREE.counts.notable} · ★ 키스톤 ${PASSIVE_TREE.counts.keystone}` +
-        ` — 레벨업마다 포인트 1개!`;
+      legend.innerHTML = `소형 ${PASSIVE_TREE.counts.small} · ◆ 노터블 ${PASSIVE_TREE.counts.notable}` +
+        ` · ★ 키스톤 ${PASSIVE_TREE.counts.keystone} · 🪬 소켓 ${PASSIVE_TREE.counts.socket}` +
+        ` — 레벨업 +1 · 깊이 ${DEPTH_MILESTONES.join('/')} 최초 도달 +${DEPTH_MILESTONE_PTS} · 우버 처치 +${UBER_KILL_PTS}`;
       body.appendChild(legend);
     };
 
@@ -1537,15 +1695,19 @@ function activeBoss() {
 function bossBarInfo() {
   const b = activeBoss();
   if (!b) return null;
-  const def = (typeof BOSSES !== 'undefined' && BOSSES[b.type]) || null;
+  // M7c 우버 보스는 전용 이름/아이콘/기믹과 페이즈 표기를 쓴다
+  const ub = (b.uber && typeof UBER_BOSSES !== 'undefined') ? UBER_BOSSES[b.uber] : null;
+  const def = ub || (typeof BOSSES !== 'undefined' && BOSSES[b.type]) || null;
   const segs = b.heads
     ? b.heads.map(h => ({ name: h.name, ratio: clamp(h.hp / h.maxHp, 0, 1), hp: Math.max(0, Math.ceil(h.hp)), maxHp: h.maxHp, dead: h.hp <= 0 }))
     : [{ name: '', ratio: clamp(b.hp / b.maxHp, 0, 1), hp: Math.max(0, Math.ceil(b.hp)), maxHp: Math.ceil(b.maxHp), dead: false }];
   return {
-    type: b.type,
-    name: MONSTER_KO[b.type] || (def && def.name) || '보스',
+    type: ub ? 'uber_' + ub.k : b.type,
+    uber: ub ? ub.k : null,
+    phase: ub ? (b.phase || 1) : 0,
+    name: ub ? ub.name : (MONSTER_KO[b.type] || (def && def.name) || '보스'),
     icon: (def && def.icon) || '👑',
-    gimmick: (def && def.gimmick) || '',
+    gimmick: ub ? `P${b.phase || 1} · ${(ub.phases[(b.phase || 1) - 1] || ub.gimmick)}` : ((def && def.gimmick) || ''),
     hp: Math.max(0, Math.ceil(b.hp)), maxHp: Math.ceil(b.maxHp),
     ratio: clamp(b.hp / b.maxHp, 0, 1),
     enraged: !!b.enraged, invuln: !!b.invuln,
@@ -1610,6 +1772,7 @@ function updateHud() {
   el('recLv').textContent = 3;
   updateBuffBar();
   updateBossBar();
+  updateDeliriumHud();        // M7c 환영 안개 게이지
   syncTopHud();               // 좁은 폭에서 좌상단 줄 아래 요소들을 밀어 준다
   updatePartyBadge();
   checkGoldHint();
@@ -1638,6 +1801,26 @@ function updateDarkHud() {
   el('flareVal').textContent = String(state.flares);
   fbtn.disabled = state.flares <= 0;
 }
+/* ---- M7c 환영 안개 HUD ----
+ * 안개가 도는 동안만 보이고, 보상 게이지(5단계)와 처치 수를 보여 준다. */
+function updateDeliriumHud() {
+  const panel = el('deliriumPanel'), fog = el('delFog');
+  if (!panel || !fog) return;
+  const info = (typeof deliriumInfo === 'function') ? deliriumInfo() : null;
+  const on = !!(info && info.active);
+  panel.classList.toggle('hidden', !on);
+  fog.classList.toggle('hidden', !on);
+  if (!on) return;
+  el('delTier').textContent = `${info.tier}/${DELIRIUM_TIER_MAX}`;
+  el('delKills').textContent = `☠ ${info.kills}` + (info.next ? ` / ${info.next}` : '');
+  const cur = info.tier > 0 ? DELIRIUM_TIERS[info.tier - 1].n : 0;
+  const nx = info.next || cur;
+  const pct = info.next ? clamp((info.kills - cur) / Math.max(1, nx - cur) * 100, 0, 100) : 100;
+  el('delGauge').style.width = pct + '%';
+  // 안개가 짙어질수록 화면 오버레이도 진해진다
+  fog.style.opacity = String(clamp(0.35 + (info.dps / DELIRIUM_DPS_CAP) * 0.5, 0.3, 0.9));
+}
+
 /* ---- 좁은 폭 HUD 재배치 ----
  * 좌상단 줄(Lv/골드/◆)이 줄바꿈되면 그 아래 요소들이 겹치므로,
  * 실제 높이를 재서 버프 칩 줄 → 보스 HP 바 → 탈출 버튼 순으로 내려 준다.

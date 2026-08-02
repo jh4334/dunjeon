@@ -94,6 +94,11 @@ const state = {
   gemLoadout: {},                          // { charId: { skill, support, support2 } }  (M7b: 서포트 2칸)
   passivePts: 0,                           // 미사용 패시브 포인트
   passiveNodes: [],                        // M3.5b — 찍은 트리 노드 id 목록
+  // M7c — 룬(보유 수) / 소켓 노드에 끼운 룬 / 환영 파편 / 깊이 마일스톤 수령 기록
+  runes: {},
+  sockets: {},
+  fragments: 0,
+  uberTickets: 0,
   newGems: 0,                              // 획득 후 아직 파티 화면에서 확인하지 않은 젬 수 (뱃지용)
   // 리뷰 4차 — 설정 / 온보딩 힌트 (둘 다 저장에 포함)
   // M5: bgm(배경음) · speed2x(전투 속도 2배) · noDmgNum(데미지 숫자 끄기) 추가.
@@ -419,7 +424,9 @@ function bumpTree() { treeVer++; treeCache = null; }
 
 const TREE_STAT_KEYS = ['dmg', 'hp', 'crit', 'gold', 'gem', 'az', 'dr', 'tgCut', 'darkRes',
   'speed', 'atkSpd', 'leech', 'minion', 'proj', 'aura', 'mining', 'shop', 'shield', 'revive',
-  'sight', 'execute', 'unyielding'];
+  'sight', 'execute', 'unyielding',
+  // M7c 신규 — 치명타 피해 / 원소 피해 / 도트 피해
+  'critDmg', 'elem', 'dot'];
 function treeStats() {
   if (treeCache && treeCache.ver === treeVer) return treeCache.s;
   const s = { keys: {} };
@@ -429,6 +436,11 @@ function treeStats() {
     if (!n) return;
     for (const k in n.mods) s[k] = (s[k] || 0) + n.mods[k];
     if (n.kind === 'keystone' && n.key) s.keys[n.key] = 1;
+    // M7c 룬 소켓 — 찍은 소켓 노드에 끼워 둔 룬의 효과가 그대로 더해진다
+    if (n.kind === 'socket') {
+      const r = RUNE_BY_KEY[(state.sockets || {})[n.id]];
+      if (r) for (const k in r.mods) s[k] = (s[k] || 0) + r.mods[k];
+    }
   });
   treeCache = { ver: treeVer, s };
   return s;
@@ -482,6 +494,9 @@ function pruneOrphans() {
     state.passivePts += lost;
     bumpTree();
   }
+  // 소켓 노드가 떨어져 나갔으면 끼워 둔 룬도 빠진다 (룬 자체는 계속 보유)
+  ensureRunes();
+  SOCKET_IDS.forEach(id => { if (state.sockets[id] && !nodeTaken(id)) state.sockets[id] = null; });
   return lost;
 }
 /* 리스펙 — 골드 50 × 찍은 노드 수로 전체 초기화 */
@@ -495,6 +510,8 @@ function respecTree() {
   state.gold -= cost;
   state.passiveNodes = [];
   state.passivePts += n;
+  ensureRunes();
+  SOCKET_IDS.forEach(id => { state.sockets[id] = null; });   // 룬은 그대로 보관, 장착만 해제
   bumpTree();
   party.forEach(m => { m.hp = Math.min(m.hp, maxHp(m)); });
   updatePartyBadge();
@@ -538,23 +555,127 @@ Object.defineProperty(state, 'passives', {
   enumerable: true, configurable: true,
 });
 
+/* =====================================================================
+ * M7c — 룬 / 소켓
+ * 룬은 런 중에 드랍되는 새 재화다. 트리의 소켓 노드(4개)에 끼우면 그 효과가
+ * treeStats() 에 그대로 더해진다 — "노드 효과를 내 손으로 정하는" 자리.
+ * =================================================================== */
+function ensureRunes() {
+  if (!state.runes || typeof state.runes !== 'object') state.runes = {};
+  if (!state.sockets || typeof state.sockets !== 'object') state.sockets = {};
+  return state.runes;
+}
+function runeOwned(k) { ensureRunes(); return Math.max(0, Math.floor(state.runes[k] || 0)); }
+function runesSocketed(k) {
+  ensureRunes();
+  return SOCKET_IDS.filter(id => state.sockets[id] === k).length;
+}
+function runeAvailable(k) { return runeOwned(k) - runesSocketed(k); }
+function runeTotal() { ensureRunes(); return RUNE_KEYS.reduce((a, k) => a + runeOwned(k), 0); }
+function giveRune(k, n) {
+  if (!RUNE_BY_KEY[k]) return 0;
+  ensureRunes();
+  const v = Math.max(1, Math.floor(n) || 1);
+  state.runes[k] = runeOwned(k) + v;
+  saveDirty = true;
+  return state.runes[k];
+}
+function rollRuneKey() { return RUNE_KEYS[Math.floor(Math.random() * RUNE_KEYS.length)]; }
+/* 소켓에 룬을 끼운다 — 소켓 노드를 찍어 두어야 하고, 남는 룬이 있어야 한다 */
+function socketRune(sid, k) {
+  ensureRunes();
+  if (SOCKET_IDS.indexOf(sid) < 0 || !RUNE_BY_KEY[k]) return false;
+  if (!nodeTaken(sid)) return false;
+  if (state.sockets[sid] === k) return false;
+  if (runeAvailable(k) <= 0) return false;
+  const before = party.map(m => maxHp(m));
+  state.sockets[sid] = k;
+  bumpTree();
+  party.forEach((m, i) => { if (!m.down) m.hp += Math.max(0, maxHp(m) - before[i]); });
+  saveDirty = true;
+  return true;
+}
+function unsocketRune(sid) {
+  ensureRunes();
+  if (!state.sockets[sid]) return false;
+  state.sockets[sid] = null;
+  bumpTree();
+  party.forEach(m => { m.hp = Math.min(m.hp, maxHp(m)); });
+  saveDirty = true;
+  return true;
+}
+function socketRuneOf(sid) { ensureRunes(); return state.sockets[sid] || null; }
+
+/* =====================================================================
+ * M7c — 패시브 포인트 공급 확장
+ * 레벨업 1pt(기존) + 깊이 마일스톤 최초 도달 +2pt + 우버 보스 처치 +3pt.
+ * 5배로 커진 트리를 채울 동기를 주되, 마일스톤은 '최초 1회'라 무한 수급이 아니다.
+ * =================================================================== */
+const DEPTH_MILESTONES = [5, 10, 15, 20, 25, 30];
+const DEPTH_MILESTONE_PTS = 2;
+const UBER_KILL_PTS = 3;
+function milestonesGot() {
+  const r = state.records || (state.records = {});
+  if (!Array.isArray(r.depthMs)) r.depthMs = [];
+  return r.depthMs;
+}
+/* 깊이 d 에 도달했다 — 아직 못 받은 마일스톤을 전부 지급하고 지급한 포인트 수를 돌려준다 */
+function grantDepthMilestones(d) {
+  const got = milestonesGot();
+  const v = Math.floor(d) || 0;
+  let pts = 0;
+  DEPTH_MILESTONES.forEach(ms => {
+    if (v < ms || got.indexOf(ms) >= 0) return;
+    got.push(ms);
+    state.passivePts += DEPTH_MILESTONE_PTS;
+    pts += DEPTH_MILESTONE_PTS;
+    saveDirty = true;
+    if (typeof toast === 'function') toast(`🌳 깊이 ${ms} 최초 도달 — 패시브 포인트 +${DEPTH_MILESTONE_PTS}!`);
+  });
+  if (pts && typeof updatePartyBadge === 'function') updatePartyBadge();
+  return pts;
+}
+function grantPassivePts(n, why) {
+  const v = Math.max(0, Math.floor(n) || 0);
+  if (!v) return 0;
+  state.passivePts += v;
+  saveDirty = true;
+  if (why && typeof toast === 'function') toast(`🌳 ${why} — 패시브 포인트 +${v}!`);
+  if (typeof updatePartyBadge === 'function') updatePartyBadge();
+  return v;
+}
+
 /* ---- 트리 효과 → 게임 수치 ---- */
-function passiveDmgMult()   { return (1 + treeStats().dmg / 100) * (hasKeystone('glass') ? 1.4 : 1); }
-function passiveCrit()      { return treeStats().crit / 100; }
+function passiveDmgMult()   {
+  return (1 + treeStats().dmg / 100) * (hasKeystone('glass') ? 1.4 : 1) *
+         (hasKeystone('warlord') ? 0.6 : 1) * (hasKeystone('bloodmagic') ? 1.35 : 1);
+}
+// 원소 과부하 — 치명타가 아예 발생하지 않는다
+function passiveCrit()      { return hasKeystone('overload') ? 0 : treeStats().crit / 100; }
+// 치명타 피해 가산 (기본 ×2 위에 더해진다) — 일격필살은 +100%
+function passiveCritDmg()   { return treeStats().critDmg / 100 + (hasKeystone('assassin') ? 1 : 0); }
+// 원소(젬 스킬) 피해 배율 — 원소 과부하 +50%
+function passiveElemMult()  { return (1 + treeStats().elem / 100) * (hasKeystone('overload') ? 1.5 : 1); }
+// 도트(중독/화상/출혈) 피해 배율
+function passiveDotMult()   { return 1 + treeStats().dot / 100; }
 function hasExecute()       { return treeStats().execute > 0; }
-function passiveHpMult()    { return 1 + treeStats().hp / 100; }
+// 유리 신체 — 실드가 2배가 되는 대신 최대 체력이 30% 깎인다
+function passiveHpMult()    { return (1 + treeStats().hp / 100) * (hasKeystone('glassbody') ? 0.7 : 1); }
 function passiveDR()        { return clamp(treeStats().dr / 100, 0, 0.9); }
 function hasUnyielding()    { return treeStats().unyielding > 0; }
 function passiveGoldMult()  { return (1 + treeStats().gold / 100) * (hasKeystone('wealth') ? 1.5 : 1); }
 function passiveAzMult()    { return (1 + treeStats().az / 100) * (hasKeystone('wealth') ? 1.5 : 1); }
-function passiveSpeedMult() { return (1 + treeStats().speed / 100) * (hasKeystone('steel') ? 0.85 : 1) * (hasKeystone('haste') ? 1.2 : 1); }
+function passiveSpeedMult() { return (1 + treeStats().speed / 100) * (hasKeystone('steel') ? 0.85 : 1) * (hasKeystone('haste') ? 1.2 : 1) * (hasKeystone('miner') ? 0.9 : 1); }
 function passiveSight()     { return treeStats().sight; }
 // 받는 피해 배율 (유리 대포 / 강철 심장)
 function passiveTakenMult() { return (hasKeystone('glass') ? 1.25 : 1) * (hasKeystone('steel') ? 0.8 : 1); }
 // 공격/시전 쿨 배율
-function passiveCdMult()    { return (1 / (1 + treeStats().atkSpd / 100)) * (hasKeystone('haste') ? 0.8 : 1); }
+function passiveCdMult()    { return (1 / (1 + treeStats().atkSpd / 100)) * (hasKeystone('haste') ? 0.8 : 1) * (hasKeystone('assassin') ? 1 / 0.7 : 1); }
 function passiveGemCdMult() { return hasKeystone('blood') ? 0.7 : 1; }
-function passiveHealMult()  { return hasKeystone('blood') ? 0.5 : 1; }
+// 불사의 서약 — 모든 치유가 무효가 되는 대신 초당 재생을 얻는다 (updateCombat 이 굴린다)
+function passiveHealMult()  { return hasKeystone('undying') ? 0 : (hasKeystone('blood') ? 0.5 : 1); }
+const UNDYING_REGEN = 0.03;              // 초당 최대 체력 3%
+function passiveRegenRate() { return hasKeystone('undying') ? UNDYING_REGEN : 0; }
 function passiveGemMul()    { return 1 + treeStats().gem / 100; }
 function passiveTgCut()     { return clamp(treeStats().tgCut / 100, 0, 0.9); }
 function passiveDarkRes()   { return clamp(treeStats().darkRes / 100, 0, 0.9); }
@@ -564,14 +685,26 @@ function passiveProjMult()  { return 1 + treeStats().proj / 100; }
 function passiveAuraMult()  { return 1 + treeStats().aura / 100; }
 function passiveMiningMult(){ return 1 + treeStats().mining / 100; }
 function passiveShopMult()  { return clamp(1 - treeStats().shop / 100, 0.3, 1); }
-function passiveShieldMult(){ return 1 + treeStats().shield / 100; }
+function passiveShieldMult(){ return (1 + treeStats().shield / 100) * (hasKeystone('glassbody') ? 2 : 1); }
 function passiveReviveMult(){ return 1 + treeStats().revive / 100; }
 // 텔레그래프 예고 시간 (시간 가속 = 절반)
 function passiveTelegraphMult() { return hasKeystone('haste') ? 0.5 : 1; }
 // 몬스터 최대 HP (부의 화신 = +15%)
 function passiveMonHpMult() { return hasKeystone('wealth') ? 1.15 : 1; }
-// 고독한 사냥꾼 — 리더 +60% / 파티원 -20%
-function loneMult(m) { return hasKeystone('lone') ? (m === leader ? 1.6 : 0.8) : 1; }
+// 고독한 사냥꾼 — 리더 +60% / 파티원 -20% · 결속의 진형 — 그 반대 (파티원 +30% / 리더 -30%)
+function loneMult(m) {
+  const lone = hasKeystone('lone') ? (m === leader ? 1.6 : 0.8) : 1;
+  const ph = hasKeystone('phalanx') ? (m === leader ? 0.7 : 1.3) : 1;
+  return lone * ph;
+}
+/* 부동심 — 멈춰 있으면 받는 피해 -40%, 이동 중에는 +15% */
+const BASTION_STILL = 0.6, BASTION_MOVE = 1.15;
+function bastionMult(m) {
+  if (!hasKeystone('bastion')) return 1;
+  return (m && m.moving) ? BASTION_MOVE : BASTION_STILL;
+}
+/* 광부의 집념 — 어둠 게이지 면역 */
+function darkImmune() { return hasKeystone('miner'); }
 
 // 광부의 헬멧 램프(아주라이트 강화) — 레벨당 시야 +0.5
 function lampSight()       { return 0.5 * mineLv('lamp'); }
@@ -877,6 +1010,7 @@ const SAVE_KNOWN_KEYS = [
   'roster', 'partyIds', 'passiveNodes', 'passiveLegacy',
   'classId', 'gems', 'gemLoadout', 'passivePts', 'passives',
   'newGems', 'settings', 'hints',
+  'runes', 'sockets', 'fragments', 'uberTickets',  // M7c 룬/소켓/환영 파편/우버 입장권
   'equipment', 'inventory', 'newItems',            // items.js
   'achv', 'codex', 'weeklyDepth', 'title',         // meta.js
 ];
@@ -999,7 +1133,23 @@ function sanitizeSave(s) {
   out.gems = Array.isArray(out.gems) ? out.gems.filter(g => !!GEM_BY_KEY[g]) : [];
   out.passiveNodes = Array.isArray(out.passiveNodes) ? out.passiveNodes.slice() : [];
   out.passivePts = (typeof out.passivePts === 'number' && isFinite(out.passivePts))
-    ? clamp(Math.floor(out.passivePts), 0, 999) : null;
+    ? clamp(Math.floor(out.passivePts), 0, 9999) : null;
+  /* M7c — 룬 보유 / 소켓 장착 / 환영 파편 */
+  const rn = {};
+  if (out.runes && typeof out.runes === 'object') {
+    RUNE_KEYS.forEach(k => {
+      const v = clamp(Math.floor(num(out.runes[k], 0)), 0, 9999);
+      if (v > 0) rn[k] = v;
+    });
+  }
+  out.runes = rn;
+  const sk = {};
+  if (out.sockets && typeof out.sockets === 'object') {
+    SOCKET_IDS.forEach(id => { if (RUNE_BY_KEY[out.sockets[id]]) sk[id] = out.sockets[id]; });
+  }
+  out.sockets = sk;
+  out.fragments = clamp(Math.floor(num(out.fragments, 0)), 0, 9e9);
+  out.uberTickets = clamp(Math.floor(num(out.uberTickets, 0)), 0, 999);
   const set = {};
   Object.keys(state.settings).forEach(k => {
     if (out.settings && typeof out.settings[k] === 'boolean') set[k] = out.settings[k];
@@ -1110,10 +1260,24 @@ function loadSave() {
       ? Math.max(0, state.lv - 1 - passiveSpent())      // 구 세이브 소급 지급
       : sv.passivePts;
 
+    /* M7c — 룬 / 소켓 / 환영 파편 (구 세이브에는 없다 → 빈 값) */
+    state.runes = {};
+    RUNE_KEYS.forEach(k => { if (sv.runes[k] > 0) state.runes[k] = sv.runes[k]; });
+    state.sockets = {};
+    SOCKET_IDS.forEach(id => { state.sockets[id] = null; });
+    Object.keys(sv.sockets).forEach(id => {
+      // 소켓 노드를 찍지 않았거나 보유하지 않은 룬이면 장착을 버린다
+      if (nodeTaken(id) && runeOwned(sv.sockets[id]) > 0) state.sockets[id] = sv.sockets[id];
+    });
+    state.fragments = sv.fragments;
+    state.uberTickets = sv.uberTickets;
     Object.keys(sv.settings).forEach(k => { state.settings[k] = sv.settings[k]; });
     state.hints = Object.assign({}, sv.hints);
     state.newGems = sv.newGems;
   }
+  ensureRunes();
+  SOCKET_IDS.forEach(id => { if (state.sockets[id] === undefined) state.sockets[id] = null; });
+  bumpTree();
   // 편성 반영 (party 슬롯에 캐릭터를 입힌다)
   applyPartyIds(true);
   // 세이브 유무와 무관하게 로드아웃 골격을 보장
@@ -1142,6 +1306,9 @@ function savePayload() {
     passivePts: state.passivePts, passives: state.passives,
     // 리뷰 4차
     newGems: state.newGems, settings: state.settings, hints: state.hints,
+    // M7c — 룬 / 소켓 / 환영 파편
+    runes: state.runes, sockets: state.sockets, fragments: state.fragments,
+    uberTickets: state.uberTickets,
   // M2 — 장비 / 인벤토리 (영구 소장) · M4 — 도전 과제 / 도감 / 주간
   }, saveItemsPayload(), saveMetaPayload());
 }

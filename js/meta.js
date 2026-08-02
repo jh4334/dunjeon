@@ -157,8 +157,10 @@ function monsterFloor(floor) { return Math.max(1, (Math.floor(floor) || 1) + wee
  * 3. 저장 골격 보강 (구 세이브 호환)
  * =================================================================== */
 const RECORD_NUM_KEYS = ['veins', 'azurite', 'bestKills', 'kills', 'goldTotal',
-  'bossKills', 'eliteKills', 'flares', 'shopBuys', 'altarUses', 'weeklyBest', 'achvTier'];
-const EVT_KEYS = ['nohitBoss', 'dark8', 'noWipe10'];
+  'bossKills', 'eliteKills', 'flares', 'shopBuys', 'altarUses', 'weeklyBest', 'achvTier',
+  // M7c — 환영 모드 / 파편 누적
+  'deliriumRuns', 'deliriumBest', 'fragTotal'];
+const EVT_KEYS = ['nohitBoss', 'dark8', 'noWipe10', 'delirium5'];
 
 function ensureMeta() {
   if (!state.records || typeof state.records !== 'object') state.records = {};
@@ -170,6 +172,11 @@ function ensureMeta() {
   if (!r.evt || typeof r.evt !== 'object') r.evt = {};
   EVT_KEYS.forEach(k => { if (typeof r.evt[k] !== 'number' || !isFinite(r.evt[k])) r.evt[k] = 0; });
   if (!r.weekly || typeof r.weekly !== 'object') r.weekly = null;
+  // M7c — 깊이 마일스톤 수령 기록 / 우버 전적 (주간과 별개)
+  if (!Array.isArray(r.depthMs)) r.depthMs = [];
+  if (!r.uber || typeof r.uber !== 'object') r.uber = { kills: 0, tries: 0, types: {}, fastest: 0 };
+  ['kills', 'tries', 'fastest'].forEach(k => { if (typeof r.uber[k] !== 'number' || !isFinite(r.uber[k])) r.uber[k] = 0; });
+  if (!r.uber.types || typeof r.uber.types !== 'object') r.uber.types = {};
   if (!state.achv || typeof state.achv !== 'object') state.achv = {};
   const c = state.codex && typeof state.codex === 'object' ? state.codex : (state.codex = {});
   if (!c.mons || typeof c.mons !== 'object') c.mons = {};
@@ -239,6 +246,8 @@ function noteWeeklyRun(week) {
 function codexMonKeys() {
   const out = MONSTER_KEYS.slice();
   BOSS_KEYS.forEach(k => { if (out.indexOf(k) < 0) out.push(k); });
+  // M7c — 우버 보스 2종도 도감에 편입 (일반 보스 도감/과제와는 별도 키)
+  if (typeof uberCodexKeys === 'function') uberCodexKeys().forEach(k => { if (out.indexOf(k) < 0) out.push(k); });
   return out;
 }
 function codexMon(type, n) {
@@ -358,6 +367,20 @@ const ACHIEVEMENTS = [
   { id: 'altar10', cat: 'progress', icon: '🎲', name: '도박꾼', desc: '도박 제단에 10회 바친다', goal: 10, prog: () => R().altarUses },
   { id: 'depth15', cat: 'progress', icon: '🕳️', name: '심연의 끝', desc: '깊이 15에 도달한다', goal: 15, prog: () => Math.max(state.best || 0, R().weeklyBest || 0) },
   { id: 'lv20', cat: 'progress', icon: '📈', name: '숙련자', desc: '레벨 20을 달성한다', goal: 20, prog: () => state.lv },
+  /* ---- M7c 엔드게임 6 ---- */
+  { id: 'uber1', cat: 'combat', icon: '🕳️', name: '우버 도전자', desc: '우버 보스를 처치한다', goal: 1,
+    prog: () => (typeof uberRecords === 'function' ? uberRecords().kills : 0) },
+  { id: 'uberall', cat: 'combat', icon: '☠️', name: '우버 정복', desc: '우버 보스 2종을 모두 처치한다',
+    goal: () => (typeof UBER_KEYS !== 'undefined' ? UBER_KEYS.length : 2),
+    prog: () => (typeof uberRecords === 'function' ? Object.keys(uberRecords().types).length : 0) },
+  { id: 'delirium5', cat: 'progress', icon: '🪞', name: '환영의 끝', desc: '환영 보상 게이지 5단계를 달성한다', goal: 1,
+    prog: () => R().evt.delirium5 },
+  { id: 'frag100', cat: 'collect', icon: '🔮', name: '파편 수집가', desc: '환영 파편을 누적 100개 모은다', goal: 100,
+    prog: () => R().fragTotal },
+  { id: 'tree100', cat: 'build', icon: '🌲', name: '거목', desc: '패시브 노드 100개를 찍는다', goal: 100, prog: () => passiveSpent() },
+  { id: 'runes4', cat: 'build', icon: '🪬', name: '룬 세공사', desc: '룬 소켓 4개를 모두 채운다',
+    goal: () => (typeof SOCKET_IDS !== 'undefined' ? SOCKET_IDS.length : 4),
+    prog: () => (typeof SOCKET_IDS === 'undefined' ? 0 : SOCKET_IDS.filter(id => socketRuneOf(id)).length) },
 ];
 const ACHV_BY_ID = {};
 ACHIEVEMENTS.forEach(a => { ACHV_BY_ID[a.id] = a; });
@@ -586,6 +609,21 @@ function loadMetaSave(s) {
         };
       }
       r.achvTier = clamp(Math.floor(sr.achvTier || 0), 0, ACHV_TIERS.length);
+      /* M7c — 깊이 마일스톤 / 우버 전적 */
+      if (Array.isArray(sr.depthMs)) {
+        r.depthMs = sr.depthMs.filter(d => DEPTH_MILESTONES.indexOf(d) >= 0);
+      }
+      if (sr.uber && typeof sr.uber === 'object') {
+        r.uber.kills = clamp(Math.floor(sr.uber.kills || 0), 0, 9e9);
+        r.uber.tries = clamp(Math.floor(sr.uber.tries || 0), 0, 9e9);
+        r.uber.fastest = clamp(Math.floor(sr.uber.fastest || 0), 0, 9e9);
+        if (sr.uber.types && typeof sr.uber.types === 'object') {
+          UBER_KEYS.forEach(k => {
+            const v = clamp(Math.floor(sr.uber.types[k] || 0), 0, 9e9);
+            if (v > 0) r.uber.types[k] = v;
+          });
+        }
+      }
     }
   }
   weeklyRecord();              // 주가 바뀌었으면 여기서 리셋된다
