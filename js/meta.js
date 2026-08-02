@@ -159,7 +159,9 @@ function monsterFloor(floor) { return Math.max(1, (Math.floor(floor) || 1) + wee
 const RECORD_NUM_KEYS = ['veins', 'azurite', 'bestKills', 'kills', 'goldTotal',
   'bossKills', 'eliteKills', 'flares', 'shopBuys', 'altarUses', 'weeklyBest', 'achvTier',
   // M7c — 환영 모드 / 파편 누적
-  'deliriumRuns', 'deliriumBest', 'fragTotal'];
+  'deliriumRuns', 'deliriumBest', 'fragTotal',
+  // M8a — 제작 재화 사용 횟수 / 타락 횟수
+  'craftUses', 'corruptUses'];
 const EVT_KEYS = ['nohitBoss', 'dark8', 'noWipe10', 'delirium5'];
 
 function ensureMeta() {
@@ -378,6 +380,13 @@ const ACHIEVEMENTS = [
   { id: 'frag100', cat: 'collect', icon: '🔮', name: '파편 수집가', desc: '환영 파편을 누적 100개 모은다', goal: 100,
     prog: () => R().fragTotal },
   { id: 'tree100', cat: 'build', icon: '🌲', name: '거목', desc: '패시브 노드 100개를 찍는다', goal: 100, prog: () => passiveSpent() },
+  /* ---- M8a 제작 3종 ---- */
+  { id: 'craft1', cat: 'build', icon: '⚒️', name: '첫 제작', desc: '제작 재화를 처음 사용한다', goal: 1,
+    prog: () => R().craftUses },
+  { id: 'craft25', cat: 'build', icon: '🔨', name: '장인의 손', desc: '제작 재화를 누적 25회 사용한다', goal: 25,
+    prog: () => R().craftUses },
+  { id: 'corrupt10', cat: 'build', icon: '☠️', name: '타락에 손대다', desc: '타락의 오브를 10회 사용한다', goal: 10,
+    prog: () => R().corruptUses },
   { id: 'runes4', cat: 'build', icon: '🪬', name: '룬 세공사', desc: '룬 소켓 4개를 모두 채운다',
     goal: () => (typeof SOCKET_IDS !== 'undefined' ? SOCKET_IDS.length : 4),
     prog: () => (typeof SOCKET_IDS === 'undefined' ? 0 : SOCKET_IDS.filter(id => socketRuneOf(id)).length) },

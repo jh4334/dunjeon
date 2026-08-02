@@ -261,6 +261,28 @@ window.GAME = {
   onUberCrystalBreak, onUberDefeated, enterUber, uberEscape, uberActiveRun,
   openUberGate, openUberResult,
   UBER_UNIQUE_KEYS, DROP_UNIQUES, uniqueTakenMul, uniqueMiningMul,
+
+  /* ==== M8a: 접두/접미 · 티어 · 시드 · 제작 재화 · 스탯 브레이크다운 ==== */
+  // 접사 구조
+  AFFIX_KINDS, AFFIX_KIND_NAME, PREFIX_POOL, SUFFIX_POOL, PREFIX_KEYS, SUFFIX_KEYS, AFFIX_TAGS,
+  affixKind, affixGroup, affixesByTag, affixLine, affixTierMark,
+  AFFIX_TIERS, AFFIX_TIER_BY_T, AFFIX_ROLL_LO, AFFIX_ROLL_HI, TIER_MAX, TIER_MIN,
+  tierDef, tiersFor, rollTier, affixCenter, rollTierValue, tierOfValue, makeAffix, rollAffixSet,
+  RARITY_AFFIX_SLOTS, LOCK_MAX, affixSlots, affixSlotMax, countAffixKind, freeSlots, pickAffixFor,
+  itemCorrupted, lockedAffixes, lockCount, sanitizeItem,
+  // 시드 난수
+  mulberry32, rngOf, rngFrom, newSeed, mixSeed, MATH_RNG,
+  // 제작 재화
+  CURRENCIES, CURRENCY_BY_KEY, CURRENCY_KEYS, TAG_CURRENCY_KEYS,
+  CORRUPT_ODDS, CORRUPT_KEYS, CORRUPT_COLOR, IMPLICIT_KEYS, IMPLICIT_MUL, CURSE_MUL,
+  CURRENCY_DROP_P, CURRENCY_SHOP_P,
+  ensureCurrency, currencyOwned, currencyTotal, giveCurrency, spendCurrency,
+  rollCurrencyKey, rollCurrencyDrop, rollMonsterCurrency, currencyGetMsg,
+  currency: () => Object.assign({}, state.currency),
+  craft: craftItem, craftItem, canCraft, craftPreview, craftableItem, craftRng, freeAffixes,
+  destroyItem, deliriumCurrency,
+  // 스탯 브레이크다운
+  STAT_DEFS, STAT_KEYS, statBreakdown, statBreakdownAll,
   // 대사
   CHAR_LINES, PERSONA_DIALOGUE, charLineCount,
   // 리뷰 3차 수정 훅 (텔레그래프 상한 / 기사 스플래시)

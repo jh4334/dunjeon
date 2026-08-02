@@ -244,6 +244,18 @@ function dropRune(px, py) {
   return k;
 }
 
+/* M8a — 환영 정산 제작 재화 (단계 수만큼) */
+function deliriumCurrency(d) {
+  const n = Math.max(0, Math.min(DELIRIUM_TIER_MAX, (d && d.tier) || 0));
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const k = rollCurrencyKey();
+    giveCurrency(k, 1);
+    out.push(k);
+  }
+  return out;
+}
+
 /* ---- 종료 + 정산 ---- */
 function grantDeliriumReward(kind, gx, gy) {
   const wld = state.world;
@@ -289,6 +301,9 @@ function endDelirium(reason) {
   const frag = deliriumFragments(d);
   const lines = d.rewards.map(k => grantDeliriumReward(k));
   addFragments(frag);
+  // M8a — 환영 게이지 단계마다 제작 재화 1개 (안개를 오래 버틸수록 제작 재료가 쌓인다)
+  const cn = deliriumCurrency(d);
+  if (cn.length) lines.push(cn.map(k => `${CURRENCY_BY_KEY[k].icon} ${CURRENCY_BY_KEY[k].name}`).join(' · '));
   // 3단계 이상까지 버텼으면 룬 1개 확정
   if (d.tier >= DELIRIUM_RUNE_TIER) lines.push('🪬 ' + RUNE_BY_KEY[dropRune(leader.px, leader.py)].name);
   if (d.tier >= DELIRIUM_TIER_MAX) noteEvent('delirium5');   // 도전 과제 '환영의 끝'
