@@ -393,7 +393,25 @@ function achvTierFor(n) {
   return cur;
 }
 
-/* 달성 처리 — 토스트 + 팡파레 + 구간 보상 */
+/* 달성 처리 — 토스트 + 팡파레 + 구간 보상
+ * M5: checkAchievements() 로 여러 개가 한꺼번에 달성되면(대형 구세이브 첫 로드 등)
+ *     토스트/효과음이 폭주하므로, 배치 중에는 모아 두었다가 요약 1건만 띄운다. */
+let achvBatch = null;                 // 배치 수집 중이면 배열, 아니면 null
+let achvTierGot = null;               // 배치 중 넘어간 마지막 보상 구간
+function achvAnnounce(list) {
+  if (!list.length) return null;
+  if (typeof sfx === 'function') sfx('levelup');
+  const many = list.length > 1;
+  const msg = many
+    ? `🏆 도전 과제 ${list.length}개 달성!`
+    : `🏆 도전 과제 달성 — ${list[0].icon} ${list[0].name}!`;
+  if (typeof toast === 'function') toast(msg);
+  if (typeof addFloater === 'function' && typeof leader === 'object' && leader) {
+    addFloater(leader.px, leader.py - 74, many ? `🏆 ×${list.length}` : `🏆 ${list[0].name}`, '#ffe88a', 15);
+    if (typeof addSparkle === 'function') addSparkle(leader.px, leader.py, '#ffe88a');
+  }
+  return msg;
+}
 function grantAchv(id) {
   const a = ACHV_BY_ID[id];
   if (!a) return false;
@@ -401,12 +419,8 @@ function grantAchv(id) {
   if (state.achv[id]) return false;
   state.achv[id] = Date.now();
   saveDirty = true;
-  if (typeof toast === 'function') toast(`🏆 도전 과제 달성 — ${a.icon} ${a.name}!`);
-  if (typeof sfx === 'function') sfx('levelup');
-  if (typeof addFloater === 'function' && typeof leader === 'object' && leader) {
-    addFloater(leader.px, leader.py - 74, `🏆 ${a.name}`, '#ffe88a', 15);
-    if (typeof addSparkle === 'function') addSparkle(leader.px, leader.py, '#ffe88a');
-  }
+  if (achvBatch) achvBatch.push(a);           // 일괄 판정 중 — 요약 토스트로 묶는다
+  else achvAnnounce([a]);
   grantAchvTiers();
   return true;
 }
@@ -422,8 +436,10 @@ function grantAchvTiers() {
     got = t;
     saveDirty = true;
   }
-  if (got && typeof toast === 'function') {
-    setTimeout(() => toast(`🎖️ 칭호 획득 — 「${got.title}」 · ◆ ${got.az}`), 900);
+  if (got) {
+    // 배치(일괄 판정) 중이면 마지막 구간 하나만 모아서 알린다
+    if (achvBatch) achvTierGot = got;
+    else if (typeof toast === 'function') setTimeout(() => toast(`🎖️ 칭호 획득 — 「${got.title}」 · ◆ ${got.az}`), 900);
   }
   return got;
 }
@@ -432,6 +448,8 @@ let achvGuard = false;
 function checkAchievements() {
   if (achvGuard) return 0;
   achvGuard = true;
+  const outer = achvBatch;                    // 중첩 호출이면 바깥 배치에 계속 모은다
+  if (!outer) achvBatch = [];
   let n = 0;
   try {
     ensureMeta();
@@ -441,6 +459,16 @@ function checkAchievements() {
       if (achvProgress(a.id) >= a.goal) { if (grantAchv(a.id)) n++; }
     }
   } catch (e) { /* 판정 실패는 게임 진행을 막지 않는다 */ }
+  if (!outer) {
+    const got = achvBatch || [];
+    const tier = achvTierGot;
+    achvBatch = null;
+    achvTierGot = null;
+    achvAnnounce(got);                        // 1개면 개별 안내, 2개 이상이면 "N개 달성!" 하나로
+    if (tier && typeof toast === 'function') {
+      setTimeout(() => toast(`🎖️ 칭호 획득 — 「${tier.title}」 · ◆ ${tier.az}`), 900);
+    }
+  }
   achvGuard = false;
   return n;
 }

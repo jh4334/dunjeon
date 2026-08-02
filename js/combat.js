@@ -199,7 +199,7 @@ function damageMonster(mon, dmg, color, opt) {
   if (!opt.silent) {
     sfx(crit ? 'crit' : 'hit');
     mon.flashT = HIT_FLASH_TIME;              // 피격 흰색 플래시
-    addFloater(mon.px, mon.py - 26, (crit ? '💥' : '') + Math.floor(dmg), crit ? '#ffb347' : (color || '#fff'), crit ? 16 : 13);
+    addFloater(mon.px, mon.py - 26, (crit ? '💥' : '') + Math.floor(dmg), crit ? '#ffb347' : (color || '#fff'), crit ? 16 : 13, true);
   }
   // 패시브 '처형' — 빈사 상태의 적을 즉시 끝낸다
   if (mon.hp > 0 && hasExecute() && mon.hp <= mon.maxHp * 0.1) {
@@ -338,7 +338,7 @@ function damageMember(m, dmg, attacker, opt) {
   onMemberHit(m);                             // 세이나(성기사) 피격 반응
   if (dmg <= 0) return;
   m.hp -= dmg;
-  addFloater(m.px, m.py - 30, String(Math.floor(dmg)), '#ff7a7a', 12);
+  addFloater(m.px, m.py - 30, String(Math.floor(dmg)), '#ff7a7a', 12, true);
   // 가시 갑옷: 받은 피해 일부 반사
   if (attacker && attacker.hp > 0 && relicCount('thorn')) {
     damageMonster(attacker, dmg * 0.2 * relicCount('thorn'), '#8fd0ca');
@@ -458,7 +458,7 @@ function summonSkeleton() { return summonMinionFor(memberWithAbility('minion') |
 function damageMinion(k, dmg) {
   if (k.hp <= 0) return;
   k.hp -= dmg;
-  addFloater(k.px, k.py - 24, String(Math.floor(dmg)), '#ffb3b3', 11);
+  addFloater(k.px, k.py - 24, String(Math.floor(dmg)), '#ffb3b3', 11, true);
   if (k.hp <= 0) {
     k.hp = 0;
     addSparkle(k.px, k.py, '#8a8a96');
@@ -672,7 +672,7 @@ function updateMonsterStatus(mon, dt) {
   mon.dotAcc = (mon.dotAcc || 0) + total;
   mon.dotT = (mon.dotT || 0) + dt;
   if (mon.dotT >= 0.5) {
-    addFloater(mon.px, mon.py - 32, String(Math.max(1, Math.floor(mon.dotAcc))), '#8fe07f', 12);
+    addFloater(mon.px, mon.py - 32, String(Math.max(1, Math.floor(mon.dotAcc))), '#8fe07f', 12, true);
     mon.dotAcc = 0; mon.dotT = 0;
   }
 }

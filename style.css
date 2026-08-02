@@ -849,3 +849,101 @@ html, body {
   .wkGrid { grid-template-columns: 1fr; }
   .codexGrid { grid-template-columns: repeat(auto-fill, minmax(94px, 1fr)); }
 }
+
+/* =====================================================================
+ * M5 — 타이틀 화면 · 코치마크
+ * =================================================================== */
+#titleWrap {
+  position: fixed; inset: 0; z-index: 60;
+  /* auto 마진으로 가운데 정렬한다 — align-items:center 는 내용이 화면보다 길 때
+     위쪽이 잘려 스크롤로도 못 보게 되므로 쓰지 않는다 (가로 모드 대응) */
+  display: flex;
+  padding: 16px;
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(28, 74, 68, 0.55) 0%, rgba(6, 10, 14, 0.92) 62%),
+    linear-gradient(180deg, #0a1418 0%, #060a0e 100%);
+  overflow-y: auto;
+  -webkit-tap-highlight-color: transparent;
+}
+#titleInner {
+  margin: auto;
+  width: 100%; max-width: 420px;
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+  text-align: center;
+}
+/* ---- 로고 — 곡괭이 ⛏️ / 수정 ◆ 장식을 양옆에 둔 CSS 타이포 ---- */
+#titleLogo { display: flex; align-items: center; justify-content: center; gap: 12px; }
+#titleLogo .tlDeco {
+  font-size: 30px; line-height: 1;
+  filter: drop-shadow(0 0 8px rgba(126, 232, 216, .45));
+}
+#titleLogo .tlPick { transform: rotate(-18deg); animation: tlSwing 3.4s ease-in-out infinite; }
+#titleLogo .tlGem { color: #7ec8ff; animation: tlGlow 2.2s ease-in-out infinite; }
+@keyframes tlSwing { 0%, 100% { transform: rotate(-18deg); } 50% { transform: rotate(-4deg); } }
+@keyframes tlGlow { 0%, 100% { opacity: .65; transform: scale(1); } 50% { opacity: 1; transform: scale(1.14); } }
+.tlWords { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.tlKo {
+  font-size: 46px; font-weight: 900; letter-spacing: 6px; line-height: 1;
+  color: #ffe9c0;
+  text-shadow: 0 3px 0 #6b3a1e, 0 5px 14px rgba(0, 0, 0, .8), 0 0 26px rgba(255, 210, 120, .35);
+}
+.tlEn {
+  font-size: 15px; font-weight: 700; letter-spacing: 7px;
+  color: #7ee8d8; text-transform: uppercase;
+  text-shadow: 0 0 10px rgba(126, 232, 216, .5);
+}
+#titleTag { margin: -6px 0 0; font-size: 12px; color: #9dc4c0; letter-spacing: .5px; }
+#titleParty {
+  width: 100%; max-width: 380px; height: auto;
+  image-rendering: pixelated;
+}
+/* ---- 버튼 ---- */
+#titleBtns { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.titleBtn {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  width: 100%; padding: 12px 14px;
+  background: rgba(16, 40, 46, 0.92);
+  border: 2px solid #3f7d76; border-radius: 12px;
+  color: #cfeee9; font-family: inherit; cursor: pointer;
+  transition: transform .08s, border-color .12s, box-shadow .12s;
+}
+.titleBtn b { font-size: 17px; font-weight: 800; color: #eafffb; }
+.titleBtn small { font-size: 11.5px; color: #9dc4c0; }
+.titleBtn.primary { border-color: #ffe88a; background: rgba(34, 62, 58, 0.95); box-shadow: 0 0 16px rgba(255, 232, 138, .22); }
+.titleBtn.primary b { color: #ffe9c0; }
+.titleBtn:focus-visible, .titleBtn:hover { border-color: #7ee8d8; box-shadow: 0 0 14px rgba(126, 232, 216, .4); }
+.titleBtn:active { transform: translateY(1px); }
+.titleBtn.armed { border-color: #ff6b81; background: rgba(74, 29, 34, 0.95); }
+.titleBtn.armed b { color: #ffe3e8; }
+/* ---- 하단 칭호 ---- */
+#titleFoot { margin-top: 2px; }
+#titleRank { font-size: 12.5px; color: #ffd75e; letter-spacing: .5px; }
+#titleRank.none { color: #5d6f74; }
+
+@media (max-height: 620px) {
+  .tlKo { font-size: 34px; }
+  #titleParty { max-width: 300px; }
+  .titleBtn { padding: 9px 12px; }
+}
+
+/* ---------------- 코치마크 (첫 런 가이드 말풍선) ---------------- */
+#coachWrap { position: fixed; inset: 0; z-index: 55; }
+#coachBox {
+  position: absolute; max-width: min(290px, calc(100vw - 24px));
+  padding: 11px 13px 9px;
+  background: rgba(18, 44, 50, 0.97);
+  border: 2px solid #ffe88a; border-radius: 12px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, .6), 0 0 18px rgba(255, 232, 138, .22);
+  color: #eafffb; font-size: 13px; line-height: 1.5;
+  animation: coachPop .18s ease-out;
+}
+@keyframes coachPop { from { opacity: 0; transform: scale(.9); } to { opacity: 1; transform: scale(1); } }
+#coachText b { color: #ffe88a; }
+#coachTap { display: block; margin-top: 6px; font-size: 10.5px; color: #8fb8b2; text-align: right; }
+/* 화살표 — 박스에서 대상 쪽으로 튀어나온 삼각형 */
+#coachArrow { position: absolute; width: 0; height: 0; }
+#coachArrow.dir-down { margin-left: -9px; border-left: 9px solid transparent; border-right: 9px solid transparent; border-top: 11px solid #ffe88a; }
+#coachArrow.dir-up { margin-left: -9px; border-left: 9px solid transparent; border-right: 9px solid transparent; border-bottom: 11px solid #ffe88a; }
+#coachArrow.dir-right { margin-top: -9px; border-top: 9px solid transparent; border-bottom: 9px solid transparent; border-left: 11px solid #ffe88a; }
+#coachArrow.dir-left { margin-top: -9px; border-top: 9px solid transparent; border-bottom: 9px solid transparent; border-right: 11px solid #ffe88a; }
+#coachArrow.dir-none { display: none; }
