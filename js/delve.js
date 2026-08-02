@@ -90,10 +90,10 @@ function finishVein(p) {
     spawnAmbush(leader.gx, leader.gy, irand(4, 7), 2, 4);
     addShake(SHAKE_MAG_SMASH);
     toast('💎 광맥이 무너지며 몬스터가 쏟아진다!');
-    say(party[1], '갱도가 무너져요! 조심해요!');
+    sayEvent('vein_ambush', party[1], { force: true });
   } else {
     toast(`◆ 아주라이트 채굴 — +${fmt(az)} 아주라이트${extra}`);
-    if (Math.random() < .6) say(party[3], '이야, 순도가 장난 아닌데요?');
+    if (Math.random() < .6) sayEvent('mine_done', party[3]);
   }
   return { azurite: az, ambush };
 }
@@ -102,6 +102,8 @@ function updateMining(dt) {
   const wld = state.world;
   if (!wld || wld.mode !== 'dungeon') { miningCur = null; return null; }
   const p = miningTarget();
+  // 새 광맥에 붙었을 때 1회 — 채굴 시작 대사
+  if (p && p !== miningCur && !p.__said) { p.__said = true; sayEvent('mine_start'); }
   miningCur = p;
   if (!p) return null;
   if (leader.moving || state.transitioning) return p;   // 이동 중에는 중단 (진행 보존)
@@ -183,7 +185,7 @@ function applyDarkDamage(d) {
     if (m.down || m.invulnT > 0) return;
     m.hp -= d;
     hit++;
-    if (m.hp <= 0) { m.hp = 0; m.down = true; m.reviveT = 0; say(m, '으윽… 어둠이…'); }
+    if (m.hp <= 0) { m.hp = 0; m.down = true; m.reviveT = 0; sayEvent('dark_down', m, { force: true, allowDown: true }); }
   });
   if (hit) addFloater(leader.px, leader.py - 34, `👁 ${Math.max(1, Math.round(d))}`, '#c08aff', 13);
   if (aliveMembers().length === 0) partyWipe();
@@ -217,7 +219,7 @@ function updateDarkness(dt) {
     state.darkWarned = true;
     sfx('dark');
     toast('👁 어둠이 잠식한다 — 광원으로 피하세요!');
-    say(party[2], '어둠이… 숨을 조여와요!');
+    sayEvent('dark', party[2], { force: true });
   }
   return state.darkStack;
 }
@@ -235,6 +237,7 @@ function useFlare() {
   addFloater(leader.px, leader.py - 50, '🔥 플레어!', '#ffb066', 15);
   addSparkle(leader.px, leader.py, '#ffb066');
   sfx('flare');
+  sayEvent('flare');
   saveDirty = true;
   return true;
 }

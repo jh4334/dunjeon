@@ -138,7 +138,7 @@ function openAltar(altar) {
   const cost = 30 * (wld.floor || 1);
   if (state.gold < cost) {
     toast(`🎲 도박 제단 — 골드가 부족해요 (${fmt(cost)} 필요)`);
-    say(party[3], '지갑이 텅 비었는데요…');
+    sayEvent('no_gold', party[3]);
     return;
   }
   altar.seen = true;                 // 자동 탐험이 같은 제단을 다시 목표로 삼지 않도록
@@ -166,11 +166,11 @@ function openAltar(altar) {
         addSparkle(leader.px, leader.py, '#ffe88a');
         addFloater(leader.px, leader.py - 56, `${o.icon} ${o.name}!`, '#ffe88a', 15);
         toast(`✨ 제단의 축복 — ${o.name} 획득!`);
-        say(leader, '운이 좋았어!');
+        sayEvent('altar_win', leader, { force: true });
       } else {
         spawnAmbush(leader.gx, leader.gy, irand(4, 7), 2, 4);
         toast('💀 제단의 함정! 매복이다!');
-        say(party[1], '속았어요! 몬스터가…!');
+        sayEvent('altar_lose', null, { force: true });
       }
     });
   });
@@ -334,7 +334,7 @@ function openMerchant(p) {
     };
     render();
   });
-  say(party[3], '상인이다! 뭐 좋은 거 없나요?');
+  sayEvent('merchant', party[3], { force: true });
 }
 
 /* =====================================================================

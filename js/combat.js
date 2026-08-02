@@ -39,6 +39,46 @@ function tryLeaderStep(dx, dy) {
   return true;
 }
 
+/* ---- 바닥 회수 1패스 (리더 주변 1칸) — 회수한 개수를 돌려준다 ----
+ * M3.5a: 상자에서 튀어나온 장비가 같은 칸에 떨어지면 1패스에서는 이미 지나친 인덱스라
+ * 다음 걸음까지 남아 있었다. onLeaderArrive 에서 '더 주울 게 없을 때까지' 반복해 즉시 회수한다. */
+function collectItemsNear() {
+  const wld = state.world;
+  if (!wld) return 0;
+  let n = 0;
+  for (let i = wld.items.length - 1; i >= 0; i--) {
+    const it = wld.items[i];
+    if (cheb(it.gx, it.gy, leader.gx, leader.gy) > 1) continue;
+    if (it.type === 'equip') {
+      pickupDrop(it);                                    // M2 장비 — 인벤토리로
+    } else if (it.type === 'potion') {
+      party.forEach(m => {
+        if (!m.down) {
+          m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * 0.25);
+          addSparkle(m.px, m.py, '#ff9eae');
+        }
+      });
+      addFloater(isoX(it.gx, it.gy), isoY(it.gx, it.gy) - 18, '💗 회복!', '#ff9eae', 13);
+      sfx('heal');
+    } else {
+      let g = it.type === 'chest' ? irand(30, 80) : irand(5, 15);
+      g = Math.floor(g * goldMult() * (it.mult || 1));
+      state.gold += g;
+      if (state.run) state.run.goldGained += g;
+      addFloater(isoX(it.gx, it.gy), isoY(it.gx, it.gy) - 18, `+${g}`, '#ffd75e', 14);
+      addSparkle(isoX(it.gx, it.gy), isoY(it.gx, it.gy), '#ffd75e');
+      sfx('gold');
+      if (it.type === 'chest' && Math.random() < .5) sayEvent('treasure', party[3]);
+      // 상자 25% — 장비가 함께 튀어나온다 (같은 칸이면 이어지는 패스에서 바로 줍는다)
+      if (it.type === 'chest' && wld.mode === 'dungeon') rollChestDrop(it.gx, it.gy, wld.floor);
+    }
+    wld.items.splice(i, 1);
+    saveDirty = true;
+    n++;
+  }
+  return n;
+}
+
 function onLeaderArrive() {
   const wld = state.world;
   reveal(wld, leader.gx, leader.gy);
@@ -47,44 +87,15 @@ function onLeaderArrive() {
     const back = trail[0];
     if (back && placeMine(back.x, back.y)) leader.mineCd = 0.9;
   }
-  // 아이템 획득 (리더 주변 1칸)
-  for (let i = wld.items.length - 1; i >= 0; i--) {
-    const it = wld.items[i];
-    if (cheb(it.gx, it.gy, leader.gx, leader.gy) <= 1) {
-      if (it.type === 'equip') {
-        pickupDrop(it);                                    // M2 장비 — 인벤토리로
-      } else if (it.type === 'potion') {
-        party.forEach(m => {
-          if (!m.down) {
-            m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * 0.25);
-            addSparkle(m.px, m.py, '#ff9eae');
-          }
-        });
-        addFloater(isoX(it.gx, it.gy), isoY(it.gx, it.gy) - 18, '💗 회복!', '#ff9eae', 13);
-        sfx('heal');
-      } else {
-        let g = it.type === 'chest' ? irand(30, 80) : irand(5, 15);
-        g = Math.floor(g * goldMult() * (it.mult || 1));
-        state.gold += g;
-        if (state.run) state.run.goldGained += g;
-        addFloater(isoX(it.gx, it.gy), isoY(it.gx, it.gy) - 18, `+${g}`, '#ffd75e', 14);
-        addSparkle(isoX(it.gx, it.gy), isoY(it.gx, it.gy), '#ffd75e');
-        sfx('gold');
-        if (it.type === 'chest' && Math.random() < .5) say(party[3], '오늘 벌이가 쏠쏠한데요?');
-        // 상자 25% — 장비가 함께 튀어나온다 (바닥 드랍이므로 한 칸 더 움직이면 줍는다)
-        if (it.type === 'chest' && wld.mode === 'dungeon') rollChestDrop(it.gx, it.gy, wld.floor);
-      }
-      wld.items.splice(i, 1);
-      saveDirty = true;
-    }
-  }
+  // 아이템 획득 (리더 주변 1칸) — 상자→장비처럼 회수가 회수를 부르므로 소진될 때까지 반복
+  for (let pass = 0; pass < 4 && collectItemsNear(); pass++) ;
   // 가시 함정
   const trap = wld.props.find(p => p.type === 'trap' && p.armed && p.gx === leader.gx && p.gy === leader.gy);
   if (trap) {
     trap.armed = false;
     damageMember(leader, 6 + 4 * (wld.floor || 1));
     addFloater(leader.px, leader.py - 44, '🗡️ 함정!', '#ff7a7a', 14);
-    if (Math.random() < .5) say(leader, '앗, 함정이야!');
+    if (Math.random() < .5) sayEvent('trap', leader);
   }
   // 트리거들
   if (wld.mode === 'overworld' && wld.entrance &&
@@ -122,10 +133,10 @@ function onLeaderArrive() {
       if (Math.random() < 0.4) {
         shrine.cursed = true;
         spawnAmbush(leader.gx, leader.gy, irand(5, 8), 3, 5);
-        say(party[2], '이 샘… 뭔가 이상해요!');
+        sayEvent('shrine_cursed', party[2], { force: true });
         toast('💀 저주받은 샘! 매복이다!');
       } else {
-        say(party[2], '치유의 샘이에요! 다들 이리로!');
+        sayEvent('shrine', party[2], { force: true });
         toast('✨ 치유의 샘 — 파티 회복!');
         sfx('heal');
       }
@@ -243,7 +254,7 @@ function onBossDefeated(mon) {
     wld.stairsPending = null;
   }
   addSparkle(mon.px, mon.py, '#ffd75e');
-  say(leader, '해냈어! 더 깊이 가보자!');
+  sayEvent('boss_clear', leader, { force: true });
   addShake(SHAKE_MAG_BOSS);
   sfx('boss');
   scheduleModal('relic', 700, () => openRelicChoice());
@@ -261,7 +272,7 @@ function checkLevelUp() {
     leveled = true;
     if (state.lv === SUPPORT_LV) toast('💠 서포트 젬 슬롯 해금!');
     addSparkle(leader.px, leader.py, '#ffe88a');
-    say(leader, `레벨 ${state.lv} 달성!`);
+    sayEvent('levelup', leader, { force: true });
     need = xpNeed(state.lv);
   }
   if (!leveled) return;
@@ -303,10 +314,10 @@ function damageMember(m, dmg, attacker, opt) {
   }
   if (m.hp <= 0) {
     m.hp = 0; m.down = true; m.reviveT = 0;
-    say(m, '으윽… 미안해요…');
+    sayEvent('down', m, { force: true, allowDown: true });
     if (aliveMembers().length === 0) partyWipe();
   } else if (m.hp < maxHp(m) * 0.3 && Math.random() < 0.4) {
-    say(m, pick(['아야…!', '너무 아파요…', '살려줘…!']));
+    sayEvent(m.hp < maxHp(m) * 0.15 ? 'lowhp' : 'hurt', m);
   }
 }
 
@@ -335,7 +346,7 @@ function finishArena() {
   wld.props.push({ type: 'stairs', gx: c.x, gy: c.y, solid: false });
   wld.items.push({ type: 'chest', gx: leader.gx, gy: leader.gy });
   toast('🏆 도전방 클리어! 계단이 나타났습니다');
-  say(leader, '전부 쓸어버렸어! 보상을 챙기자!');
+  sayEvent('arena_clear', leader, { force: true });
   addSparkle(leader.px, leader.py, '#ffd75e');
   updateHudMode();
   scheduleModal('relic', 600, () => openRelicChoice('⚔️ 도전방 보상 — 유물을 선택하세요'));
@@ -500,6 +511,68 @@ function updateMines(dt) {
   }
 }
 
+/* ---- M3.5a: 폭탄 투척 ----
+ * 설치형 지뢰는 "적이 밟아야" 터지므로 원거리 적(궁수)이나 도망치는 적에게 약했다.
+ * 사거리 3.5 안에 적이 있으면 폭탄을 던져 0.6초 뒤 착탄 칸을 중심으로 터뜨린다.
+ * 피해/반경은 지뢰와 동일 규칙(1.8배 · 「폭죽 심장」이면 반경 +1)이고 쿨은 근접과 분리된다. */
+const BOMB_RANGE = 3.5;      // 투척 사거리 (체비셰프)
+const BOMB_CD = 1.6;         // 투척 쿨(초) — 근접 공격 쿨과 별개
+const BOMB_FLIGHT = 0.6;     // 비행 시간(초) — 포물선으로 떠올랐다 떨어진다
+const BOMB_MULT = 1.8;       // 지뢰와 동일 배율
+
+// 사거리 안에서 가장 가까운 적 (무적인 적은 뒤로 미룬다 — 분신부터)
+function bombTarget() {
+  const wld = state.world;
+  if (!wld || wld.mode !== 'dungeon') return null;
+  let best = null, bd = 99, bestInv = true;
+  wld.monsters.forEach(mon => {
+    if (mon.hp <= 0) return;
+    const d = cheb(mon.gx, mon.gy, leader.gx, leader.gy);
+    if (d > BOMB_RANGE) return;
+    const inv = !!mon.invuln;
+    if ((bestInv && !inv) || (inv === bestInv && d < bd)) { best = mon; bd = d; bestInv = inv; }
+  });
+  return best;
+}
+function throwBomb(tgt) {
+  const wld = state.world;
+  if (!wld || wld.mode !== 'dungeon') return null;
+  const t = tgt || bombTarget();
+  if (!t || t.hp <= 0) return null;
+  if (!wld.projectiles) wld.projectiles = [];
+  const p = {
+    kind: 'bomb', src: leader,
+    x0: leader.gx, y0: leader.gy, gx: t.gx, gy: t.gy,
+    t: 0, dur: BOMB_FLIGHT, dmg: atkPow(leader) * BOMB_MULT, r: mineBlastR(),
+  };
+  wld.projectiles.push(p);
+  leader.face = (t.gx > leader.gx || t.gy < leader.gy) ? 1 : -1;
+  addFloater(leader.px, leader.py - 46, '💣', '#ff9a5a', 13);
+  sfx('warn');
+  return p;
+}
+// 착탄 — 지뢰와 같은 폭발 규칙 (반경 r · damageMonster 경로 · 팩 어그로)
+function explodeBomb(p) {
+  const wld = state.world;
+  const R = (p.r === undefined ? mineBlastR() : p.r);
+  const wx = isoX(p.gx, p.gy), wy = isoY(p.gx, p.gy);
+  addFloater(wx, wy - 20, '💥 폭발!', '#ff8a4a', 15);
+  addSparkle(wx, wy, '#ff9a5a');
+  addShake(SHAKE_MAG_SMASH);
+  sfx('smash');
+  let hit = 0;
+  wld.monsters.forEach(mon => {
+    if (mon.hp <= 0) return;
+    if (cheb(mon.gx, mon.gy, p.gx, p.gy) > R) return;
+    damageMonster(mon, p.dmg * rand(0.9, 1.1), '#ff9a5a', { src: leader });
+    if (!mon.aggro) aggroPack(wld, mon);
+    hit++;
+  });
+  p.exploded = true;
+  p.hits = hit;
+  return hit;
+}
+
 /* ---- 상태이상 (빙결 슬로우 / 스턴 / 도트) ---- */
 function applySlow(mon, dur) {
   if (!mon || mon.hp <= 0) return;
@@ -639,8 +712,9 @@ function updateHazards(dt) {
   }
 }
 
-/* ---- M3: 투사체(해골 궁수의 화살) ----
- * 0.8초 비행 후 '착탄 칸'에 피해 — 그 사이에 움직이면 회피된다. */
+/* ---- M3: 투사체(해골 궁수의 화살 / M3.5a 폭탄공의 투척 폭탄) ----
+ * 화살은 0.8초 비행 후 '착탄 칸'에 피해 — 그 사이에 움직이면 회피된다.
+ * 폭탄은 0.6초 비행 후 착탄 칸 중심 반경 R 광역 폭발 (지뢰와 동일 규칙). */
 function updateProjectiles(dt) {
   const wld = state.world;
   const list = wld.projectiles;
@@ -650,6 +724,7 @@ function updateProjectiles(dt) {
     p.t += dt;
     if (p.t < p.dur) continue;
     list.splice(i, 1);
+    if (p.kind === 'bomb') { explodeBomb(p); continue; }
     const wx = isoX(p.gx, p.gy), wy = isoY(p.gx, p.gy);
     addSparkle(wx, wy, '#ffd7a0');
     const hit = party.filter(m => !m.down && m.gx === p.gx && m.gy === p.gy);
@@ -738,7 +813,7 @@ function priestHeal(m, mods) {
   } else {
     heal(hurt); n = 1;
   }
-  if (Math.random() < .3) say(m, '잠깐만요, 다친 곳부터 볼게요!');
+  if (Math.random() < .3) sayEvent('heal', m);
   m.atkCd = 3.4 * mods.cd;
   return n;
 }
@@ -752,8 +827,14 @@ function updateClassAbilities(dt) {
   if (leader.summonT === undefined) leader.summonT = 0;
   if (leader.auraT === undefined) leader.auraT = 0;
   if (leader.mineCd === undefined) leader.mineCd = 0;
+  if (leader.bombCd === undefined) leader.bombCd = 0;
   leader.mineCd = Math.max(0, leader.mineCd - dt);
+  leader.bombCd = Math.max(0, leader.bombCd - dt);
 
+  // 폭탄공: 사거리 안에 적이 있으면 폭탄을 던진다 (근접 공격과 쿨 분리)
+  if (cls.k === 'bomber' && !leader.down && leader.bombCd <= 0) {
+    if (throwBomb()) leader.bombCd = BOMB_CD;
+  }
   if (cls.k === 'necro' && !leader.down) {
     leader.summonT -= dt;
     if (leader.summonT <= 0) {
@@ -999,7 +1080,7 @@ function updateCombat(dt) {
       m.gx = leader.gx; m.gy = leader.gy; m.moving = false;
       addSparkle(isoX(m.gx, m.gy), isoY(m.gx, m.gy), '#8dffb0');
       addFloater(isoX(m.gx, m.gy), isoY(m.gx, m.gy) - 40, '✨ 부활!', '#8dffb0', 13);
-      say(priestOk ? party[2] : m, priestOk ? '휴… 이제 괜찮을 거예요.' : '아직… 쓰러질 순 없어…');
+      sayEvent('revive', priestOk ? party[2] : m, { force: true });
     }
   }
 }
@@ -1012,6 +1093,7 @@ function partyWipe() {
     party.forEach(m => addSparkle(m.px, m.py, '#8fe0ff'));
     addFloater(leader.px, leader.py - 60, '🛡️ 불굴!', '#8fe0ff', 16);
     toast('🛡️ 불굴 — 파티가 HP 1로 버텼다!');
+    sayEvent('unyielding', null, { force: true });
     return;
   }
   // 불사조 깃털: 전멸을 1회 무효화

@@ -235,16 +235,17 @@ docs/           # README용 스크린샷
 | # | 파일 | 책임 |
 |---|---|---|
 | 1 | `js/core.js` | 상수(TILE/T/SIGHT…) · 유틸(rand/clamp/iso…) · `state` · 난이도 · 직업/젬/패시브 데이터 · `party`/`leader`/스탯(maxHp/atkPow/goldMult) · 아주라이트 · 타격감 · 이펙트 버퍼 · 세이브(load/save) |
-| 2 | `js/items.js` | 장비 — 슬롯/레어리티/베이스/접사 16종/고유 7종 · 인벤토리(상한 40) · 드랍 테이블 · `equipStat` 합산 캐시 · 직렬화 |
-| 3 | `js/audio.js` | WebAudio SFX 신스 (오실레이터 + 노이즈 + 엔벨로프) |
-| 4 | `js/mapgen.js` | 월드/타일 · 초원 · `BIOMES` · 레이아웃(rooms/cave/mine/arena/운하/용암) · 연결성 · `genFloor`/`populateFloor` · 시야 |
-| 5 | `js/monsters.js` | `makeMonster` · 엘리트 어픽스 · 팩 어그로 · 매복/소환 · 텔레그래프 강타 |
-| 6 | `js/combat.js` | 이동(리더/팔로워) · `updateCombat` · `damageMonster`/`damageMember` · 부활/전멸 · 직업 능력(미니언/지뢰/블레이드 오라) · 상태이상 · 젬/장비 효과 |
-| 7 | `js/delve.js` | 아주라이트 광맥 채굴 · 어둠 게이지 · 플레어 |
-| 8 | `js/world.js` | 맵 전환(`enterDungeon`/`descend`/`escapeDungeon`/정산) · 깊이 선택 · 자동 탐험 |
-| 9 | `js/ui.js` | 모달 시스템 + 큐 · 모든 모달(축복/유물/갈림길/상점/파티/설정/기록판/깊이) · HUD · 토스트 · 힌트 · 뱃지 |
-| 10 | `js/draw.js` | 미니맵 + 렌더링 전부(타일/캐릭터/몬스터/프롭/아이템 빔/이펙트/비네트) |
-| 11 | `js/main.js` | 입력 · 잡담 · 메인 루프 · 부트스트랩 · `window.GAME` 디버그 훅 |
+| 2 | `js/dialogue.js` | 상황별 캐릭터 대사 테이블(44 이벤트 · 354줄) · `sayEvent`/`sayIdle`/`sayBoss` · 캐릭터별 최근 8개 반복 방지 · 이벤트 10초 쿨다운 |
+| 3 | `js/items.js` | 장비 — 슬롯/레어리티/베이스/접사 16종/고유 7종 · 인벤토리(상한 40) · 드랍 테이블 · `equipStat` 합산 캐시 · 직렬화 |
+| 4 | `js/audio.js` | WebAudio SFX 신스 (오실레이터 + 노이즈 + 엔벨로프) |
+| 5 | `js/mapgen.js` | 월드/타일 · 초원 · `BIOMES` · 레이아웃(rooms/cave/mine/arena/운하/용암) · 연결성 · `genFloor`/`populateFloor` · 시야 |
+| 6 | `js/monsters.js` | `makeMonster` · 엘리트 어픽스 · 팩 어그로 · 매복/소환 · 텔레그래프 강타 |
+| 7 | `js/combat.js` | 이동(리더/팔로워) · `updateCombat` · `damageMonster`/`damageMember` · 부활/전멸 · 직업 능력(미니언/지뢰/폭탄 투척/블레이드 오라) · 상태이상 · 젬/장비 효과 |
+| 8 | `js/delve.js` | 아주라이트 광맥 채굴 · 어둠 게이지 · 플레어 |
+| 9 | `js/world.js` | 맵 전환(`enterDungeon`/`descend`/`escapeDungeon`/정산) · 깊이 선택 · 자동 탐험(`autoPlan` 풀 루팅) |
+| 10 | `js/ui.js` | 모달 시스템 + 큐 · 모든 모달(축복/유물/갈림길/상점/파티/설정/기록판/깊이) · HUD · 토스트 · 힌트 · 뱃지 |
+| 11 | `js/draw.js` | 미니맵 + 렌더링 전부(타일/캐릭터/몬스터/프롭/아이템 빔/이펙트/비네트) |
+| 12 | `js/main.js` | 입력 · 잡담 타이머 · 메인 루프 · 부트스트랩 · `window.GAME` 디버그 훅 |
 
 함수 선언은 **파일 안에서만** 호이스팅되므로, 순서를 지켜야 하는 건 *로드 시점에 즉시 평가되는* 참조뿐입니다.
 실제로 걸리는 곳은 세 군데입니다.
@@ -252,6 +253,9 @@ docs/           # README용 스크린샷
 - `items.js` 가 로드 중 `resetEquipment()` 로 `state.equipment` 골격을 만듦 → **core.js 가 먼저**
 - `ui.js` 가 로드 중 `escapeDungeon`(world.js)을 버튼에 바인딩 → **world.js 가 먼저**
 - `draw.js` 가 로드 중 `resize()` 를 실행하고 `el()`(ui.js)을 사용 → **ui.js 가 먼저**
+
+`dialogue.js` 는 로드 시점에 문자열 테이블만 만들고 `state`/`party`/`say` 를 전부 런타임에 쓰므로
+core.js 뒤라면 어디든 무방하지만, 다른 모듈이 `sayEvent()` 를 부른다는 사실이 드러나도록 2번에 둡니다.
 
 상수 테이블과 `state` 는 전부 `core.js` 에 모여 있으므로, 나머지는 core.js 가 1번이라는 것만 지키면 됩니다.
 (`core.js` 의 `maxHp`/`atkPow` 가 `items.js` 의 장비 배율을 부르지만 전부 런타임 호출이라 순서 문제가 없습니다 —

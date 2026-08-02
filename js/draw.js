@@ -508,6 +508,28 @@ function drawProjectiles(offX, offY) {
     const arc = Math.sin(k * Math.PI) * 26;                       // 포물선
     const sy = isoY(fx, fy) + offY - 16 - arc;
     const tx = isoX(p.gx, p.gy) + offX, ty = isoY(p.gx, p.gy) + offY;
+    if (p.kind === 'bomb') {
+      // M3.5a 투척 폭탄 — 높이 떠올랐다 떨어지고, 착탄 반경을 미리 보여준다
+      const R = (p.r === undefined ? 1 : p.r);
+      const by = isoY(fx, fy) + offY - 14 - Math.sin(k * Math.PI) * 46;
+      ctx.globalAlpha = 0.20 + 0.45 * k;
+      ctx.strokeStyle = '#ff9a5a'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(tx, ty, 16 + 26 * R, 8 + 13 * R, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#2b2b33';                                  // 폭탄 몸통
+      ctx.beginPath(); ctx.arc(sx, by, 7.5, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#6a6a78'; ctx.lineWidth = 1.4; ctx.stroke();
+      ctx.strokeStyle = '#b58a5a'; ctx.lineWidth = 1.8;           // 심지
+      ctx.beginPath(); ctx.moveTo(sx + 3, by - 6); ctx.quadraticCurveTo(sx + 9, by - 12, sx + 6, by - 16); ctx.stroke();
+      const fl = 2 + Math.sin(state.time * 30) * 1.1;             // 불꽃
+      ctx.fillStyle = '#ffd166';
+      ctx.beginPath(); ctx.arc(sx + 6, by - 17, fl, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ff8a4a';
+      ctx.beginPath(); ctx.arc(sx + 6, by - 17, fl * 0.55, 0, Math.PI * 2); ctx.fill();
+      return;
+    }
     // 착탄 예고 표시
     ctx.globalAlpha = 0.25 + 0.35 * k;
     ctx.strokeStyle = '#ffd7a0'; ctx.lineWidth = 1.6;
