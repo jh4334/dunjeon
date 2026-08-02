@@ -224,7 +224,8 @@ function showRunSummary(escaped) {
 
 /* ---------------- 자동 탐험 ---------------- */
 let autoPath = null;
-function bfsPath(wld, sx, sy, goalFn) {
+// avoidFn(x, y) 가 true 인 칸은 지나가지 않는다 (해저드 우회용 — 실패하면 호출부가 없는 채로 재시도)
+function bfsPath(wld, sx, sy, goalFn, avoidFn) {
   const w = wld.w, h = wld.h;
   const prev = new Int32Array(w * h).fill(-2);
   const q = [sy * w + sx];
@@ -248,6 +249,7 @@ function bfsPath(wld, sx, sy, goalFn) {
       const ni = ny * w + nx;
       if (prev[ni] !== -2) continue;
       if (!walkable(wld, nx, ny)) continue;
+      if (avoidFn && avoidFn(nx, ny)) continue;
       prev[ni] = cur;
       q.push(ni);
     }
@@ -283,6 +285,18 @@ function autoDodgeStep() {
   if (!tryLeaderStep(best[0], best[1])) return false;
   autoPath = null;
   return true;
+}
+/* ---- M3: 해저드 우회 ----
+ * 독안개 포자·수정 가시 지대·용암 분출구 칸을 지나지 않는 경로를 먼저 찾는다.
+ * 해저드가 없으면 null 을 돌려 기존(무비용) 경로 탐색을 그대로 쓰게 한다. */
+function hazardAvoid(wld) {
+  if (!wld || wld.mode !== 'dungeon') return null;
+  const list = hazardList(wld);
+  if (!list.length) return null;
+  const set = new Set();
+  list.forEach(h => { if (!h.dead) set.add(h.gy * wld.w + h.gx); });
+  if (!set.size) return null;
+  return (x, y) => set.has(y * wld.w + x);
 }
 // 탐험률이 이만큼을 넘으면 남은 frontier 대신 계단(보스)으로 향한다
 const AUTO_RUSH_PCT = 0.92;
@@ -328,7 +342,11 @@ function updateAuto() {
     const dest = autoDest(wld);
     // 이미 목적지 칸에 서 있으면 빈 경로가 나오므로 null 로 정규화한다
     const ok = p => (p && p.length ? p : null);
-    const pathTo = d => ok(bfsPath(wld, leader.gx, leader.gy, (x, y) => x === d.x && y === d.y));
+    // M3: 해저드(독안개 포자·수정 가시·분출구)는 가능하면 우회 — 길이 없으면 그대로 간다
+    const avoid = hazardAvoid(wld);
+    const bfs = goalFn => (avoid ? ok(bfsPath(wld, leader.gx, leader.gy, goalFn, avoid)) : null) ||
+      ok(bfsPath(wld, leader.gx, leader.gy, goalFn));
+    const pathTo = d => bfs((x, y) => x === d.x && y === d.y);
     // 템포: 던전을 92% 이상 봤으면 남은 구석 대신 계단/보스로 (보물방은 100% 회수)
     const pct = wld.walkTotal ? wld.seenCount / wld.walkTotal : 0;
     const rush = wld.mode === 'dungeon' && wld.kind !== 'treasure' && pct >= AUTO_RUSH_PCT;
@@ -337,13 +355,13 @@ function updateAuto() {
       const goals = rushRewards(wld);
       if (goals.length) {
         const set = new Set(goals.map(g => g.y * wld.w + g.x));
-        autoPath = ok(bfsPath(wld, leader.gx, leader.gy, (x, y) => set.has(y * wld.w + x)));
+        autoPath = bfs((x, y) => set.has(y * wld.w + x));
       }
       if (!autoPath && dest) autoPath = pathTo(dest);
     }
     if (!autoPath) {
       const frontier = (x, y) => !wld.seen[idx(wld, x, y)];
-      autoPath = ok(bfsPath(wld, leader.gx, leader.gy, frontier));
+      autoPath = bfs(frontier);
     }
     // 다 봤으면 목적지로 (던전: 계단 또는 보스 / 초원: 입구)
     if (!autoPath && dest) autoPath = pathTo(dest);

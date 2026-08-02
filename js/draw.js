@@ -200,6 +200,12 @@ function drawTiles(offX, offY) {
 }
 
 /* ---- 예고 장판 그리기 ---- */
+// M3: 장판 종류별 색 (강타 / 수정 레이저 / 용암 분출)
+const TG_COLORS = {
+  smash: { fill: '#e02b2b', line: '#ffdc6b' },
+  laser: { fill: '#2bb8e0', line: '#dffaff' },
+  vent:  { fill: '#e06a2b', line: '#ffdc6b' },
+};
 function drawTelegraphs(offX, offY) {
   const wld = state.world;
   if (!wld.telegraphs || !wld.telegraphs.length) return;
@@ -208,13 +214,14 @@ function drawTelegraphs(offX, offY) {
     const p = clamp(tg.t / tg.delay, 0, 1);
     const a = 0.16 + 0.52 * p;                       // 시간이 갈수록 진해진다
     const pulse = 0.7 + 0.3 * Math.sin(state.time * 18);
+    const col = TG_COLORS[tg.kind] || TG_COLORS.smash;
     tg.cells.forEach(c => {
       if (wld.mode === 'dungeon' && !wld.seen[idx(wld, c.x, c.y)]) return;
       const sx = isoX(c.x, c.y) + offX, sy = isoY(c.x, c.y) + offY;
       ctx.globalAlpha = a;
-      drawDiamond(sx, sy, '#e02b2b');
+      drawDiamond(sx, sy, col.fill);
       ctx.globalAlpha = a * pulse;
-      ctx.strokeStyle = '#ffdc6b';
+      ctx.strokeStyle = col.line;
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(sx, sy - TILE_H / 2);
@@ -440,6 +447,88 @@ function drawMine(sx, sy, mine) {
   ctx.restore();
 }
 
+/* ---- M3: 맵 해저드 (용암 분출구 / 독안개 포자 / 수정 가시 지대) ---- */
+function drawHazard(sx, sy, h) {
+  const t = state.time;
+  ctx.save();
+  ctx.translate(sx, sy);
+  if (h.type === 'vent') {
+    const near = clamp(1 - Math.max(0, h.cycle - h.t) / Math.max(0.001, h.cycle), 0, 1);
+    const glow = 0.25 + 0.35 * near + 0.1 * Math.sin(t * 8);
+    ctx.fillStyle = `rgba(255, 110, 40, ${glow})`;
+    ctx.beginPath(); ctx.ellipse(0, 0, 17, 8.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#3a2018';
+    ctx.beginPath(); ctx.ellipse(0, -1, 10, 5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(255, 190, 80, ${0.5 + 0.5 * Math.sin(t * 7)})`;
+    ctx.beginPath(); ctx.ellipse(0, -1, 5.5, 2.8, 0, 0, Math.PI * 2); ctx.fill();
+    if (h.warned) {
+      ctx.fillStyle = '#ffd75e';
+      ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('⚠', 0, -18 - Math.sin(t * 10) * 2);
+    }
+  } else if (h.type === 'spore') {
+    const bob = Math.sin(t * 2.4 + h.gx) * 1.6;
+    ctx.fillStyle = `rgba(120, 220, 120, ${0.16 + 0.06 * Math.sin(t * 3 + h.gy)})`;
+    ctx.beginPath(); ctx.ellipse(0, 0, 15, 7.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#6f8f5a';                                    // 대
+    rr(-1.5, -9 + bob, 3, 8, 1.2);
+    ctx.fillStyle = '#9ad86a';                                    // 갓
+    ctx.beginPath(); ctx.ellipse(0, -10 + bob, 7.5, 4.6, 0, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = '#d9f0b0';
+    ctx.beginPath(); ctx.arc(-2.5, -11 + bob, 1.2, 0, Math.PI * 2); ctx.arc(2, -12 + bob, 1, 0, Math.PI * 2); ctx.fill();
+  } else if (h.type === 'spike') {
+    const fade = clamp(h.life / 3, 0, 1);                          // 마지막 3초는 옅어진다
+    const pulse = 0.55 + 0.25 * Math.sin(t * 6 + h.gx);
+    ctx.globalAlpha = 0.35 + 0.35 * fade;
+    ctx.fillStyle = `rgba(120, 220, 255, ${0.22 * pulse + 0.12})`;
+    ctx.beginPath(); ctx.ellipse(0, 0, 16, 8, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.55 + 0.45 * fade;
+    for (let i = 0; i < 3; i++) {
+      const ox = (i - 1) * 6, hgt = 11 + (i === 1 ? 5 : 0);
+      ctx.fillStyle = i === 1 ? '#bff0ff' : '#7fd8f5';
+      ctx.beginPath();
+      ctx.moveTo(ox - 3.2, 0); ctx.lineTo(ox, -hgt); ctx.lineTo(ox + 3.2, 0);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+/* ---- M3: 투사체(해골 궁수의 화살) — 출발 칸에서 착탄 칸으로 날아간다 ---- */
+function drawProjectiles(offX, offY) {
+  const wld = state.world;
+  const list = wld.projectiles;
+  if (!list || !list.length) return;
+  ctx.save();
+  list.forEach(p => {
+    const k = clamp(p.t / p.dur, 0, 1);
+    const fx = lerp(p.x0, p.gx, k), fy = lerp(p.y0, p.gy, k);
+    const sx = isoX(fx, fy) + offX;
+    const arc = Math.sin(k * Math.PI) * 26;                       // 포물선
+    const sy = isoY(fx, fy) + offY - 16 - arc;
+    const tx = isoX(p.gx, p.gy) + offX, ty = isoY(p.gx, p.gy) + offY;
+    // 착탄 예고 표시
+    ctx.globalAlpha = 0.25 + 0.35 * k;
+    ctx.strokeStyle = '#ffd7a0'; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.ellipse(tx, ty, 13, 6.5, 0, 0, Math.PI * 2); ctx.stroke();
+    // 화살
+    ctx.globalAlpha = 1;
+    const ang = Math.atan2(ty - 20 - sy, tx - sx);
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(ang);
+    ctx.fillStyle = '#c8a06a'; ctx.fillRect(-9, -1, 15, 2);       // 대
+    ctx.fillStyle = '#e8e4da';                                    // 촉
+    ctx.beginPath(); ctx.moveTo(6, -3.4); ctx.lineTo(12, 0); ctx.lineTo(6, 3.4); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#9be8ff';                                    // 깃
+    ctx.beginPath(); ctx.moveTo(-9, -3); ctx.lineTo(-5, 0); ctx.lineTo(-9, 3); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  });
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
 function drawMonster(sx, sy, mon) {
   const t = state.time;
   ctx.save();
@@ -452,11 +541,41 @@ function drawMonster(sx, sy, mon) {
     ctx.fillStyle = `rgba(120, 200, 255, ${0.25 + 0.1 * Math.sin(t * 5)})`;
     ctx.beginPath(); ctx.ellipse(0, -12, 15, 16, 0, 0, Math.PI * 2); ctx.fill();
   }
-  if (mon.elite) {
+  if (mon.elite && !mon.noAura) {
     // 엘리트 오라
     const pulse = .3 + Math.sin(t * 5) * .12;
     ctx.fillStyle = `rgba(200,120,255,${pulse})`;
     ctx.beginPath(); ctx.ellipse(0, 1, 15, 6.5, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  // M3: 주술사 버프 오라 (반경 링) / 버프받은 몬스터 (보라 링)
+  if (mon.type === 'shaman' && mon.hp > 0) {
+    const R = (mon.auraR || 2);
+    ctx.save();
+    ctx.globalAlpha = 0.45 + 0.2 * Math.sin(t * 4);
+    ctx.strokeStyle = '#c07bff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(0, 1, TILE_W / 2 * R * 0.92, TILE_H / 2 * R * 0.92, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+  if (mon.buffT > 0 && mon.type !== 'shaman') {
+    ctx.save();
+    ctx.globalAlpha = 0.55 + 0.25 * Math.sin(t * 8 + mon.gx);
+    ctx.strokeStyle = '#c07bff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(0, 1, 15, 7, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+  // M3: 그림자 군주 무적 (분신 소환 중)
+  if (mon.invuln) {
+    ctx.save();
+    ctx.globalAlpha = 0.35 + 0.2 * Math.sin(t * 6);
+    ctx.strokeStyle = '#dcc8ff'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.ellipse(0, -12, 20, 22, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+  // M3: 자폭 광충 점화 점멸
+  if (mon.blink && mon.fuseT > 0) {
+    const fl = Math.sin(t * 34) > 0 ? 1 : 0.25;
+    ctx.fillStyle = `rgba(255, 90, 60, ${0.35 * fl + 0.15})`;
+    ctx.beginPath(); ctx.ellipse(0, -6, 20, 18, 0, 0, Math.PI * 2); ctx.fill();
   }
   ctx.fillStyle = 'rgba(0,0,0,0.25)';
   ctx.beginPath(); ctx.ellipse(0, 2, 11, 4.5, 0, 0, Math.PI * 2); ctx.fill();
@@ -488,6 +607,114 @@ function drawMonster(sx, sy, mon) {
     ctx.beginPath(); ctx.arc(0, -15, 8, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#ffd75e';
     ctx.beginPath(); ctx.arc(-3, -16, 1.7, 0, Math.PI * 2); ctx.arc(3, -16, 1.7, 0, Math.PI * 2); ctx.fill();
+  } else if (mon.type === 'shaman') {
+    // 주술사 슬라임 — 보라 슬라임 + 지팡이/룬
+    const sq = 1 + Math.sin(t * 5 + mon.gx) * .07;
+    ctx.fillStyle = '#8a5fd0';
+    ctx.beginPath(); ctx.ellipse(0, -8, 12 * sq, 10 / sq, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#c9a4ff';
+    ctx.beginPath(); ctx.ellipse(-3, -12, 4, 3, -.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#2a1a3c';
+    ctx.beginPath(); ctx.arc(-4, -8, 1.8, 0, Math.PI * 2); ctx.arc(4, -8, 1.8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#5a4636'; rr(9, -28, 2.2, 22, 1);              // 지팡이
+    const gl = 0.6 + 0.4 * Math.sin(t * 6);
+    ctx.fillStyle = `rgba(200, 140, 255, ${gl})`;
+    ctx.beginPath(); ctx.arc(10, -29, 4, 0, Math.PI * 2); ctx.fill();
+  } else if (mon.type === 'bugbomb') {
+    // 자폭 광충 — 둥근 몸통 + 심지 + 날개
+    const flap = Math.sin(t * 20) * 4;
+    ctx.fillStyle = '#6b4a2a';
+    ctx.beginPath(); ctx.ellipse(-8, -16, 6, 3 + flap * .2, -.4, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(8, -16, 6, 3 + flap * .2, .4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = mon.fuseT > 0 && Math.sin(t * 34) > 0 ? '#ff7a4a' : '#c25a2a';
+    ctx.beginPath(); ctx.ellipse(0, -11, 9, 8, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ffd75e';
+    ctx.beginPath(); ctx.arc(-3, -12, 1.6, 0, Math.PI * 2); ctx.arc(3, -12, 1.6, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#b58a3a'; ctx.lineWidth = 1.4;               // 심지
+    ctx.beginPath(); ctx.moveTo(0, -19); ctx.quadraticCurveTo(3, -24, 6, -22); ctx.stroke();
+    const sp = 0.5 + 0.5 * Math.sin(t * (mon.fuseT > 0 ? 26 : 8));
+    ctx.fillStyle = `rgba(255, 190, 60, ${0.5 + 0.5 * sp})`;
+    ctx.beginPath(); ctx.arc(6, -22, 1.8 + sp * 1.4, 0, Math.PI * 2); ctx.fill();
+  } else if (mon.type === 'golem') {
+    // 크리스탈 골렘 — 각진 수정 덩어리 몸통
+    const gl = 0.6 + 0.4 * Math.sin(t * 3);
+    ctx.fillStyle = '#3f6b86';
+    ctx.beginPath();
+    ctx.moveTo(-13, -4); ctx.lineTo(-9, -26); ctx.lineTo(9, -26); ctx.lineTo(13, -4);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#6fb8d8';
+    ctx.beginPath();
+    ctx.moveTo(-7, -26); ctx.lineTo(-4, -38); ctx.lineTo(6, -38); ctx.lineTo(9, -26);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = `rgba(190, 245, 255, ${gl})`;                   // 가슴 코어
+    ctx.beginPath();
+    ctx.moveTo(0, -22); ctx.lineTo(5, -15); ctx.lineTo(0, -8); ctx.lineTo(-5, -15);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#dff6ff';                                      // 눈
+    ctx.beginPath(); ctx.arc(-3, -32, 1.8, 0, Math.PI * 2); ctx.arc(3.5, -32, 1.8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#9be8ff';                                      // 어깨 결정
+    ctx.beginPath(); ctx.moveTo(-13, -22); ctx.lineTo(-17, -32); ctx.lineTo(-9, -26); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(13, -22); ctx.lineTo(17, -32); ctx.lineTo(9, -26); ctx.closePath(); ctx.fill();
+  } else if (mon.type === 'hydra') {
+    // 히드라 — 몸통 + 목 3개 (잘린 머리는 그루터기)
+    ctx.fillStyle = '#2f6b5c';
+    ctx.beginPath(); ctx.ellipse(0, -8, 15, 9, 0, 0, Math.PI * 2); ctx.fill();
+    const heads = mon.heads || [];
+    const slots = [[-11, -30], [0, -36], [11, -30]];
+    heads.forEach((h, i) => {
+      const [hx, hy0] = slots[i] || slots[0];
+      const sway = Math.sin(t * 3 + i * 2) * 2;
+      const hy = hy0 + sway;
+      if (h.hp <= 0) {                                             // 잘린 목 — 그루터기
+        ctx.strokeStyle = '#215045'; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(hx * 0.4, -12); ctx.lineTo(hx * 0.7, hy * 0.55); ctx.stroke();
+        ctx.fillStyle = '#8b3a3a';
+        ctx.beginPath(); ctx.arc(hx * 0.7, hy * 0.55, 3, 0, Math.PI * 2); ctx.fill();
+        return;
+      }
+      ctx.strokeStyle = '#3d8a76'; ctx.lineWidth = 5;              // 목
+      ctx.beginPath(); ctx.moveTo(hx * 0.4, -12); ctx.quadraticCurveTo(hx * 0.8, hy * 0.7, hx, hy); ctx.stroke();
+      ctx.fillStyle = h.color || '#5fc0a4';                        // 머리
+      ctx.beginPath(); ctx.ellipse(hx, hy, 6.5, 5, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ffd75e';
+      ctx.beginPath(); ctx.arc(hx - 2, hy - 1, 1.3, 0, Math.PI * 2); ctx.arc(hx + 2, hy - 1, 1.3, 0, Math.PI * 2); ctx.fill();
+    });
+  } else if (mon.type === 'shadow') {
+    // 그림자 군주 — 검보라 로브 + 붉은 눈 (분신은 반투명)
+    if (mon.clone) ctx.globalAlpha = 0.55;
+    if (!mon.noAura) {
+      ctx.fillStyle = `rgba(80, 30, 130, ${0.22 + 0.1 * Math.sin(t * 4)})`;
+      ctx.beginPath(); ctx.ellipse(0, 0, 17, 8, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    const drift = Math.sin(t * 2.2 + mon.gx) * 2;
+    ctx.fillStyle = '#241535';
+    ctx.beginPath();
+    ctx.moveTo(-12, -2 + drift); ctx.quadraticCurveTo(-10, -30 + drift, 0, -34 + drift);
+    ctx.quadraticCurveTo(10, -30 + drift, 12, -2 + drift);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#3c2158';                                     // 후드
+    ctx.beginPath(); ctx.ellipse(0, -28 + drift, 9, 8, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(255, 70, 90, ${0.7 + 0.3 * Math.sin(t * 6)})`;
+    ctx.beginPath(); ctx.arc(-3.2, -28 + drift, 1.8, 0, Math.PI * 2); ctx.arc(3.2, -28 + drift, 1.8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(160, 90, 230, 0.35)';                    // 자락
+    rr(-13, -8 + drift, 26, 8, 4);
+  } else if (mon.type === 'archer') {
+    // 해골 궁수 — 해골 + 활
+    ctx.fillStyle = '#d9d4c8';
+    rr(-6, -18, 12, 9, 3);
+    ctx.fillStyle = '#e8e4da';
+    rr(-8, -30, 16, 14, 5);
+    ctx.fillStyle = '#1c1a22';
+    rr(-5, -26, 3.5, 4.5, 1.5);
+    rr(2, -26, 3.5, 4.5, 1.5);
+    ctx.strokeStyle = '#8a6b45'; ctx.lineWidth = 2;                // 활
+    ctx.beginPath(); ctx.arc(11, -18, 11, -Math.PI * 0.62, Math.PI * 0.62); ctx.stroke();
+    ctx.strokeStyle = '#e8e4da'; ctx.lineWidth = 1;                // 시위
+    ctx.beginPath(); ctx.moveTo(5.5, -25); ctx.lineTo(5.5, -11); ctx.stroke();
+    ctx.fillStyle = '#6b4a2a';                                     // 화살통
+    rr(-13, -26, 4, 12, 1.5);
+    ctx.fillStyle = '#c8a06a';
+    rr(-12.5, -31, 1.6, 6, 0.8); rr(-10.5, -30, 1.6, 5, 0.8);
   } else { // skeleton / lich
     if (mon.type === 'lich') {
       ctx.fillStyle = '#4a2f78';
@@ -552,8 +779,17 @@ function drawMonster(sx, sy, mon) {
     const by = sy - 34 - (mon.scale - 1) * 30;
     ctx.fillStyle = 'rgba(10,25,35,0.8)';
     ctx.fillRect(sx - w / 2, by, w, 4.5);
-    ctx.fillStyle = mon.boss ? '#ffb347' : '#f06a6a';
-    ctx.fillRect(sx - w / 2 + 1, by + 1, (w - 2) * ratio, 2.5);
+    if (mon.heads) {
+      // 히드라: 머리 3개를 분할 표시
+      const seg = (w - 2) / mon.heads.length;
+      mon.heads.forEach((h, i) => {
+        ctx.fillStyle = h.hp > 0 ? (h.color || '#ffb347') : 'rgba(120,60,60,0.6)';
+        ctx.fillRect(sx - w / 2 + 1 + seg * i, by + 1, Math.max(0, seg - 1) * clamp(h.hp / h.maxHp, 0, 1), 2.5);
+      });
+    } else {
+      ctx.fillStyle = mon.boss ? '#ffb347' : '#f06a6a';
+      ctx.fillRect(sx - w / 2 + 1, by + 1, (w - 2) * ratio, 2.5);
+    }
   }
   // 엘리트 어픽스 라벨 (예: "신속한·폭발하는 슬라임")
   if (mon.elite && mon.affixNames && mon.affixNames.length) {
@@ -1185,6 +1421,12 @@ function render() {
     if (wld.mode === 'dungeon' && !wld.seen[idx(wld, it.gx, it.gy)]) return;
     drawList.push({ key: it.gx + it.gy, fn: () => drawItem(isoX(it.gx, it.gy) + offX, isoY(it.gx, it.gy) + offY, it) });
   });
+  // M3 해저드 (바닥 장치 — 타일 순서 그대로)
+  (wld.hazards || []).forEach(h => {
+    if (h.dead) return;
+    if (wld.mode === 'dungeon' && !wld.seen[idx(wld, h.gx, h.gy)]) return;
+    drawList.push({ key: h.gx + h.gy - 0.15, fn: () => drawHazard(isoX(h.gx, h.gy) + offX, isoY(h.gx, h.gy) + offY, h) });
+  });
   // 지뢰 (바닥에 붙어 있으므로 타일 순서 그대로)
   (wld.mines || []).forEach(mn => {
     drawList.push({ key: mn.gx + mn.gy - 0.1, fn: () => drawMine(isoX(mn.gx, mn.gy) + offX, isoY(mn.gx, mn.gy) + offY, mn) });
@@ -1207,6 +1449,7 @@ function render() {
   });
   drawList.sort((a, b) => a.key - b.key);
   drawList.forEach(d => d.fn());
+  drawProjectiles(offX, offY);        // 화살은 모든 것 위로 날아간다
 
   // 반짝이
   sparkles.forEach(s => {
