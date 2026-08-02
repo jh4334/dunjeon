@@ -4,6 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>던전 (DunJeon)</title>
+<!-- PWA: 상대 경로라 GitHub Pages 하위 경로(/dunjeon/)에서도 그대로 동작한다 -->
+<meta name="theme-color" content="#1d4a44">
+<meta name="description" content="파티 4인으로 광산 깊이 내려가는 로그라이트 던전 크롤러">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="던전">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="docs/icon-192.png">
+<link rel="apple-touch-icon" href="docs/icon-192.png">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -93,7 +103,8 @@
       12. world.js    맵 전환(진입/하강/탈출/정산) · 자동 탐험(풀 루팅)
       13. ui.js       모달 · HUD · 토스트 · 힌트 · 편성/트리 UI
       14. draw.js     미니맵 · 렌더링
-      15. main.js     입력 · 잡담 · 메인 루프 · 부트 · window.GAME
+      15. title.js    타이틀 화면 · 첫 런 가이드(코치마크) · service worker 등록
+      16. main.js     입력 · 잡담 · 메인 루프 · 부트 · window.GAME
 
      함수 선언은 파일 안에서만 호이스팅되므로, "로드 시점에 즉시 평가되는"
      참조만 순서를 지키면 된다. 실제로 걸리는 곳은 세 군데:
@@ -123,6 +134,7 @@
 <script src="js/world.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/draw.js"></script>
+<script src="js/title.js"></script>
 <script src="js/main.js"></script>
 </body>
 </html>

@@ -1592,7 +1592,11 @@ function drawBubble(b, offX, offY) {
   ctx.restore();
 }
 
+let renderCount = 0;              // 렌더 프레임 수 (전투 속도 2배가 렌더에 영향을 주지 않는지 검증용)
+let dmgFloaterDraws = 0;          // 실제로 그려진 데미지 숫자 수 (설정 검증용)
+let floaterDraws = 0;             // 데미지가 아닌 플로터(획득/이벤트) 수
 function render() {
+  renderCount++;
   const wld = state.world;
   const W = innerWidth, H = innerHeight;
   // 배경
@@ -1664,8 +1668,11 @@ function render() {
     ctx.fill();
     ctx.globalAlpha = 1;
   });
-  // 데미지 숫자
+  // 데미지 숫자 (설정 '데미지 숫자 표시'를 끄면 dmg 플로터만 숨긴다 — 획득/이벤트 표기는 남는다)
+  const hideDmg = !!(state.settings && state.settings.noDmgNum);
   floaters.forEach(f => {
+    if (hideDmg && f.dmg) return;
+    if (f.dmg) dmgFloaterDraws++; else floaterDraws++;
     const a = 1 - f.t / f.life;
     ctx.globalAlpha = clamp(a * 1.4, 0, 1);
     ctx.font = `bold ${f.size}px sans-serif`;
@@ -1680,6 +1687,58 @@ function render() {
   bubbles.forEach(b => drawBubble(b, offX, offY));
   // 📡 광맥 탐지기 Lv2 — 화면 가장자리에 가장 가까운 광맥 방향 화살표
   drawVeinArrow(offX, offY);
+  // M5 첫 런 가이드 ① — 광산 입구 방향 화살표 (title.js 가 켠다)
+  drawGuideArrow(offX, offY);
+}
+
+/* ---- M5: 첫 런 가이드 ① 이동 안내용 — 초원의 광산 입구를 가리키는 화살표 ----
+ * 화면 안에 있으면 입구 위에 통통 튀는 ▼, 화면 밖이면 가장자리 방향 화살표. */
+let guideArrowShown = false;
+function drawGuideArrow(offX, offY) {
+  guideArrowShown = false;
+  if (typeof guideArrowOn !== 'function' || !guideArrowOn()) return;
+  const wld = state.world;
+  if (!wld || wld.mode !== 'overworld' || !wld.entrance) return;
+  const W = innerWidth, H = innerHeight;
+  const tx = isoX(wld.entrance.x, wld.entrance.y) + offX;
+  const ty = isoY(wld.entrance.x, wld.entrance.y) + offY - 20;
+  const M = 52;
+  guideArrowShown = true;
+  const pulse = .65 + Math.sin(state.time * 5) * .35;
+  ctx.save();
+  if (tx > M && tx < W - M && ty > M && ty < H - M) {
+    // 화면 안 — 입구 위에 통통 튀는 ▼ 과 라벨
+    const bob = Math.sin(state.time * 5) * 6;
+    const ay = ty - 86 + bob;
+    ctx.fillStyle = 'rgba(10, 26, 40, 0.72)';
+    ctx.beginPath(); ctx.roundRect(tx - 34, ay - 34, 68, 22, 7); ctx.fill();
+    ctx.fillStyle = `rgba(255, 232, 138, ${0.75 + pulse * 0.25})`;
+    ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('갱도 입구', tx, ay - 18);
+    ctx.translate(tx, ay);
+    ctx.fillStyle = `rgba(255, 232, 138, ${pulse})`;
+    ctx.beginPath();
+    ctx.moveTo(0, 16); ctx.lineTo(-13, -9); ctx.lineTo(13, -9);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 2.5; ctx.stroke();
+  } else {
+    const cx = W / 2, cy = H / 2;
+    const dx = tx - cx, dy = ty - cy;
+    const hw = W / 2 - M, hh = H / 2 - M;
+    const k = Math.min(Math.abs(hw / (dx || 1e-6)), Math.abs(hh / (dy || 1e-6)));
+    ctx.translate(cx + dx * k, cy + dy * k);
+    ctx.rotate(Math.atan2(dy, dx));
+    ctx.fillStyle = 'rgba(10, 26, 40, 0.8)';
+    ctx.beginPath(); ctx.arc(0, 0, 20, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `rgba(255, 232, 138, ${pulse})`; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, 0, 20, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = `rgba(255, 232, 138, ${pulse})`;
+    ctx.beginPath();
+    ctx.moveTo(14, 0); ctx.lineTo(-6, -10); ctx.lineTo(-2, 0); ctx.lineTo(-6, 10);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
 }
 
 /* ---- 광맥 탐지기 Lv2: 가장 가까운 미채굴 광맥을 가리키는 가장자리 화살표 ---- */

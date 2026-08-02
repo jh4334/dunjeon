@@ -73,6 +73,7 @@ const state = {
   world: null,          // 현재 맵
   cam: { x: 0, y: 0 },
   time: 0,
+  logicTime: 0,         // M5: 게임 로직에만 흐르는 시간 (전투 속도 2배 토글의 영향을 받는다)
   transitioning: false,
   // 타격감 (화면 흔들림 / 히트스톱)
   shakeT: 0, shakeMag: 0, shakeX: 0, shakeY: 0,
@@ -90,8 +91,10 @@ const state = {
   passiveNodes: [],                        // M3.5b — 찍은 트리 노드 id 목록
   newGems: 0,                              // 획득 후 아직 파티 화면에서 확인하지 않은 젬 수 (뱃지용)
   // 리뷰 4차 — 설정 / 온보딩 힌트 (둘 다 저장에 포함)
-  settings: { sound: true, shake: true, hitstop: true },
-  hints: {},                               // { firstDungeon, firstLevel, firstGold } — 각 1회만
+  // M5: bgm(배경음) · speed2x(전투 속도 2배) · noDmgNum(데미지 숫자 끄기) 추가.
+  //     구 세이브에는 없는 키라 기본값이 그대로 남는다 (loadSave 가 boolean 만 덮어쓴다).
+  settings: { sound: true, bgm: true, shake: true, hitstop: true, speed2x: false, noDmgNum: false },
+  hints: {},                               // { firstDungeon, firstLevel, firstGold, guide* } — 각 1회만
   // M2 — 장비 (영구 소장 · 저장 포함). 골격은 items.js 가 resetEquipment() 로 채운다.
   equipment: {},                           // { charId: { weapon, armor, trinket } }
   inventory: [],                           // 미장착 보관 (상한 INVENTORY_MAX)
@@ -688,12 +691,13 @@ function addHitStop(t) {
 }
 
 /* ---------------- 이펙트 ---------------- */
-const floaters = []; // {wx, wy, txt, color, t, life, size}
+const floaters = []; // {wx, wy, txt, color, t, life, size, dmg}
 const bubbles = [];  // {who, txt, t, life}
 const sparkles = []; // {wx, wy, t, life, color}
 
-function addFloater(wx, wy, txt, color, size = 13) {
-  floaters.push({ wx, wy, txt, color, t: 0, life: 0.95, size });
+// dmg=true 인 플로터는 "데미지 숫자"로 취급한다 (설정에서 표시를 끌 수 있다 — M5)
+function addFloater(wx, wy, txt, color, size = 13, dmg = false) {
+  floaters.push({ wx, wy, txt, color, t: 0, life: 0.95, size, dmg: !!dmg });
 }
 function say(who, txt, life = 2.6) {
   for (let i = bubbles.length - 1; i >= 0; i--) if (bubbles[i].who === who) bubbles.splice(i, 1);
