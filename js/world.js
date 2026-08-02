@@ -88,6 +88,8 @@ function enterDungeon(depth) {
   const start = clamp(Math.floor(depth || 1), 1, maxDepth());
   transition(() => {
     state.run = { floor: start, buffs: { atk: 0, hp: 0, heal: 0, gold: 0, crit: 0, def: 0 }, relics: {}, kills: 0, goldGained: 0, azuriteGained: 0 };
+    state.run.telemetry = teleNew();        // M6 텔레메트리 (런 한정 · 저장하지 않는다)
+    teleFloor(start);
     // 광산 입장 첫 층은 항상 갱도(mine) — 깊이만큼의 층 스케일이 그대로 적용된다
     state.world = genDungeon(start, { biome: 'mine', kind: 'safe' });
     placeParty(state.world, state.world.spawn.x, state.world.spawn.y);
@@ -122,6 +124,8 @@ function enterWeekly(depth) {
       floor: start, buffs: { atk: 0, hp: 0, heal: 0, gold: 0, crit: 0, def: 0 },
       relics: {}, kills: 0, goldGained: 0, azuriteGained: 0, weekly: week,
     };
+    state.run.telemetry = teleNew();        // M6 텔레메트리 (런 한정 · 저장하지 않는다)
+    teleFloor(start);
     bumpWeekly();
     noteWeeklyRun(week);
     state.world = genDungeon(start, { biome: 'mine', kind: 'safe' });
@@ -210,7 +214,7 @@ function descend(choice) {
   const ch = choice || defaultChoice(next);
   sfx('stairs');
   transition(() => {
-    if (state.run) state.run.floor = next;
+    if (state.run) { state.run.floor = next; teleFloor(next); }
     state.world = genDungeon(next, ch);
     placeParty(state.world, state.world.spawn.x, state.world.spawn.y);
     // M4: 주간 런은 체크포인트도 기록도 주간 쪽으로 간다
@@ -234,12 +238,61 @@ function escapeDungeon() {
   if (state.world.mode !== 'dungeon' || state.paused || state.transitioning) return;
   showRunSummary(true);
 }
+/* ---- M6: 이번 런 분석 (텔레메트리) ----
+ * 정산 모달 안에 접이식으로 들어간다. 저장하지 않는 런 한정 통계라 여기서만 보인다. */
+function fmtDur(sec) {
+  const s = Math.max(0, Math.round(sec || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+function teleSectionHtml(t) {
+  if (!t || !t.floors.length) return '';
+  const maxDur = Math.max(1, ...t.floors.map(f => f.dur));
+  const floors = t.floors.map(f => `
+    <div class="teleRow" data-floor="${f.floor}">
+      <span class="teleK">깊이 ${f.floor}</span>
+      <span class="teleBar"><i style="width:${Math.round(100 * f.dur / maxDur)}%"></i></span>
+      <span class="teleV">${fmtDur(f.dur)} · 💔${Math.round(f.dmg)}</span>
+    </div>`).join('');
+  const top = teleTopCauses(t, 3);
+  const causes = top.length ? top.map(c => `
+    <div class="teleRow" data-cause="${c.key}">
+      <span class="teleK">${c.label}</span>
+      <span class="teleBar dmg"><i style="width:${Math.round(100 * c.pct)}%"></i></span>
+      <span class="teleV">${Math.round(c.dmg)} (${Math.round(100 * c.pct)}%)</span>
+    </div>`).join('') : '<p class="teleNone">받은 피해가 없습니다 — 완벽한 런!</p>';
+  const dk = Object.keys(t.downCause).sort((a, b) => t.downCause[b] - t.downCause[a]);
+  const downs = dk.length
+    ? dk.map(k => `<span class="teleTag" data-down="${k}">${teleCauseLabel(k)} ×${t.downCause[k]}</span>`).join('')
+    : '<span class="teleTag none">다운 없음</span>';
+  return `
+    <details class="teleBox" id="teleBox">
+      <summary>📊 이번 런 분석</summary>
+      <div class="teleBody">
+        <div class="teleHead">
+          <span>총 소요 <b id="teleTotal">${fmtDur(t.total)}</b></span>
+          <span>층 <b>${t.floors.length}</b></span>
+          <span>받은 피해 <b id="teleDmg">${Math.round(t.dmg)}</b></span>
+          <span>다운 <b>${t.downs}</b></span>
+        </div>
+        <h4>층별 체류</h4>
+        <div id="teleFloors">${floors}</div>
+        <h4>최다 피해원 TOP3</h4>
+        <div id="teleCauses">${causes}</div>
+        <h4>다운 원인</h4>
+        <div class="teleTags" id="teleDowns">${downs}</div>
+      </div>
+    </details>`;
+}
+
 function showRunSummary(escaped) {
   const run = state.run || { floor: state.world.floor || 1, kills: 0, goldGained: 0, azuriteGained: 0 };
   if (state.records && run.kills > (state.records.bestKills || 0)) state.records.bestKills = run.kills;
   // M4: 주간 런이면 정산 표를 주간 기록 기준으로 바꾼다 (state.run 을 지우기 전에 읽는다)
   const wkWeek = run.weekly || '';
   const wkRec = wkWeek ? weeklyRecord() : null;
+  // M6: 텔레메트리 확정 — state.run 을 지우면 사라지므로 여기서 스냅샷을 뜬다
+  const tm = teleFinish();
+  const teleHtml = teleSectionHtml(tm);
   state.run = null;
   bumpWeekly();
   checkAchievements();
@@ -257,6 +310,7 @@ function showRunSummary(escaped) {
       <div class="sumRow"><span>획득 골드</span><b>+${fmt(run.goldGained)}</b></div>
       <div class="sumRow"><span>획득 아주라이트</span><b id="sumAz">+${fmt(run.azuriteGained || 0)} ◆</b></div>
       ${escaped ? '' : `<div class="sumRow bad"><span>잃은 골드</span><b>-${fmt(lost)}</b></div>`}
+      ${teleHtml}
       <p class="sumHint">${escaped ? '골드로 캠프에서 영구 강화를 해보세요!' : '축복은 사라지지만 골드와 경험은 남아요.'}</p>
       <button class="modalBtn" id="sumOk">초원으로</button>`;
     body.querySelector('#sumOk').addEventListener('click', () => {

@@ -101,7 +101,7 @@ function onLeaderArrive() {
   const trap = wld.props.find(p => p.type === 'trap' && p.armed && p.gx === leader.gx && p.gy === leader.gy);
   if (trap) {
     trap.armed = false;
-    damageMember(leader, 6 + 4 * (wld.floor || 1));
+    damageMember(leader, 6 + 4 * (wld.floor || 1), null, { cause: 'hazard' });
     addFloater(leader.px, leader.py - 44, '🗡️ 함정!', '#ff7a7a', 14);
     if (Math.random() < .5) sayEvent('trap', leader);
   }
@@ -214,6 +214,7 @@ function damageMonster(mon, dmg, color, opt) {
     state.xp += gainedXp;
     if (state.run) {
       state.run.kills++;
+      teleKill(1);                            // M6 텔레메트리 — 층별 처치 수
       if (state.records && state.run.kills > (state.records.bestKills || 0)) state.records.bestKills = state.run.kills;
     }
     noteKill(mon);                            // M4: 도감 등록 + 누적 킬/엘리트/보스 카운터
@@ -242,7 +243,9 @@ function damageMonster(mon, dmg, color, opt) {
       addFloater(mon.px, mon.py - 16, '💥 폭발!', '#ff8a4a', 15);
       addSparkle(mon.px, mon.py, '#ff9a5a');
       party.forEach(p => {
-        if (!p.down && cheb(p.gx, p.gy, mon.gx, mon.gy) <= 1) damageMember(p, mon.atk * 1.8);
+        // 어픽스 폭발도 그 몬스터가 낸 피해로 센다 (죽은 몬스터라 attacker 로는 넘기지 않는다)
+        if (!p.down && cheb(p.gx, p.gy, mon.gx, mon.gy) <= 1)
+          damageMember(p, mon.atk * 1.8, null, { cause: 'mon:' + mon.type });
       });
     }
     if (mon.boss) onBossDefeated(mon);
@@ -338,6 +341,8 @@ function damageMember(m, dmg, attacker, opt) {
   onMemberHit(m);                             // 세이나(성기사) 피격 반응
   if (dmg <= 0) return;
   m.hp -= dmg;
+  const teleCause = teleCauseOf(attacker, opt);     // M6 텔레메트리 — 피해 원인별 누적
+  teleDamage(teleCause, dmg);
   addFloater(m.px, m.py - 30, String(Math.floor(dmg)), '#ff7a7a', 12, true);
   // 가시 갑옷: 받은 피해 일부 반사
   if (attacker && attacker.hp > 0 && relicCount('thorn')) {
@@ -345,6 +350,7 @@ function damageMember(m, dmg, attacker, opt) {
   }
   if (m.hp <= 0) {
     m.hp = 0; m.down = true; m.reviveT = 0;
+    teleDown(teleCause);
     sayEvent('down', m, { force: true, allowDown: true });
     if (aliveMembers().length === 0) partyWipe();
   } else if (m.hp < maxHp(m) * 0.3 && Math.random() < 0.4) {
@@ -757,7 +763,7 @@ function updateHazards(dt) {
       const on = party.filter(m => !m.down && m.gx === h.gx && m.gy === h.gy);
       if (!on.length) continue;
       h.tick = HAZARDS.spike.tick;
-      on.forEach(m => damageMember(m, h.dmg, null));
+      on.forEach(m => damageMember(m, h.dmg, null, { cause: 'hazard' }));
       addFloater(isoX(h.gx, h.gy), isoY(h.gx, h.gy) - 22, '💎 수정 가시!', '#9be8ff', 13);
       addSparkle(isoX(h.gx, h.gy), isoY(h.gx, h.gy), '#9be8ff');
       sfx('hit');
