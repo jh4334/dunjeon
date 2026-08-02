@@ -66,7 +66,7 @@ function finishVein(p) {
 
   let extra = '';
   if (Math.random() < VEIN_GEM_P) {
-    const gk = pick(GEMS).k;
+    const gk = rollGemKey();          // 광맥에서는 일반 젬만 나온다
     if (giveGem(gk)) {
       const gem = GEM_BY_KEY[gk];
       addFloater(wx, wy - 48, `${gem.icon} ${gem.name}`, '#c79bff', 13);

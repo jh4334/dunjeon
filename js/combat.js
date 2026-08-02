@@ -187,14 +187,14 @@ function aliveMembers() { return party.filter(m => !m.down); }
 
 // opt: { silent, noCrit, src(공격한 파티원 — 장비 치명타/흡혈/굶주린 검 판정용) }
 function damageMonster(mon, dmg, color, opt) {
-  if (mon.hp <= 0) return;
+  if (mon.hp <= 0) return null;
   opt = opt || {};
   // M7a: 갱도 두더지가 땅속에 있는 동안은 때릴 수 없다 (지상으로 나와야 한다)
-  if (mon.hidden && !opt.force) return;
+  if (mon.hidden && !opt.force) return null;
   // M3: 그림자 군주 — 분신이 살아 있는 동안 본체는 무적
   if (mon.invuln && !opt.force) {
     if (!opt.silent && Math.random() < 0.25) addFloater(mon.px, mon.py - 30, '무적', '#c9a4ff', 12);
-    return;
+    return null;
   }
   const src = opt.src || null;
   dmg *= weeklyMods().dealtMul;               // M4 주간 '유리 정신' — 주는 피해 2배
@@ -262,13 +262,19 @@ function damageMonster(mon, dmg, color, opt) {
     checkLevelUp();
     saveDirty = true;
   }
+  // M7b: 서포트 젬 '촉발'(치명타 시 쿨 초기화) 이 결과를 읽는다
+  return { dmg, crit, killed: mon.hp <= 0 };
 }
-/* ---- 스킬 젬 드랍 (엘리트 20% / 보스 100%) ---- */
-function dropGem(mon) {
-  const g = pick(GEMS);
+/* ---- 스킬 젬 드랍 (엘리트 20% / 보스 100% · 깊이 15+ 보스는 각성젬 30%) ---- */
+function dropGem(mon, opt) {
+  opt = opt || {};
+  const depth = opt.depth !== undefined ? opt.depth : ((state.world && state.world.floor) || 0);
+  const awP = opt.awakened !== undefined ? (opt.awakened ? 1 : 0) : awakenedDropChance(mon, depth);
+  const aw = Math.random() < awP;
+  const g = GEM_BY_KEY[rollGemKey({ awakened: aw })];
   giveGem(g.k);
-  addFloater(mon.px, mon.py - 68, `${g.icon} ${g.name} 젬!`, '#9be8ff', 14);
-  addSparkle(mon.px, mon.py, '#9be8ff');
+  addFloater(mon.px, mon.py - 68, `${g.icon} ${g.name} ${aw ? '각성젬' : '젬'}!`, aw ? '#d8a4ff' : '#9be8ff', 14);
+  addSparkle(mon.px, mon.py, aw ? '#d8a4ff' : '#9be8ff');
   toast(gemGetMsg(g));
   return g.k;
 }
@@ -339,6 +345,7 @@ function damageMember(m, dmg, attacker, opt) {
   dmg *= (1 - passiveDR());                   // 패시브 '방벽'
   dmg *= passiveTakenMult();                  // 키스톤 (유리 대포 / 강철 심장)
   dmg *= (1 - equipDR(m));                    // 장비 '피해 감소 %'
+  if (m.tauntT > 0) dmg *= (1 - (m.tauntCut || 0.25));   // M7b 도발 / 각성 성역
   if (opt.telegraph) dmg *= (1 - equipTgCut(m)) * (1 - passiveTgCut());   // 장비/트리 텔레그래프 감소
   dmg *= diff().dmg;                          // 난이도 보정
   dmg *= weeklyMods().takenMul;               // M4 주간 '유리 정신' — 받는 피해 2배
@@ -425,12 +432,15 @@ const MINION_KINDS = {
   skeleton: { k: 'skeleton', name: '해골', icon: '💀', color: '#8fe07f', hp: 1.0, atk: 1.0, step: MINION_STEP },
   spirit:   { k: 'spirit',   name: '정령', icon: '🌀', color: '#9be8ff', hp: 0.5, atk: 0.5, step: 0.3 },
   wolf:     { k: 'wolf',     name: '늑대', icon: '🐺', color: '#d8c89a', hp: 0.7, atk: 0.7, step: 0.28 },
+  // M7b 「해골 사수」 젬 — 해골 소환이 4칸 원거리형으로 바뀐다
+  archer:   { k: 'archer',   name: '해골 사수', icon: '🏹', color: '#d8c8a0', hp: 0.6, atk: 0.8, step: 0.42, range: 4 },
 };
 const MINION_KIND_KEYS = Object.keys(MINION_KINDS);
-function minionKindMax(kind) {
-  if (kind === 'skeleton') return minionMax();
+function minionKindMax(kind, bonus) {
+  const b = bonus || 0;
+  if (kind === 'skeleton' || kind === 'archer') return minionMax() + b;
   const c = MINION_KINDS[kind];
-  return (c && c.max) || 1;
+  return ((c && c.max) || 1) + b;
 }
 function minionsOf(owner, kind) {
   return minionList().filter(k => k.hp > 0 && (!kind || k.kind === kind) && (!owner || k.owner === owner));
@@ -443,11 +453,11 @@ function makeMinion(x, y, owner, kind) {
     gx: x, gy: y, px: isoX(x, y), py: isoY(x, y),
     fromX: x, fromY: y, moveT: 1, moving: false, face: 1,
     hp, maxHp: hp, atkCd: rand(0, .4), stepT: rand(0, .3), stepInt: c.step, born: 0, returning: false,
-    owner: o, kind: c.k, power: c.atk, color: c.color,
+    owner: o, kind: c.k, power: c.atk, color: c.color, range: c.range || 0,
   };
 }
 /* 소환자 주변 빈 칸에 소환수를 세운다 */
-function summonMinionFor(owner, kind) {
+function summonMinionFor(owner, kind, maxBonus) {
   const wld = state.world;
   if (!wld || wld.mode !== 'dungeon') return null;
   const o = owner || leader;
@@ -455,7 +465,7 @@ function summonMinionFor(owner, kind) {
   const kd = MINION_KINDS[kind] ? kind : 'skeleton';
   if (!wld.minions) wld.minions = [];
   wld.minions = wld.minions.filter(k => k.hp > 0);
-  if (minionsOf(o, kd).length >= minionKindMax(kd)) return null;
+  if (minionsOf(o, kd).length >= minionKindMax(kd, maxBonus)) return null;
   for (const [dx, dy] of shuffle(DIRS8.slice())) {
     const x = o.gx + dx, y = o.gy + dy;
     if (!walkable(wld, x, y) || monsterAt(wld, x, y)) continue;
@@ -506,11 +516,28 @@ function updateMinions(dt) {
       const inv = !!mon.invuln;
       if ((tgtInv && !inv) || (inv === tgtInv && d < bd)) { bd = d; tgt = mon; tgtInv = inv; }
     });
-    // 인접 몬스터 자동 공격 (복귀 중에는 교전하지 않는다)
-    if (tgt && bd <= 1 && !k.returning) {
+    // 인접(사수는 사거리 안) 몬스터 자동 공격 (복귀 중에는 교전하지 않는다)
+    const reach = k.range || 1;
+    if (tgt && bd <= reach && !k.returning) {
       if (k.atkCd <= 0) {
-        damageMonster(tgt, atkPow(home) * 0.55 * (k.power || 1) * passiveMinionMult() * rand(0.85, 1.15),
-          '#9be8a0', { src: home });
+        const hit = atkPow(home) * 0.55 * (k.power || 1) * passiveMinionMult() * rand(0.85, 1.15);
+        damageMonster(tgt, hit, '#9be8a0', { src: home });
+        if (k.range) addSparkle(tgt.px, tgt.py, '#d8c8a0');
+        // M7b 「정령 분열」 — 정령/늑대의 공격이 두 번째 적에게도 들어간다
+        const split = (k.kind === 'spirit' || k.kind === 'wolf') ? minionSplitMul(home) : 0;
+        if (split > 0) {
+          let second = null, sd = 99;
+          mons.forEach(mon => {
+            if (mon.hp <= 0 || mon === tgt) return;
+            const d = cheb(tgt.gx, tgt.gy, mon.gx, mon.gy);
+            if (d <= 3 && d < sd) { sd = d; second = mon; }
+          });
+          if (second) {
+            damageMonster(second, hit * split, '#9be8ff', { src: home });
+            addSparkle(second.px, second.py, '#9be8ff');
+            k.splitHit = (k.splitHit || 0) + 1;
+          }
+        }
         k.face = (tgt.gx > k.gx || tgt.gy < k.gy) ? 1 : -1;
         k.atkCd = 0.9;
         if (!tgt.aggro) aggroPack(wld, tgt);
@@ -554,23 +581,18 @@ function placeMine(x, y, owner) {
   return mine;
 }
 function explodeMine(mine) {
-  const wld = state.world;
   const src = (mine && mine.owner && party.indexOf(mine.owner) >= 0) ? mine.owner : leader;
   const dmg = atkPow(src) * 1.8 * passiveProjMult();
   const R = mineBlastR();                                     // 「폭죽 심장」이면 반경 +1
+  const mods = gemMods(src);
+  const r = blastAt(src, mine.gx, mine.gy, dmg, R, mods, { quiet: true });
   addFloater(isoX(mine.gx, mine.gy), isoY(mine.gx, mine.gy) - 20, '💥 폭발!', '#ff8a4a', 15);
-  addSparkle(isoX(mine.gx, mine.gy), isoY(mine.gx, mine.gy), '#ff9a5a');
-  let hit = 0;
-  wld.monsters.forEach(mon => {
-    if (mon.hp <= 0) return;
-    if (cheb(mon.gx, mon.gy, mine.gx, mine.gy) > R) return;   // 주변 R칸 광역
-    damageMonster(mon, dmg * rand(0.9, 1.1), '#ff9a5a', { src });
-    if (!mon.aggro) aggroPack(wld, mon);
-    hit++;
-  });
+  // M7b: 지옥 폭탄(화상 장판) / 연쇄(연쇄 폭발) / 메아리
+  const extra = blastGemFx(src, mine.gx, mine.gy, dmg, R, mods);
   mine.exploded = true;
-  mine.hits = hit;
-  return hit;
+  mine.hits = r.hits;
+  mine.chain = extra;
+  return r.hits;
 }
 function updateMines(dt) {
   const wld = state.world;
@@ -630,25 +652,16 @@ function throwBomb(tgt, who) {
 }
 // 착탄 — 지뢰와 같은 폭발 규칙 (반경 r · damageMonster 경로 · 팩 어그로)
 function explodeBomb(p) {
-  const wld = state.world;
   const src = (p.src && party.indexOf(p.src) >= 0) ? p.src : leader;
   const R = (p.r === undefined ? mineBlastR() : p.r);
-  const wx = isoX(p.gx, p.gy), wy = isoY(p.gx, p.gy);
-  addFloater(wx, wy - 20, '💥 폭발!', '#ff8a4a', 15);
-  addSparkle(wx, wy, '#ff9a5a');
-  addShake(SHAKE_MAG_SMASH);
-  sfx('smash');
-  let hit = 0;
-  wld.monsters.forEach(mon => {
-    if (mon.hp <= 0) return;
-    if (cheb(mon.gx, mon.gy, p.gx, p.gy) > R) return;
-    damageMonster(mon, p.dmg * rand(0.9, 1.1), '#ff9a5a', { src });
-    if (!mon.aggro) aggroPack(wld, mon);
-    hit++;
-  });
+  const mods = gemMods(src);
+  const r = blastAt(src, p.gx, p.gy, p.dmg, R, mods, {});
+  // M7b: 지옥 폭탄(화상 장판) / 연쇄(연쇄 폭발) / 메아리
+  const extra = blastGemFx(src, p.gx, p.gy, p.dmg, R, mods);
   p.exploded = true;
-  p.hits = hit;
-  return hit;
+  p.hits = r.hits;
+  p.chain = extra;
+  return r.hits;
 }
 
 /* ---- 상태이상 (빙결 슬로우 / 스턴 / 도트) ---- */
@@ -846,42 +859,263 @@ function updateProjectiles(dt) {
   }
 }
 
-/* ---- 리더 근접 젬 효과 (강타 / 맹독) ---- */
-function applyLeaderGems(mon, dmg, mods) {
-  if (!mon || mon.hp <= 0) return;
-  if (mods.skill === 'smite' && Math.random() < 0.2) applyStun(mon, 1);
-  if (mods.skill === 'poison') addDot(mon, dmg * 0.3, 3, 'poison');
+/* =====================================================================
+ * M7b — 젬 스킬 엔진 (스킬 21종 · 서포트 12종 · 각성젬 · 콤보 매트릭스)
+ *
+ * 스킬은 태그(projectile/aoe/dot/zone/strike/summon/heal/mine…)를 달고,
+ * 서포트는 그 태그에 반응한다. 태그가 맞지 않으면 gemMods() 단계에서 이미
+ * 걸러지므로(supportActive), 여기서는 "켜져 있으면 곱한다"만 하면 된다.
+ *
+ *   castSkill(m, 젬키, mods, opt)  모든 스킬의 단일 진입점 (테스트 훅이기도 하다)
+ *     · 다중 시전 → 같은 스킬을 2회
+ *     · 희생     → 자기 HP 소모 (피해 배율은 gemMods 가 이미 반영)
+ *     · 연쇄     → 결과 지점에서 다음 적으로 한 번 더
+ *     · 메아리   → 0.5초 뒤 같은 지점에 50%
+ *     · 흡수     → 누적 피해의 5% 회복
+ * =================================================================== */
+const FORK_MUL = 0.6;            // 연쇄로 튄 효과의 위력
+const ECHO_DELAY = 0.5;          // 메아리 재발동까지 (초)
+const ECHO_MUL = 0.5;            // 메아리 위력
+const MULTI_P = 0.3;             // 다중 시전 확률
+const SIPHON_RATE = 0.05;        // 흡수 회복률
+const SACRIFICE_COST = 0.03;     // 희생 HP 소모 비율
+const TRIGGER_P = 0.3;           // 촉발 — 치명타 시 쿨 초기화 확률
+const METEOR_DELAY = 2;          // 운석 낙하까지 (초)
+const GEM_ZONE_TICK = 0.5;       // 젬 장판 틱 간격 (초)
+const GEM_CD = 0.35;             // 광역형 근접 젬(회오리/시체 폭발) 재발동 간격
+
+/* ---- 젬 장판 (성역 / 지옥 화염) ----
+ * 몬스터 해저드(wld.hazards)는 파티를 지지므로 아군 장판은 별도 목록으로 관리한다. */
+function gemZoneList() { const w = state.world; return (w && w.gemZones) || []; }
+function spawnGemZone(kind, gx, gy, opt) {
+  const wld = state.world;
+  if (!wld || wld.mode !== 'dungeon') return null;
+  if (!wld.gemZones) wld.gemZones = [];
+  opt = opt || {};
+  const z = {
+    kind, gx, gy, t: 0, tick: 0,
+    r: opt.r === undefined ? 1 : opt.r,
+    life: opt.life === undefined ? 5 : opt.life,
+    hps: opt.hps || 0, dps: opt.dps || 0, dr: opt.dr || 0,
+    src: opt.src || leader,
+    color: kind === 'sanctuary' ? '#8dffb0' : '#ff9a5a',
+    icon: kind === 'sanctuary' ? '⛪' : '🔥',
+  };
+  // 같은 칸에 같은 종류가 있으면 갱신 (장판이 겹겹이 쌓이지 않게)
+  const ex = wld.gemZones.find(o => o.kind === kind && o.gx === gx && o.gy === gy);
+  if (ex) { ex.life = Math.max(ex.life, z.life); ex.r = Math.max(ex.r, z.r); return ex; }
+  wld.gemZones.push(z);
+  if (wld.gemZones.length > 24) wld.gemZones.shift();
+  addSparkle(isoX(gx, gy), isoY(gx, gy), z.color);
+  return z;
+}
+function updateGemZones(dt) {
+  const wld = state.world;
+  const list = wld && wld.gemZones;
+  if (!list || !list.length) return 0;
+  let live = 0;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const z = list[i];
+    z.life -= dt;
+    if (z.life <= 0) { list.splice(i, 1); continue; }
+    live++;
+    z.tick -= dt;
+    if (z.tick > 0) continue;
+    z.tick = GEM_ZONE_TICK;
+    if (z.kind === 'sanctuary') {
+      party.forEach(a => {
+        if (a.down || cheb(a.gx, a.gy, z.gx, z.gy) > z.r) return;
+        gemHeal(a, z.hps);
+        if (z.dr > 0) { a.tauntT = Math.max(a.tauntT || 0, GEM_ZONE_TICK + 0.1); a.tauntCut = Math.max(a.tauntCut || 0, z.dr); }
+      });
+    } else {
+      (wld.monsters || []).forEach(mon => {
+        if (mon.hp <= 0 || cheb(mon.gx, mon.gy, z.gx, z.gy) > z.r) return;
+        damageMonster(mon, z.dps, '#ff9a5a', { src: z.src, silent: true, noCrit: true });
+      });
+    }
+  }
+  return live;
 }
 
-/* ---- 마법사 공격 (화염구 / 연쇄 번개 / 빙결) ---- */
-function mageAttack(m, best, mons, mods) {
-  const base = atkPow(m) * mods.dmg;
-  const onHit = mon => {
-    addSparkle(mon.px, mon.py, '#c9a4ff');
-    if (mods.skill === 'freeze') applySlow(mon, 2);
-  };
-  if (mods.skill === 'fireball') {
-    const R = 1 + mods.spread;                 // 확산 젬으로 반경 +1
-    let n = 0;
-    mons.forEach(mon => {
-      if (mon.hp <= 0) return;
-      if (cheb(mon.gx, mon.gy, best.gx, best.gy) > R) return;
-      damageMonster(mon, base * rand(0.85, 1.2) * (mon === best ? 1 : 0.6), '#ff9a5a', { src: m });
-      onHit(mon);
-      n++;
-    });
-    addFloater(best.px, best.py - 54, `🔥 화염구 ×${n}`, '#ff9a5a', 13);
-    return n;
+/* ---- 지연 발동 (운석 낙하 / 메아리) ---- */
+function gemCastList() { const w = state.world; return (w && w.gemCasts) || []; }
+function scheduleGemCast(m, key, mods, gx, gy, delay, mult, extra) {
+  const wld = state.world;
+  if (!wld) return null;
+  if (!wld.gemCasts) wld.gemCasts = [];
+  const c = Object.assign({ kind: 'cast', t: 0, delay, m, key, mods, gx, gy, mult: mult === undefined ? 1 : mult }, extra || {});
+  wld.gemCasts.push(c);
+  return c;
+}
+function scheduleGemBlast(src, gx, gy, dmg, r, mods, delay) {
+  const wld = state.world;
+  if (!wld) return null;
+  if (!wld.gemCasts) wld.gemCasts = [];
+  const c = { kind: 'blast', t: 0, delay, m: src, gx, gy, dmg, r, mods };
+  wld.gemCasts.push(c);
+  return c;
+}
+function updateGemCasts(dt) {
+  const wld = state.world;
+  const list = wld && wld.gemCasts;
+  if (!list || !list.length) return 0;
+  let fired = 0;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const c = list[i];
+    c.t += dt;
+    if (c.t < c.delay) continue;
+    list.splice(i, 1);
+    if (!c.m || c.m.down) continue;
+    fired++;
+    if (c.kind === 'blast') blastAt(c.m, c.gx, c.gy, c.dmg, c.r, c.mods, { icon: '🔊' });
+    else castSkill(c.m, c.key, c.mods, { gx: c.gx, gy: c.gy, mult: c.mult, phase: c.phase, noEcho: true, noFork: !!c.noFork, noRepeat: true, noCost: true });
   }
-  if (mods.skill === 'chain') {
-    const maxT = 3 + mods.spread;               // 확산 젬으로 연쇄 +1
+  return fired;
+}
+
+/* ---- 공용 소품 ---- */
+function gemHeal(a, h) {
+  if (!a || a.down || h <= 0) return 0;
+  const before = a.hp;
+  a.hp = Math.min(maxHp(a), a.hp + h);
+  const got = a.hp - before;
+  if (got > 0) {
+    addFloater(a.px, a.py - 34, `+${Math.floor(got)}`, '#8dffb0', 12);
+    addSparkle(a.px, a.py, '#8dffb0');
+  }
+  return got;
+}
+/* 원소 전환 — 피해에 화상/빙결/감전 중 하나를 무작위로 얹는다 */
+const CONVERT_KINDS = ['burn', 'chill', 'shock'];
+function applyConvert(mon, mods, dmg) {
+  if (!mods || !mods.convert || !mon || mon.hp <= 0) return null;
+  const k = CONVERT_KINDS[Math.floor(Math.random() * CONVERT_KINDS.length)];
+  const dur = (mods.durMul || 1);
+  if (k === 'burn') addDot(mon, Math.max(1, (dmg || 0) * 0.25), 3 * dur, 'burn');
+  else if (k === 'chill') applySlow(mon, 1.5 * dur);
+  else applyStun(mon, 0.6);
+  mon.convertK = k;
+  return k;
+}
+/* 촉발 — 치명타가 터지면 확률로 공격 쿨을 초기화한다 */
+function gemTrigger(m, mods) {
+  if (!m || !mods || !mods.trigger) return false;
+  if (Math.random() >= TRIGGER_P * mods.trigger) return false;
+  m.atkCd = 0;
+  m.gemCd = 0;
+  addFloater(m.px, m.py - 58, '💫 촉발!', '#c9a4ff', 13);
+  return true;
+}
+/* 젬 피해 1회 — damageMonster 경로 + (원소 전환 / 촉발 / 어그로) */
+function gemDamage(m, mon, dmg, color, mods, opt) {
+  opt = opt || {};
+  if (!mon || mon.hp <= 0) return 0;
+  const res = damageMonster(mon, dmg, color, { src: m }) || { dmg: 0, crit: false };
+  if (res.crit) gemTrigger(m, mods);
+  applyConvert(mon, mods, res.dmg);
+  if (opt.aggro && mon.hp > 0 && !mon.aggro) aggroPack(state.world, mon);
+  return res.dmg || 0;
+}
+/* 지정 칸 중심 반경 R 폭발 (지뢰/폭탄/시체 폭발/연쇄 공용) */
+function blastAt(src, gx, gy, dmg, R, mods, opt) {
+  opt = opt || {};
+  const wld = state.world;
+  const wx = isoX(gx, gy), wy = isoY(gx, gy);
+  if (!opt.quiet) {
+    addFloater(wx, wy - 20, `${opt.icon || '💥'} 폭발!`, '#ff8a4a', 15);
+    addShake(SHAKE_MAG_SMASH);
+    sfx('smash');
+  }
+  addSparkle(wx, wy, opt.color || '#ff9a5a');
+  let hit = 0, total = 0;
+  ((wld && wld.monsters) || []).forEach(mon => {
+    if (mon.hp <= 0) return;
+    if (cheb(mon.gx, mon.gy, gx, gy) > R) return;
+    total += gemDamage(src, mon, dmg * rand(0.9, 1.1), opt.color || '#ff9a5a', mods, { aggro: true });
+    hit++;
+  });
+  return { hits: hit, dmg: total, gx, gy };
+}
+/* 이미 터진 지점들에서 R 밖에 있는 가장 가까운 적 (연쇄 폭발의 다음 표적) */
+function nextForkTarget(gx, gy, R, maxD, done) {
+  const wld = state.world;
+  let best = null, bd = 99;
+  ((wld && wld.monsters) || []).forEach(mon => {
+    if (mon.hp <= 0) return;
+    if ((done || []).some(p => cheb(mon.gx, mon.gy, p.x, p.y) <= R)) return;
+    const d = cheb(mon.gx, mon.gy, gx, gy);
+    if (d <= maxD && d < bd) { bd = d; best = mon; }
+  });
+  return best;
+}
+/* 폭발형(지뢰/폭탄)에 붙는 젬 효과 — 지옥 폭탄 장판 / 연쇄 폭발 / 메아리 */
+function blastGemFx(src, gx, gy, dmg, R, mods) {
+  if (!mods || !mods.skill) return 0;
+  let extra = 0;
+  if (gemBaseKey(mods.skill) === 'hellMine') {
+    SKILL_CAST.hellMine({ m: src, mods, aw: !!mods.aw, mult: 1, gx, gy });
+  }
+  if (mods.fork) {
+    const done = [{ x: gx, y: gy }];
+    let px = gx, py = gy;
+    for (let j = 0; j < mods.fork; j++) {
+      const nxt = nextForkTarget(px, py, R, 6, done);
+      if (!nxt) break;
+      const r = blastAt(src, nxt.gx, nxt.gy, dmg * FORK_MUL, R, mods, { icon: '🔗', quiet: true });
+      addFloater(isoX(nxt.gx, nxt.gy), isoY(nxt.gx, nxt.gy) - 30, `🔗 연쇄 폭발 ×${j + 2}`, '#ffd7a0', 13);
+      addSparkle(isoX(nxt.gx, nxt.gy), isoY(nxt.gx, nxt.gy), '#ffd7a0');
+      extra += r.hits;
+      done.push({ x: nxt.gx, y: nxt.gy });
+      px = nxt.gx; py = nxt.gy;
+    }
+  }
+  if (mods.echo) scheduleGemBlast(src, gx, gy, dmg * ECHO_MUL, R, mods, ECHO_DELAY);
+  return extra;
+}
+
+/* =====================================================================
+ * 스킬 21종 — 실행부
+ * 모든 핸들러는 ctx { m, mods, key, base, aw, mons, target, ally, gx, gy, mult, phase }
+ * 를 받고 { hits, dmg, gx, gy } 를 돌려준다. (gx/gy = 연쇄·메아리가 이어받을 지점)
+ * =================================================================== */
+const SKILL_CAST = {
+  /* ---------------- 마법 ---------------- */
+  fireball(c) {
+    const { m, mods, mons, aw } = c;
+    const best = c.target;
+    const base = atkPow(m) * mods.dmg * c.mult;
+    const R = 1 + (mods.spread || 0) + (aw ? 1 : 0);       // 각성 — 반경 +1
+    let n = 0, dmg = 0;
+    if (mods.focus && best) {                              // 집중 — 광역을 단일로 모은다
+      dmg += gemDamage(m, best, base * rand(0.85, 1.2), '#ff9a5a', mods);
+      addSparkle(best.px, best.py, '#c9a4ff');
+      n = 1;
+    } else {
+      mons.forEach(mon => {
+        if (mon.hp <= 0) return;
+        if (cheb(mon.gx, mon.gy, c.gx, c.gy) > R) return;
+        dmg += gemDamage(m, mon, base * rand(0.85, 1.2) * (mon === best ? 1 : 0.6), '#ff9a5a', mods);
+        addSparkle(mon.px, mon.py, '#c9a4ff');
+        n++;
+      });
+    }
+    addFloater(isoX(c.gx, c.gy), isoY(c.gx, c.gy) - 54, `🔥 화염구 ×${n}`, '#ff9a5a', 13);
+    return { hits: n, dmg, gx: c.gx, gy: c.gy };
+  },
+  chain(c) {
+    const { m, mods, mons, aw } = c;
+    const best = c.target;
+    if (!best) return { hits: 0, dmg: 0, gx: c.gx, gy: c.gy };
+    const base = atkPow(m) * mods.dmg * c.mult;
+    const maxT = 3 + (mods.spread || 0) + (aw ? 2 : 0);    // 각성 — 연쇄 대상 +2
     const hitList = [];
-    let cur = best, mult = 1;
+    let cur = best, mult = 1, dmg = 0;
     while (cur && hitList.length < maxT) {
-      damageMonster(cur, base * rand(0.85, 1.2) * mult, '#9be8ff', { src: m });
-      onHit(cur);
+      dmg += gemDamage(m, cur, base * rand(0.85, 1.2) * mult, '#9be8ff', mods);
+      addSparkle(cur.px, cur.py, '#c9a4ff');
       hitList.push(cur);
-      mult *= 0.7;                              // 연쇄마다 70%
+      mult *= 0.7;                                          // 연쇄마다 70%
       let nxt = null, nd = 99;
       mons.forEach(mon => {
         if (mon.hp <= 0 || hitList.indexOf(mon) >= 0) return;
@@ -891,32 +1125,429 @@ function mageAttack(m, best, mons, mods) {
       cur = nxt;
     }
     if (hitList.length > 1) addFloater(best.px, best.py - 54, `⚡ 연쇄 ×${hitList.length}`, '#9be8ff', 13);
-    return hitList.length;
+    return { hits: hitList.length, dmg, gx: best.gx, gy: best.gy };
+  },
+  freeze(c) {
+    const { m, mods, aw } = c;
+    const best = c.target;
+    if (!best) return { hits: 0, dmg: 0, gx: c.gx, gy: c.gy };
+    const dmg = gemDamage(m, best, atkPow(m) * mods.dmg * c.mult * rand(0.85, 1.2), '#c9a4ff', mods);
+    addSparkle(best.px, best.py, '#c9a4ff');
+    applySlow(best, 2);
+    if (aw) applyStun(best, 1);                             // 각성 — 1초 스턴까지
+    return { hits: 1, dmg, gx: best.gx, gy: best.gy };
+  },
+  /* 운석 — 예고 후 2초 뒤 3×3 낙하 */
+  meteor(c) {
+    const { m, mods, mons, aw } = c;
+    if (c.phase !== 'land') {
+      addFloater(isoX(c.gx, c.gy), isoY(c.gx, c.gy) - 44, '☄️ 운석 예고!', '#ffb347', 14);
+      addSparkle(isoX(c.gx, c.gy), isoY(c.gx, c.gy), '#ffb347');
+      scheduleGemCast(m, c.key, mods, c.gx, c.gy, METEOR_DELAY, c.mult, { phase: 'land', noFork: true });
+      return { hits: 0, dmg: 0, gx: c.gx, gy: c.gy, pending: true };
+    }
+    const base = atkPow(m) * mods.dmg * c.mult * 1.6;
+    const R = 1 + (mods.spread || 0);
+    let n = 0, dmg = 0;
+    const list = mods.focus ? mons.filter(x => x.hp > 0 && x.gx === c.gx && x.gy === c.gy)
+                            : mons.filter(x => x.hp > 0 && cheb(x.gx, x.gy, c.gx, c.gy) <= R);
+    list.forEach(mon => {
+      dmg += gemDamage(m, mon, base * rand(0.9, 1.1), '#ffb347', mods, { aggro: true });
+      if (aw) applyStun(mon, 1);                            // 각성 — 낙하 지점 스턴
+      n++;
+    });
+    addFloater(isoX(c.gx, c.gy), isoY(c.gx, c.gy) - 20, `☄️ 운석 ×${n}`, '#ffb347', 15);
+    addSparkle(isoX(c.gx, c.gy), isoY(c.gx, c.gy), '#ffb347');
+    addShake(SHAKE_MAG_SMASH);
+    return { hits: n, dmg, gx: c.gx, gy: c.gy };
+  },
+  /* 서리 신성 — 자신 주변을 얼린다 */
+  frostNova(c) {
+    const { m, mods, mons, aw } = c;
+    const R = 2 + (mods.spread || 0);
+    const base = atkPow(m) * mods.dmg * c.mult * 0.8;
+    const list = (mods.focus && c.target) ? [c.target]
+      : mons.filter(x => x.hp > 0 && cheb(x.gx, x.gy, m.gx, m.gy) <= R);
+    let n = 0, dmg = 0;
+    list.forEach(mon => {
+      if (mon.hp <= 0) return;
+      dmg += gemDamage(m, mon, base * rand(0.85, 1.2), '#9be8ff', mods);
+      applySlow(mon, 2.5);
+      if (aw) applyStun(mon, 1);                            // 각성 — 스턴까지
+      n++;
+    });
+    addFloater(m.px, m.py - 56, `🌨️ 서리 신성 ×${n}`, '#9be8ff', 13);
+    addSparkle(m.px, m.py, '#9be8ff');
+    return { hits: n, dmg, gx: m.gx, gy: m.gy };
+  },
+  /* 번개 폭풍 — 주변 적을 무작위로 여러 번 때린다 */
+  thunderStorm(c) {
+    const { m, mods, mons, aw } = c;
+    const shots = 5 + (mods.spread || 0) + (aw ? 3 : 0);    // 각성 — 타격 +3
+    const base = atkPow(m) * mods.dmg * c.mult * 0.55;
+    const pool = mons.filter(x => x.hp > 0 && cheb(x.gx, x.gy, m.gx, m.gy) <= 5);
+    if (!pool.length) return { hits: 0, dmg: 0, gx: c.gx, gy: c.gy };
+    const single = mods.focus ? ((c.target && c.target.hp > 0) ? c.target : pool[0]) : null;
+    let n = 0, dmg = 0;
+    for (let i = 0; i < shots; i++) {
+      const t = single || pool[Math.floor(Math.random() * pool.length)];
+      if (!t || t.hp <= 0) continue;
+      dmg += gemDamage(m, t, base * rand(0.85, 1.2), '#9be8ff', mods);
+      addSparkle(t.px, t.py, '#9be8ff');
+      n++;
+    }
+    addFloater(m.px, m.py - 58, `🌩️ 번개 폭풍 ×${n}`, '#9be8ff', 13);
+    return { hits: n, dmg, gx: c.gx, gy: c.gy };
+  },
+  /* 비전 파도 — 직선 관통 */
+  arcaneWave(c) {
+    const { m, mods, aw } = c;
+    const best = c.target;
+    const len = 5 + (aw ? 2 : 0);                           // 각성 — 관통 +2
+    let dx = best ? Math.sign(best.gx - m.gx) : (m.face || 1);
+    let dy = best ? Math.sign(best.gy - m.gy) : 0;
+    if (!dx && !dy) dx = m.face || 1;
+    const base = atkPow(m) * mods.dmg * c.mult * 0.9;
+    let n = 0, dmg = 0, lx = m.gx, ly = m.gy;
+    for (let i = 1; i <= len; i++) {
+      const x = m.gx + dx * i, y = m.gy + dy * i;
+      lx = x; ly = y;
+      const mon = monsterAt(state.world, x, y);
+      if (!mon || mon.hp <= 0) continue;
+      dmg += gemDamage(m, mon, base * rand(0.85, 1.2), '#c9a4ff', mods, { aggro: true });
+      addSparkle(mon.px, mon.py, '#c9a4ff');
+      n++;
+    }
+    addFloater(m.px, m.py - 56, `🌌 비전 파도 ×${n}`, '#c9a4ff', 13);
+    return { hits: n, dmg, gx: lx, gy: ly };
+  },
+
+  /* ---------------- 근접 ---------------- */
+  smite(c) {
+    const mon = c.target;
+    if (!mon || mon.hp <= 0) return { hits: 0, dmg: 0 };
+    if (Math.random() < (c.aw ? 0.45 : 0.2)) applyStun(mon, 1);   // 각성 — 45%
+    return { hits: 1, dmg: 0, gx: mon.gx, gy: mon.gy };
+  },
+  poison(c) {
+    const mon = c.target;
+    if (!mon || mon.hp <= 0) return { hits: 0, dmg: 0 };
+    const raw = (c.baseDmg !== undefined) ? c.baseDmg : memberBase(c.m, c.mods);
+    addDot(mon, raw * (c.aw ? 0.6 : 0.3) * c.mult, 3 * (c.mods.durMul || 1), 'poison');
+    return { hits: 1, dmg: 0, gx: mon.gx, gy: mon.gy };
+  },
+  /* 회오리 베기 — 주변 8칸 */
+  whirl(c) {
+    const { m, mods, mons, aw } = c;
+    const R = 1 + (mods.spread || 0) + (aw ? 1 : 0);        // 각성 — 반경 +1
+    const base = ((c.baseDmg !== undefined) ? c.baseDmg : memberBase(m, mods)) * 0.5 * c.mult;
+    const list = (mods.focus && c.target) ? [c.target]
+      : mons.filter(x => x.hp > 0 && cheb(x.gx, x.gy, m.gx, m.gy) <= R);
+    let n = 0, dmg = 0;
+    list.forEach(mon => {
+      if (mon.hp <= 0) return;
+      dmg += gemDamage(m, mon, base * rand(0.85, 1.2), '#ffb347', mods, { aggro: true });
+      n++;
+    });
+    if (n) addFloater(m.px, m.py - 54, `🌪️ 회오리 ×${n}`, '#ffb347', 13);
+    return { hits: n, dmg, gx: m.gx, gy: m.gy };
+  },
+  /* 처형 일격 — 빈사의 적에게 추가타 */
+  execute(c) {
+    const { m, mods, aw } = c;
+    const mon = c.target;
+    if (!mon || mon.hp <= 0) return { hits: 0, dmg: 0 };
+    const thr = aw ? 0.45 : 0.30;                           // 각성 — 45% 이하
+    if (mon.hp > (mon.maxHp || 1) * thr) return { hits: 0, dmg: 0, gx: mon.gx, gy: mon.gy, skipped: true };
+    const raw = (c.baseDmg !== undefined) ? c.baseDmg : memberBase(m, mods);
+    const dmg = gemDamage(m, mon, raw * 1.0 * c.mult, '#ff5a5a', mods);
+    addFloater(mon.px, mon.py - 58, '⚔️ 처형 일격!', '#ff5a5a', 14);
+    return { hits: 1, dmg, gx: mon.gx, gy: mon.gy };
+  },
+  /* 도발 — 어그로 집중 + 피해 감소 */
+  taunt(c) {
+    const { m, mods, mons, aw } = c;
+    const R = 4 + (mods.spread || 0);
+    let n = 0;
+    mons.forEach(mon => {
+      if (mon.hp <= 0 || cheb(mon.gx, mon.gy, m.gx, m.gy) > R) return;
+      if (!mon.aggro) aggroPack(state.world, mon);
+      mon.tauntBy = m;
+      n++;
+    });
+    m.tauntT = Math.max(m.tauntT || 0, 3);
+    m.tauntCut = aw ? 0.45 : 0.25;                          // 각성 — 45% 감소
+    if (n) addFloater(m.px, m.py - 56, `📢 도발 ×${n}`, '#ffe88a', 13);
+    return { hits: n, dmg: 0, gx: m.gx, gy: m.gy };
+  },
+  /* 출혈 — 이동 중인 적에게 도트 */
+  bleed(c) {
+    const { m, mods, aw } = c;
+    const mon = c.target;
+    if (!mon || mon.hp <= 0) return { hits: 0, dmg: 0 };
+    if (!mon.moving && !c.force) return { hits: 0, dmg: 0, gx: mon.gx, gy: mon.gy, skipped: true };
+    const raw = (c.baseDmg !== undefined) ? c.baseDmg : memberBase(m, mods);
+    const dps = raw * 0.35 * c.mult;
+    const dur = 4 * (mods.durMul || 1);
+    if (aw) {                                               // 각성 — 최대 3중첩
+      let put = false;
+      for (let i = 0; i < 3 && !put; i++) {
+        const k = 'bleed' + i;
+        if (!(mon.dots || []).some(d => d.k === k)) { addDot(mon, dps, dur, k); put = true; }
+      }
+      if (!put) addDot(mon, dps, dur, 'bleed0');
+    } else addDot(mon, dps, dur, 'bleed');
+    addFloater(mon.px, mon.py - 46, '🩸 출혈!', '#ff7a7a', 12);
+    return { hits: 1, dmg: 0, gx: mon.gx, gy: mon.gy };
+  },
+
+  /* ---------------- 치유 ---------------- */
+  holy(c) {
+    const { m, mods, aw } = c;
+    const hurt = c.ally;
+    if (!hurt) return { hits: 0, dmg: 0 };
+    const h = healPow(m) * mods.dmg * c.mult;
+    const R = 2 + (mods.spread || 0);
+    const list = mods.focus ? [hurt] : aliveMembers().filter(a => cheb(a.gx, a.gy, hurt.gx, hurt.gy) <= R);
+    let n = 0;
+    list.forEach(a => {
+      gemHeal(a, h);
+      if (aw) addShield(a, h * 0.3, 4);                     // 각성 — 실드까지
+      n++;
+    });
+    addFloater(hurt.px, hurt.py - 52, `🌟 신성한 빛 ×${n}`, '#ffe88a', 13);
+    return { hits: n, dmg: 0, gx: hurt.gx, gy: hurt.gy };
+  },
+  /* 성역 — 치유 장판 */
+  sanctuary(c) {
+    const { m, mods, aw } = c;
+    const at = c.ally || m;
+    const z = spawnGemZone('sanctuary', at.gx, at.gy, {
+      r: 1 + (mods.spread || 0),
+      life: 5 * (mods.durMul || 1),
+      hps: healPow(m) * mods.dmg * c.mult * 0.35,
+      dr: aw ? 0.2 : 0,                                     // 각성 — 장판 위 피해 -20%
+      src: m,
+    });
+    addFloater(isoX(at.gx, at.gy), isoY(at.gx, at.gy) - 40, '⛪ 성역!', '#8dffb0', 14);
+    return { hits: z ? 1 : 0, dmg: 0, gx: at.gx, gy: at.gy, zone: z };
+  },
+  /* 정화 — 상태이상 해제 + 실드 */
+  purify(c) {
+    const { m, mods, aw } = c;
+    const h = healPow(m) * mods.dmg * c.mult;
+    const R = 3 + (mods.spread || 0);
+    let n = 0, cleared = 0;
+    aliveMembers().forEach(a => {
+      if (cheb(a.gx, a.gy, m.gx, m.gy) > R) return;
+      if (a.slowT > 0 || a.rootT > 0 || a.stunT > 0 || a.curseT > 0 || (a.dots && a.dots.length)) cleared++;
+      a.slowT = 0; a.rootT = 0; a.stunT = 0; a.curseT = 0;
+      if (a.dots) a.dots.length = 0;
+      gemHeal(a, h * 0.5);
+      addShield(a, maxHp(a) * (aw ? 0.24 : 0.12), 6 * (mods.durMul || 1));   // 각성 — 실드 2배
+      n++;
+    });
+    addFloater(m.px, m.py - 54, `💧 정화 ×${n}`, '#9be8ff', 13);
+    return { hits: n, dmg: 0, cleared, gx: m.gx, gy: m.gy };
+  },
+  /* 순교 — 자기 HP 를 태워 대치유 */
+  martyr(c) {
+    const { m, mods, aw } = c;
+    const hurt = c.ally;
+    if (!hurt) return { hits: 0, dmg: 0 };
+    const cost = maxHp(m) * 0.15;
+    m.hp = Math.max(1, m.hp - cost);
+    addFloater(m.px, m.py - 40, `🕯️ -${Math.floor(cost)}`, '#ff9aa8', 12);
+    const h = healPow(m) * mods.dmg * c.mult * 2.5;
+    gemHeal(hurt, h);
+    if (aw) m.hp = Math.min(maxHp(m), m.hp + cost * 0.5);   // 각성 — 절반 환급
+    addFloater(m.px, m.py - 56, '🕯️ 순교!', '#ffe88a', 14);
+    return { hits: 1, dmg: 0, gx: hurt.gx, gy: hurt.gy };
+  },
+
+  /* ---------------- 소환 / 지원 ---------------- */
+  /* 시체 폭발 — M7a 의 시체(wld.corpses)를 연료로 쓴다 */
+  corpseBlast(c) {
+    const { m, mods, aw } = c;
+    const wld = state.world;
+    const list = (wld && wld.corpses) || [];
+    const cx = c.gx, cy = c.gy;
+    const seekR = 3 + (mods.spread || 0);
+    const blastR = mods.focus ? 0 : 1 + (mods.spread || 0);   // 확산 → 폭발 반경 +1
+    const maxN = 3 + (mods.spread || 0);
+    const idxs = [];
+    for (let i = 0; i < list.length && idxs.length < maxN; i++) {
+      if (cheb(list[i].gx, list[i].gy, cx, cy) <= seekR) idxs.push(i);
+    }
+    if (!idxs.length) {
+      addFloater(m.px, m.py - 56, '💀 시체 없음', '#8a8a96', 12);
+      return { hits: 0, dmg: 0, gx: cx, gy: cy, corpses: 0 };
+    }
+    const base = atkPow(m) * mods.dmg * c.mult * 1.2;
+    let n = 0, dmg = 0, k = 0;
+    // 뒤에서부터 지워야 인덱스가 밀리지 않는다
+    idxs.slice().reverse().forEach(i => {
+      const cp = list[i];
+      list.splice(i, 1);
+      const stack = aw ? (1 + 0.25 * k) : 1;                  // 각성 — 시체당 +25% 중첩
+      k++;
+      const r = blastAt(m, cp.gx, cp.gy, base * stack, blastR, mods, { color: '#8fe07f', icon: '💀', quiet: true });
+      dmg += r.dmg; n += r.hits;
+      addSparkle(isoX(cp.gx, cp.gy), isoY(cp.gx, cp.gy), '#8fe07f');
+    });
+    addFloater(m.px, m.py - 56, `💀 시체 폭발 ×${idxs.length}`, '#8fe07f', 14);
+    sfx('smash');
+    return { hits: n, dmg, gx: cx, gy: cy, corpses: idxs.length };
+  },
+  /* 해골 사수 — 소환수를 원거리형으로 바꾼다 (실제 소환은 CHAR_TICK.skeleton) */
+  boneArcher(c) {
+    const k = summonMinionFor(c.m, 'archer', c.aw ? 1 : 0);
+    return { hits: k ? 1 : 0, dmg: 0, gx: c.m.gx, gy: c.m.gy, minion: k };
+  },
+  /* 지옥 폭탄 — 폭발 자리에 화상 장판 (실제 호출은 blastGemFx) */
+  hellMine(c) {
+    const { m, mods, aw } = c;
+    const z = spawnGemZone('hellfire', c.gx, c.gy, {
+      r: 1 + (aw ? 1 : 0),                                   // 각성 — 장판 반경 +1
+      life: 5 * (mods.durMul || 1),
+      dps: atkPow(m) * mods.dmg * c.mult * 0.5,
+      src: m,
+    });
+    if (z) addFloater(isoX(c.gx, c.gy), isoY(c.gx, c.gy) - 34, '🔥 지옥 화염!', '#ff9a5a', 13);
+    return { hits: z ? 1 : 0, dmg: 0, gx: c.gx, gy: c.gy, zone: z };
+  },
+  /* 정령 분열 — 미니언 공격이 2체로 갈라진다 (updateMinions 가 읽는다) */
+  splitSpirit(c) {
+    return { hits: 0, dmg: 0, gx: c.m.gx, gy: c.m.gy, passive: true };
+  },
+};
+const SKILL_CAST_KEYS = Object.keys(SKILL_CAST);
+
+/* 미니언 분열 배율 — 소환자의 젬을 읽는다 */
+function minionSplitMul(owner) {
+  if (!owner) return 0;
+  const mods = gemMods(owner);
+  if (gemBaseKey(mods.skill) !== 'splitSpirit') return 0;
+  return mods.aw ? 1.0 : 0.5;                                // 각성 — 100%
+}
+
+/* =====================================================================
+ * 모든 스킬의 단일 진입점
+ *   opt: { target, ally, mons, gx, gy, mult, phase, noEcho, noFork, noRepeat, noCost }
+ * =================================================================== */
+function castSkill(m, key, mods, opt) {
+  opt = opt || {};
+  const wld = state.world;
+  if (!m || !wld) return { hits: 0, dmg: 0 };
+  mods = mods || gemMods(m);
+  const base = gemBaseKey(key) || key;
+  const fn = SKILL_CAST_KEYS.indexOf(base) >= 0 ? SKILL_CAST[base] : null;
+  if (!fn) return { hits: 0, dmg: 0 };
+  const mons = opt.mons || wld.monsters || [];
+  const target = opt.target || null;
+  const gx = (opt.gx !== undefined) ? opt.gx : (target ? target.gx : m.gx);
+  const gy = (opt.gy !== undefined) ? opt.gy : (target ? target.gy : m.gy);
+  const mult = (opt.mult === undefined) ? 1 : opt.mult;
+  const aw = (opt.aw !== undefined) ? opt.aw : gemIsAwakened(key);
+
+  // 희생 — 시전마다 자기 HP 소모 (피해 +45% 는 gemMods.dmg 가 이미 반영)
+  if (mods.sacrifice && !opt.noCost) {
+    const cost = maxHp(m) * SACRIFICE_COST * mods.sacrifice;
+    m.hp = Math.max(1, m.hp - cost);
+    addFloater(m.px, m.py - 40, `🩹 -${Math.floor(cost)}`, '#ff9aa8', 11);
   }
-  damageMonster(best, base * rand(0.85, 1.2), '#c9a4ff', { src: m });
-  onHit(best);
+  // 다중 시전 — 30% 확률로 2회
+  const reps = (!opt.noRepeat && mods.multi && Math.random() < MULTI_P * mods.multi) ? 2 : 1;
+  const ctx = { m, mods, key, base, aw, mons, target, ally: opt.ally || null,
+                gx, gy, mult, phase: opt.phase, baseDmg: opt.baseDmg, force: opt.force };
+  let hits = 0, dmg = 0, last = null;
+  for (let i = 0; i < reps; i++) {
+    const r = fn(ctx) || {};
+    hits += r.hits || 0;
+    dmg += r.dmg || 0;
+    last = r;
+  }
+  if (reps > 1) addFloater(m.px, m.py - 64, '🎭 다중 시전!', '#ffd7a0', 12);
+
+  const px = (last && last.gx !== undefined) ? last.gx : gx;
+  const py = (last && last.gy !== undefined) ? last.gy : gy;
+  // 연쇄 — 결과 지점에서 다음 적으로 한 번 더 (지연 발동은 착탄 때 처리)
+  if (mods.fork && !opt.noFork && !(last && last.pending)) {
+    const done = [{ x: px, y: py }];
+    let cx = px, cy = py;
+    for (let j = 0; j < mods.fork; j++) {
+      const nxt = nextForkTarget(cx, cy, 1, 6, done);
+      if (!nxt) break;
+      const r = fn(Object.assign({}, ctx, { target: nxt, gx: nxt.gx, gy: nxt.gy, mult: mult * FORK_MUL }));
+      hits += (r && r.hits) || 0;
+      dmg += (r && r.dmg) || 0;
+      addFloater(nxt.px, nxt.py - 40, `🔗 연쇄 ×${j + 2}`, '#ffd7a0', 12);
+      done.push({ x: nxt.gx, y: nxt.gy });
+      cx = nxt.gx; cy = nxt.gy;
+    }
+  }
+  // 메아리 — 0.5초 뒤 같은 지점에 50%
+  if (mods.echo && !opt.noEcho) {
+    scheduleGemCast(m, key, mods, px, py, ECHO_DELAY, mult * ECHO_MUL, { noFork: true });
+  }
+  // 흡수 — 스킬 피해의 5% 회복
+  if (mods.siphon && dmg > 0) {
+    const got = gemHeal(m, dmg * SIPHON_RATE * mods.siphon);
+    if (got > 0) addFloater(m.px, m.py - 48, '🩸 흡수', '#ff9aa8', 11);
+  }
+  // 마지막 실행부가 남긴 부가 정보(corpses / cleared / zone / minion …)를 그대로 얹어 준다
+  return Object.assign({}, last || {}, { hits, dmg, gx: px, gy: py, reps, last });
+}
+
+/* ---- 리더 근접 젬 효과 (강타 / 맹독 / 회오리 / 처형 / 도발 / 출혈) ---- */
+const MELEE_GEM_AOE = { whirl: 1, taunt: 1, corpseBlast: 1 };
+function applyLeaderGems(mon, dmg, mods, src) {
+  if (!mon || mon.hp <= 0) return;
+  if (!mods) return;
+  const base = gemBaseKey(mods.skill);
+  if (!base) return;
+  if (!isMeleeGem(base) && base !== 'corpseBlast') return;   // 마법/치유 젬은 여기서 발동하지 않는다
+  const m = src || leader;
+  // 광역형(회오리/도발/시체 폭발)은 타격마다 터지면 과하다 — 짧은 자체 쿨을 둔다
+  if (MELEE_GEM_AOE[base] === 1) {
+    if ((m.gemCd || 0) > 0) return;
+    m.gemCd = GEM_CD;
+  }
+  castSkill(m, mods.skill, mods, { target: mon, baseDmg: dmg, gx: mon.gx, gy: mon.gy });
+}
+
+/* ---- 마법사 공격 (스킬 젬 경로) ----
+ * 마법 젬을 꼈으면 그 스킬이 공격을 대신한다. 마법 젬이 아니면 평범한 단일 마법을
+ * 쏘고, 그 위에 얹을 수 있는 젬(시체 폭발)만 추가로 발동한다 — 어떤 조합이어도
+ * 기본 공격을 잃지 않게 한다. */
+function mageAttack(m, best, mons, mods) {
+  const base = gemBaseKey(mods.skill);
+  if (isCasterGem(base)) {
+    const r = castSkill(m, mods.skill, mods, { target: best, mons });
+    return r.hits;
+  }
+  damageMonster(best, atkPow(m) * mods.dmg * rand(0.85, 1.2), '#c9a4ff', { src: m });
+  addSparkle(best.px, best.py, '#c9a4ff');
+  if (base === 'corpseBlast' && (m.gemCd || 0) <= 0) {
+    m.gemCd = GEM_CD;
+    return 1 + castSkill(m, mods.skill, mods, { target: best, mons, gx: best.gx, gy: best.gy }).hits;
+  }
   return 1;
 }
 
-/* ---- 사제 치유 (신성한 빛) ---- */
+/* ---- 사제 치유 (신성한 빛 / 성역 / 정화 / 순교) ---- */
 function priestHeal(m, mods) {
   const alive = aliveMembers();
   const hurt = alive.filter(a => a.hp < maxHp(a) * 0.85)
     .sort((a, b) => a.hp / maxHp(a) - b.hp / maxHp(b))[0];
   if (!hurt || cheb(m.gx, m.gy, hurt.gx, hurt.gy) > 4) return 0;
-  const h = healPow(m) * mods.dmg;
-  const heal = a => {
-    a.hp = Math.min(maxHp(a), a.hp + h);
-    addFloater(a.px, a.py - 34, `+${Math.floor(h)}`, '#8dffb0', 12);
-    addSparkle(a.px, a.py, '#8dffb0');
-  };
-  let n = 0;
-  if (mods.skill === 'holy') {
-    const R = 2 + mods.spread;                  // 대상 주변 2칸 모든 아군
-    alive.forEach(a => { if (cheb(a.gx, a.gy, hurt.gx, hurt.gy) <= R) { heal(a); n++; } });
-    addFloater(hurt.px, hurt.py - 52, `🌟 신성한 빛 ×${n}`, '#ffe88a', 13);
+  const base = gemBaseKey(mods.skill);
+  let n;
+  if (base && isHealGem(base) && SKILL_CAST[base]) {
+    n = castSkill(m, mods.skill, mods, { ally: hurt, gx: hurt.gx, gy: hurt.gy }).hits;
   } else {
-    heal(hurt); n = 1;
+    gemHeal(hurt, healPow(m) * mods.dmg);
+    n = 1;
   }
   if (Math.random() < .3) sayEvent('heal', m);
   m.atkCd = 3.4 * mods.cd;
@@ -930,8 +1561,9 @@ function priestHeal(m, mods) {
 // 한 대상 타격 (근접·원거리 공용) — damageMonster 경로를 그대로 타므로
 // 치명타/처형/장비 효과가 자동으로 적용된다.
 function memberStrike(m, mon, dmg, color, mods) {
-  damageMonster(mon, dmg * rand(0.85, 1.2), color, { src: m });
-  applyLeaderGems(mon, dmg, mods);
+  const res = damageMonster(mon, dmg * rand(0.85, 1.2), color, { src: m }) || {};
+  if (res.crit) gemTrigger(m, mods);          // M7b 촉발 — 치명타 시 쿨 초기화
+  applyLeaderGems(mon, dmg, mods, m);         // M7b: 근접 젬은 때린 본인이 기준
   if (!mon.aggro) aggroPack(state.world, mon);
   return dmg;
 }
@@ -950,11 +1582,11 @@ function charCd(m) {
   if (charHasRole(m.id, 'caster')) cd /= (1 + 0.2 * relicCount('crystal'));
   return cd;
 }
-// 마법 스킬 젬(화염구/연쇄/빙결)을 낀 원거리 캐릭터는 젬 경로를 그대로 탄다.
-// 캐릭터 고유 효과(화상/한기)는 그 위에 얹힌다.
-const CASTER_GEMS = ['fireball', 'chain', 'freeze'];
+// 마법 스킬 젬(화염구/연쇄/빙결/운석/서리 신성/번개 폭풍/비전 파도)을 낀 원거리
+// 캐릭터는 젬 경로를 그대로 탄다. 캐릭터 고유 효과(화상/한기)는 그 위에 얹힌다.
+const CASTER_GEMS = CASTER_GEM_KEYS;
 function rangedCore(m, best, mons, mods, color) {
-  if (CASTER_GEMS.indexOf(mods.skill) >= 0) {
+  if (isCasterGem(mods.skill)) {
     mageAttack(m, best, mons, mods);
     return atkPow(m) * mods.dmg;
   }
@@ -1059,7 +1691,12 @@ const CHAR_TICK = {
   /* 느와르 — 6초마다 해골 (최대 3) */
   skeleton(m, dt) {
     m.summonT -= dt;
-    if (m.summonT <= 0) { m.summonT = 6; summonMinionFor(m, 'skeleton'); }
+    if (m.summonT > 0) return;
+    m.summonT = 6;
+    // M7b 「해골 사수」 젬 — 소환 종류가 원거리형으로 바뀐다 (각성이면 최대 수 +1)
+    const mods = gemMods(m);
+    if (gemBaseKey(mods.skill) === 'boneArcher') summonMinionFor(m, 'archer', mods.aw ? 1 : 0);
+    else summonMinionFor(m, 'skeleton');
   },
   /* 봄이 — 사거리 안이면 폭탄 투척 (지뢰는 onLeaderArrive) */
   bomb(m, dt) {
@@ -1191,6 +1828,12 @@ function updateCharAbilities(dt) {
     // 공용 쿨다운 (지뢰 / 폭탄 / 능력)
     m.mineCd = Math.max(0, (m.mineCd || 0) - dt);
     m.bombCd = Math.max(0, (m.bombCd || 0) - dt);
+    // M7b: 광역 근접 젬 자체 쿨 / 도발 지속 (끝나면 감소율도 초기화)
+    m.gemCd = Math.max(0, (m.gemCd || 0) - dt);
+    if (m.tauntT > 0) {
+      m.tauntT = Math.max(0, m.tauntT - dt);
+      if (m.tauntT === 0) m.tauntCut = 0;
+    }
     if (charDef(m.id).ability.k === 'guard') m.abilT = Math.max(0, (m.abilT || 0) - dt);
     if (m.down) return;
     const tick = CHAR_TICK[charDef(m.id).tick];
@@ -1215,7 +1858,7 @@ function bladeAura(mods, who) {
     if (mon.hp <= 0) return;
     if (cheb(mon.gx, mon.gy, m.gx, m.gy) > R) return;
     damageMonster(mon, dmg * rand(0.9, 1.1), '#7ee8d8', { src: m });
-    applyLeaderGems(mon, dmg, mods);
+    applyLeaderGems(mon, dmg, mods, m);
     if (!mon.aggro) aggroPack(wld, mon);
     hit++;
   });
@@ -1263,6 +1906,9 @@ function updateCombat(dt) {
   // M7a: 저주 사제 오라(파티 공격력 -20%) / 구울의 먹이가 되는 시체 수명
   updateCurseAura(wld, dt);
   updateCorpses(wld, dt);
+  // M7b: 젬 장판(성역/지옥 화염) · 지연 발동(운석 낙하/메아리)
+  updateGemZones(dt);
+  updateGemCasts(dt);
 
   // 파티 공격 — 캐릭터별 공격 형태(CHAR_ATTACK)로 분기한다
   updateShields(dt);
