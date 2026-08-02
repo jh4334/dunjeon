@@ -42,6 +42,11 @@ function shuffle(arr) {
 function isoX(x, y) { return (x - y) * (TILE_W / 2); }
 function isoY(x, y) { return (x + y) * (TILE_H / 2); }
 
+/* ---------------- 세이브 (M6: 버전 체계) ----------------
+ * SAVE_VERSION 을 올릴 때마다 migrateV{n}toV{n+1} 을 하나 추가하면 된다. */
+const SAVE_KEY = 'dunjeon-save';
+const SAVE_VERSION = 3;
+
 /* ---------------- 게임 상태 ---------------- */
 const state = {
   lv: 1, xp: 0, gold: 0,
@@ -99,6 +104,9 @@ const state = {
   equipment: {},                           // { charId: { weapon, armor, trinket } }
   inventory: [],                           // 미장착 보관 (상한 INVENTORY_MAX)
   newItems: 0,                             // 획득 후 아직 장비 탭에서 확인하지 않은 수 (뱃지용)
+  // M6 — 세이브 버전 / 미래 버전 세이브에서 온 '모르는 필드'(다시 저장할 때 되돌려 쓴다)
+  saveVer: SAVE_VERSION,
+  saveExtra: {},
 };
 function xpNeed(lv) { return Math.floor(30 * Math.pow(lv, 1.35)); }
 
@@ -708,114 +716,368 @@ function addSparkle(wx, wy, color) {
     sparkles.push({ wx: wx + rand(-14, 14), wy: wy + rand(-26, 4), t: 0, life: rand(.4, .8), color });
 }
 
-/* ---------------- 저장 ---------------- */
+/* =====================================================================
+ * M6 — 런 텔레메트리 (로컬 전용 · 저장하지 않는다)
+ *
+ * 런 한 판 동안만 살아 있는 통계다. state.run.telemetry 에 붙어 있으므로 런이 끝나
+ * state.run 이 null 이 되면 그대로 사라진다 (정산 모달이 마지막으로 읽어 간다).
+ *   · floors[]  층별 { 도달 시각 · 체류 시간 · 받은 피해 · 처치 · 다운 }
+ *   · cause{}   피해 원인별 누적 — 'mon:<타입>' / 'telegraph' / 'hazard' / 'dark'
+ *   · downCause{} 다운 원인별 횟수
+ * 시계는 state.time (실제 경과 초) 를 쓴다.
+ * =================================================================== */
+const TELE_CAUSE_LABEL = {
+  telegraph: '⚠️ 예고 장판',
+  hazard: '☠️ 지형 피해',
+  dark: '👁 어둠',
+  dot: '🧪 지속 피해',
+};
+function teleCauseLabel(key) {
+  if (!key) return '기타';
+  if (key.indexOf('mon:') === 0) {
+    const t = key.slice(4);
+    return '👹 ' + ((typeof MONSTER_KO !== 'undefined' && MONSTER_KO[t]) || t);
+  }
+  return TELE_CAUSE_LABEL[key] || key;
+}
+/* 피해 원인 키 — 텔레그래프 > 공격자 몬스터 > 호출부가 준 태그 > 지형 */
+function teleCauseOf(attacker, opt) {
+  if (opt && opt.telegraph) return 'telegraph';
+  if (attacker && attacker.type) return 'mon:' + attacker.type;
+  if (opt && opt.cause) return opt.cause;
+  if (opt && opt.dot) return 'dot';
+  return 'hazard';
+}
+function teleNew() {
+  return { t0: state.time, total: 0, floors: [], cause: {}, downCause: {}, dmg: 0, kills: 0, downs: 0 };
+}
+function tele() { return (state.run && state.run.telemetry) || null; }
+function teleFloorCur() { const t = tele(); return t ? t.floors[t.floors.length - 1] : null; }
+/* 층 도달 — 직전 층의 체류 시간을 확정하고 새 칸을 연다 */
+function teleFloor(floor) {
+  const t = tele();
+  if (!t) return null;
+  const prev = teleFloorCur();
+  if (prev) {
+    prev.dur = Math.max(0, state.time - prev.at);
+    if (prev.floor === floor) return prev;          // 같은 층 재진입은 칸을 늘리지 않는다
+  }
+  const f = { floor, at: state.time, rel: Math.max(0, state.time - t.t0), dur: 0, dmg: 0, kills: 0, downs: 0 };
+  t.floors.push(f);
+  return f;
+}
+function teleDamage(cause, amount) {
+  const t = tele();
+  if (!t) return;
+  const v = Number(amount);
+  if (!(v > 0)) return;
+  const k = cause || 'hazard';
+  t.cause[k] = (t.cause[k] || 0) + v;
+  t.dmg += v;
+  t.lastCause = k;
+  const f = teleFloorCur();
+  if (f) f.dmg += v;
+}
+function teleKill(n) {
+  const t = tele();
+  if (!t) return;
+  const v = Math.max(1, Math.floor(n || 1));
+  t.kills += v;
+  const f = teleFloorCur();
+  if (f) f.kills += v;
+}
+function teleDown(cause) {
+  const t = tele();
+  if (!t) return;
+  const k = cause || t.lastCause || 'hazard';
+  t.downCause[k] = (t.downCause[k] || 0) + 1;
+  t.downs++;
+  const f = teleFloorCur();
+  if (f) f.downs++;
+}
+/* 런 종료 — 마지막 층의 체류 시간과 총 소요를 확정한다 (정산 직전 1회) */
+function teleFinish() {
+  const t = tele();
+  if (!t) return null;
+  const f = teleFloorCur();
+  if (f) f.dur = Math.max(0, state.time - f.at);
+  t.total = Math.max(0, state.time - t.t0);
+  return t;
+}
+/* 피해 원인 내림차순 [{ key, label, dmg, pct }] */
+function teleTopCauses(t, n) {
+  if (!t) return [];
+  const total = Object.keys(t.cause).reduce((a, k) => a + t.cause[k], 0);
+  return Object.keys(t.cause)
+    .map(k => ({ key: k, label: teleCauseLabel(k), dmg: t.cause[k], pct: total > 0 ? t.cause[k] / total : 0 }))
+    .sort((a, b) => b.dmg - a.dmg)
+    .slice(0, n || 3);
+}
+
+/* =====================================================================
+ * 저장 — M6: 세이브 버전 체계
+ *
+ * payload 에 `v` (SAVE_VERSION) 를 넣고, 로드는 순수 함수 마이그레이션 체인으로 올린다.
+ *
+ *   v 없음(= v1)  ─migrateV1toV2→  v2  ─migrateV2toV3→  v3  ─sanitizeSave→  적용
+ *
+ *   · v1  Phase 3 시절 구조: meta.classes(직업 해금) / classId(리더) / passives(3갈래 수치)
+ *   · v2  M3.5b 구조:        roster / partyIds / passiveNodes
+ *   · v3  M6:                누락 필드 기본값이 payload 안에서 채워진 상태
+ *
+ * 각 단계는 인자를 건드리지 않고 새 객체를 돌려주는 순수 함수다 (테스트가 직접 부른다).
+ * sanitizeSave 는 버전과 무관하게 항상 마지막에 돈다 — 값 범위/타입 방어가 목적이라
+ * 미래 버전(v>3) 세이브에도 그대로 적용하는 편이 안전하다.
+ *
+ * 전방 호환: v > SAVE_VERSION 인 세이브는 마이그레이션 없이 그대로 읽고, 우리가 모르는
+ * 최상위 필드는 state.saveExtra 에 담아 두었다가 다시 저장할 때 그대로 되돌려 쓴다.
+ * =================================================================== */
 let saveDirty = false;
+
+/* 우리가 아는 최상위 키 — 여기 없는 키는 '모르는 필드'로 보존한다.
+ * (migrateV1toV2 가 만들어 쓰는 내부 표식 passiveLegacy 도 여기 넣어 저장에서 뺀다) */
+const SAVE_KNOWN_KEYS = [
+  'v', 'lv', 'xp', 'gold', 'meta', 'best', 'lastDepth',
+  'azurite', 'flares', 'records', 'difficulty', 'difficultyPicked',
+  'roster', 'partyIds', 'passiveNodes', 'passiveLegacy',
+  'classId', 'gems', 'gemLoadout', 'passivePts', 'passives',
+  'newGems', 'settings', 'hints',
+  'equipment', 'inventory', 'newItems',            // items.js
+  'achv', 'codex', 'weeklyDepth', 'title',         // meta.js
+];
+
+/* 세이브의 버전 — v 필드가 없거나 이상하면 가장 오래된 v1 로 본다 */
+function saveVersionOf(s) {
+  const v = s && Number(s.v);
+  return (isFinite(v) && v >= 1) ? Math.floor(v) : 1;
+}
+
+/* ---- v1 → v2 : 구 직업/패시브 구조를 M3.5b 의 로스터·편성·트리로 승격 (손실 0) ---- */
+function migrateV1toV2(s) {
+  const out = Object.assign({}, s);
+  /* 보유 캐릭터: roster 가 있으면 그대로, 없으면 구 meta.classes(직업 해금)를 승계 */
+  const roster = BASE_CHARS.slice();
+  const add = c => { if (isChar(c) && roster.indexOf(c) < 0) roster.push(c); };
+  if (Array.isArray(s.roster)) s.roster.forEach(add);
+  if (s.meta && Array.isArray(s.meta.classes)) s.meta.classes.forEach(add);
+  out.roster = roster;
+
+  /* 편성: partyIds → 없으면 구 classId 리더 + 기본 3인 */
+  let ids;
+  if (Array.isArray(s.partyIds) && s.partyIds.length === PARTY_SIZE &&
+      s.partyIds.every(id => isChar(id) && roster.indexOf(id) >= 0) &&
+      new Set(s.partyIds).size === PARTY_SIZE) {
+    ids = s.partyIds.slice();
+  } else {
+    ids = DEFAULT_PARTY.slice();
+    const lead = (isChar(s.classId) && roster.indexOf(s.classId) >= 0) ? s.classId : 'knight';
+    const at = ids.indexOf(lead);
+    if (at > 0) { ids[at] = ids[0]; ids[0] = lead; }
+    else if (at < 0) ids[0] = lead;
+  }
+  out.partyIds = ids;
+
+  /* 패시브 트리: passiveNodes 가 있으면 그대로, 없으면 구 passives(0~5 × 3갈래)를
+   * 각 가지 초입 사슬에 그대로 배분한다 (포인트 손실 0). */
+  if (Array.isArray(s.passiveNodes)) {
+    out.passiveNodes = s.passiveNodes.slice();
+    out.passiveLegacy = false;
+  } else if (s.passives && typeof s.passives === 'object') {
+    const nodes = [];
+    PASSIVE_KEYS.forEach(tree => {
+      const n = clamp(Math.floor(s.passives[tree] || 0), 0, 5);
+      for (let i = 0; i < n; i++) nodes.push(LEGACY_CHAIN[tree][i]);
+    });
+    out.passiveNodes = nodes;
+    out.passiveLegacy = true;                 // 사슬 앞머리라 고아 노드가 없다 → 가지치기 생략
+  } else {
+    out.passiveNodes = [];
+    out.passiveLegacy = true;
+  }
+  out.v = 2;
+  return out;
+}
+
+/* ---- v2 → v3 : 구 세이브에 없던 필드의 기본값을 payload 안에서 채운다 ---- */
+function migrateV2toV3(s) {
+  const out = Object.assign({}, s);
+  if (out.xp === undefined) out.xp = 0;
+  if (out.gold === undefined) out.gold = 0;
+  if (out.azurite === undefined) out.azurite = 0;        // M1 이전 세이브
+  if (out.flares === undefined) out.flares = 0;
+  if (out.best === undefined) out.best = 0;
+  if (out.lastDepth === undefined) out.lastDepth = 1;    // 광산 체크포인트
+  if (out.newGems === undefined) out.newGems = 0;
+  if (out.difficultyPicked === undefined) out.difficultyPicked = false;
+  if (!out.records || typeof out.records !== 'object') out.records = {};
+  if (!out.hints || typeof out.hints !== 'object') out.hints = {};
+  if (!out.settings || typeof out.settings !== 'object') out.settings = {};
+  if (!Array.isArray(out.gems)) out.gems = [];
+  if (out.passivePts === undefined) out.passivePts = null;  // null = 레벨에서 소급 지급
+  out.v = 3;
+  return out;
+}
+
+/* ---- 값 방어 (버전 무관 · 항상 마지막) ----
+ * 범위 밖 수치/엉뚱한 타입을 안전한 값으로 눌러 담는다. 모르는 필드는 건드리지 않는다. */
+function sanitizeSave(s) {
+  const out = Object.assign({}, s);
+  const num = (v, d) => (typeof v === 'number' && isFinite(v)) ? v : d;
+  out.lv = clamp(num(out.lv, 1), 1, 99);
+  out.xp = num(out.xp, 0) || 0;
+  out.gold = num(out.gold, 0) || 0;
+  out.azurite = clamp(Math.floor(num(out.azurite, 0)), 0, 9e9);
+  out.flares = clamp(Math.floor(num(out.flares, 0)), 0, 99);
+  out.best = clamp(num(out.best, 0), 0, 999);
+  out.lastDepth = clamp(Math.floor(num(out.lastDepth, 1)) || 1, 1, 999);
+  out.newGems = clamp(Math.floor(num(out.newGems, 0)), 0, 999);
+  out.difficultyPicked = !!out.difficultyPicked;
+  if (!(out.difficulty && DIFFS[out.difficulty])) delete out.difficulty;   // 없으면 기본 난이도 유지
+  // 수치형 메타만 clamp (classes 는 접근자라 제외)
+  if (out.meta && typeof out.meta === 'object') {
+    const m = {};
+    Object.keys(state.meta).forEach(k => {
+      if (k === 'classes') return;
+      m[k] = clamp(num(out.meta[k], 0) || 0, 0, MINE_MAX_LV[k] || 99);
+    });
+    if (Array.isArray(out.meta.classes)) m.classes = out.meta.classes.slice();
+    out.meta = m;
+  }
+  /* 깊이 기록판 — 4개 골격만 정규화하고, meta.js 가 읽는 누적/주간 필드는 그대로 둔다 */
+  const rec = (out.records && typeof out.records === 'object') ? out.records : {};
+  const classBest = {};
+  if (rec.classBest && typeof rec.classBest === 'object') {
+    ROSTER_IDS.forEach(k => {
+      const v = clamp(Math.floor(num(rec.classBest[k], 0)), 0, 999);
+      if (v > 0) classBest[k] = v;
+    });
+  }
+  out.records = Object.assign({}, rec, {
+    classBest,
+    veins: clamp(Math.floor(num(rec.veins, 0)), 0, 9e9),
+    azurite: clamp(Math.floor(num(rec.azurite, 0)), 0, 9e9),
+    bestKills: clamp(Math.floor(num(rec.bestKills, 0)), 0, 9e9),
+  });
+  out.roster = Array.isArray(out.roster) ? out.roster.filter(isChar) : BASE_CHARS.slice();
+  out.partyIds = (Array.isArray(out.partyIds) && out.partyIds.length === PARTY_SIZE)
+    ? out.partyIds.slice() : DEFAULT_PARTY.slice();
+  out.gems = Array.isArray(out.gems) ? out.gems.filter(g => !!GEM_BY_KEY[g]) : [];
+  out.passiveNodes = Array.isArray(out.passiveNodes) ? out.passiveNodes.slice() : [];
+  out.passivePts = (typeof out.passivePts === 'number' && isFinite(out.passivePts))
+    ? clamp(Math.floor(out.passivePts), 0, 999) : null;
+  const set = {};
+  Object.keys(state.settings).forEach(k => {
+    if (out.settings && typeof out.settings[k] === 'boolean') set[k] = out.settings[k];
+  });
+  out.settings = set;
+  out.hints = (out.hints && typeof out.hints === 'object' && !Array.isArray(out.hints))
+    ? Object.assign({}, out.hints) : {};
+  if (!(out.gemLoadout && typeof out.gemLoadout === 'object')) out.gemLoadout = {};
+  return out;
+}
+
+/* ---- 마이그레이션 체인 ----
+ * 읽을 수 없는 입력이면 null (= 세이브 없음, 안전 기본값으로 시작) 을 돌려준다. */
+function migrateSave(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  if (typeof raw.lv !== 'number' || !isFinite(raw.lv)) return null;
+  let s = raw;
+  const v = saveVersionOf(s);
+  if (v < 2) s = migrateV1toV2(s);
+  if (v < 3) s = migrateV2toV3(s);
+  // v > SAVE_VERSION 은 마이그레이션 없이 그대로 (모르는 필드도 그대로 남는다)
+  s = sanitizeSave(s);
+  s.v = Math.max(SAVE_VERSION, v);            // 미래 버전 세이브는 버전 표기를 낮추지 않는다
+  return s;
+}
+
+/* 손상 세이브 경고 — 로드 1회당 한 줄만 */
+let saveWarned = false;
+function warnCorruptSave(why) {
+  if (saveWarned) return;
+  saveWarned = true;
+  console.warn('[dunjeon] 세이브를 읽을 수 없어 기본값으로 시작합니다 — ' + why);
+}
+/* localStorage → 원본 객체 (없으면 null · 손상이면 경고 1줄 후 null) */
+function readRawSave() {
+  let txt = null;
+  try { txt = localStorage.getItem(SAVE_KEY); } catch (e) { return null; }
+  if (txt === null || txt === undefined || txt === '') return null;   // 새 게임 — 경고하지 않는다
+  let raw = null;
+  try { raw = JSON.parse(txt); } catch (e) { warnCorruptSave('JSON 파싱 실패'); return null; }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { warnCorruptSave('최상위 타입 오류'); return null; }
+  if (typeof raw.lv !== 'number' || !isFinite(raw.lv)) { warnCorruptSave('lv 필드 타입 오류'); return null; }
+  return raw;
+}
+
 function loadSave() {
+  saveWarned = false;
   let sv = null;
-  try {
-    const s = JSON.parse(localStorage.getItem('dunjeon-save'));
-    sv = s;
-    if (s && typeof s.lv === 'number') {
-      state.lv = clamp(s.lv, 1, 99);
-      state.xp = s.xp || 0;
-      state.gold = s.gold || 0;
-      // 구 세이브에는 아주라이트/플레어/기록이 없다 → 기본 0
-      state.azurite = clamp(Math.floor(s.azurite || 0), 0, 9e9);
-      // 수치형 메타만 clamp (classes 는 접근자이므로 제외)
-      if (s.meta) for (const k of Object.keys(state.meta)) {
-        if (k === 'classes') continue;
-        state.meta[k] = clamp(s.meta[k] || 0, 0, MINE_MAX_LV[k] || 99);
-      }
-      /* ---- 깊이 기록판 (구 세이브: best 만 소급, 나머지는 0) ---- */
-      state.records = { classBest: {}, veins: 0, azurite: 0, bestKills: 0 };
-      const rec = s.records;
-      if (rec && typeof rec === 'object') {
-        if (rec.classBest && typeof rec.classBest === 'object') {
-          ROSTER_IDS.forEach(k => {
-            const v = clamp(Math.floor(rec.classBest[k] || 0), 0, 999);
-            if (v > 0) state.records.classBest[k] = v;
-          });
-        }
-        state.records.veins = clamp(Math.floor(rec.veins || 0), 0, 9e9);
-        state.records.azurite = clamp(Math.floor(rec.azurite || 0), 0, 9e9);
-        state.records.bestKills = clamp(Math.floor(rec.bestKills || 0), 0, 9e9);
-      }
-      state.flares = clamp(Math.floor(s.flares || 0), 0, 99);
-      state.best = clamp(s.best || 0, 0, 999);
-      // 광산 체크포인트 — 구 세이브에는 없으므로 기본 1
-      state.lastDepth = clamp(Math.floor(s.lastDepth || 1), 1, 999);
-      if (s.difficulty && DIFFS[s.difficulty]) state.difficulty = s.difficulty;
-      state.difficultyPicked = !!s.difficultyPicked;
+  try { sv = migrateSave(readRawSave()); }
+  catch (e) { warnCorruptSave('마이그레이션 실패: ' + e.message); sv = null; }
 
-      /* ---- M3.5b: 보유 캐릭터 ----
-       * roster 가 있으면 그대로, 없으면 구 meta.classes(직업 해금)를 승계한다. */
-      state.roster = BASE_CHARS.slice();
-      if (Array.isArray(s.roster)) {
-        s.roster.forEach(c => { if (isChar(c) && state.roster.indexOf(c) < 0) state.roster.push(c); });
-      }
-      if (s.meta && Array.isArray(s.meta.classes)) {
-        s.meta.classes.forEach(c => { if (isChar(c) && state.roster.indexOf(c) < 0) state.roster.push(c); });
-      }
-      /* ---- 편성: partyIds → 없으면 구 classId 리더 + 기본 3인 ---- */
-      let ids = null;
-      if (Array.isArray(s.partyIds) && s.partyIds.length === PARTY_SIZE &&
-          s.partyIds.every(id => isChar(id) && state.roster.indexOf(id) >= 0) &&
-          new Set(s.partyIds).size === PARTY_SIZE) {
-        ids = s.partyIds.slice();
-      } else {
-        ids = DEFAULT_PARTY.slice();
-        const lead = (isChar(s.classId) && state.roster.indexOf(s.classId) >= 0) ? s.classId : 'knight';
-        const at = ids.indexOf(lead);
-        if (at > 0) { ids[at] = ids[0]; ids[0] = lead; }
-        else if (at < 0) ids[0] = lead;
-      }
-      state.partyIds = ids;
+  state.saveVer = SAVE_VERSION;
+  state.saveExtra = {};
+  if (sv) {
+    state.saveVer = saveVersionOf(sv);
+    // 우리가 모르는 최상위 필드는 그대로 보관했다가 다시 저장할 때 되돌려 쓴다 (전방 호환)
+    Object.keys(sv).forEach(k => { if (SAVE_KNOWN_KEYS.indexOf(k) < 0) state.saveExtra[k] = sv[k]; });
 
-      state.gems = Array.isArray(s.gems) ? s.gems.filter(g => !!GEM_BY_KEY[g]) : [];
-      state.gemLoadout = {};
-      state.roster.forEach(id => { state.gemLoadout[id] = { skill: null, support: null }; });
-      if (s.gemLoadout && typeof s.gemLoadout === 'object') {
-        state.roster.forEach(id => {
-          const src = s.gemLoadout[id];
-          if (!src) return;
-          ['skill', 'support'].forEach(slot => {
-            const g = GEM_BY_KEY[src[slot]];
-            if (g && gemFits(g, id, slot) && gemAvailable(src[slot]) > 0) state.gemLoadout[id][slot] = src[slot];
-          });
-        });
-      }
-
-      /* ---- 패시브 트리 ----
-       * passiveNodes 가 있으면 그대로, 없으면 구 passives(0~5 × 3갈래)를
-       * 각 가지 초입 사슬에 그대로 배분한다 (포인트 손실 0). */
-      state.passiveNodes = [];
-      bumpTree();
-      if (Array.isArray(s.passiveNodes)) {
-        s.passiveNodes.forEach(id => {
-          if (PASSIVE_BY_ID[id] && PASSIVE_BY_ID[id].kind !== 'root' && state.passiveNodes.indexOf(id) < 0)
-            state.passiveNodes.push(id);
-        });
-        bumpTree();
-        pruneOrphans();
-      } else if (s.passives && typeof s.passives === 'object') {
-        PASSIVE_KEYS.forEach(tree => {
-          const n = clamp(Math.floor(s.passives[tree] || 0), 0, 5);
-          for (let i = 0; i < n; i++) state.passiveNodes.push(LEGACY_CHAIN[tree][i]);
-        });
-        bumpTree();
-      }
-      state.passivePts = (typeof s.passivePts === 'number')
-        ? clamp(Math.floor(s.passivePts), 0, 999)
-        : Math.max(0, state.lv - 1 - passiveSpent());   // 구 세이브 소급 지급
-
-      /* ---- 리뷰 4차: 설정 / 온보딩 힌트 / 새 젬 알림 ---- */
-      if (s.settings) Object.keys(state.settings).forEach(k => {
-        if (typeof s.settings[k] === 'boolean') state.settings[k] = s.settings[k];
-      });
-      state.hints = (s.hints && typeof s.hints === 'object') ? Object.assign({}, s.hints) : {};
-      state.newGems = clamp(Math.floor(s.newGems || 0), 0, 999);
+    state.lv = sv.lv;
+    state.xp = sv.xp;
+    state.gold = sv.gold;
+    state.azurite = sv.azurite;
+    if (sv.meta) for (const k of Object.keys(state.meta)) {
+      if (k === 'classes') continue;
+      state.meta[k] = sv.meta[k] || 0;
     }
-  } catch (e) { sv = null; }
+    state.records = {
+      classBest: Object.assign({}, sv.records.classBest),
+      veins: sv.records.veins, azurite: sv.records.azurite, bestKills: sv.records.bestKills,
+    };
+    state.flares = sv.flares;
+    state.best = sv.best;
+    state.lastDepth = sv.lastDepth;
+    if (sv.difficulty) state.difficulty = sv.difficulty;
+    state.difficultyPicked = sv.difficultyPicked;
+
+    /* 로스터 / 편성 — 마이그레이션이 이미 형태를 맞춰 두었다 */
+    state.roster = BASE_CHARS.slice();
+    sv.roster.forEach(c => { if (state.roster.indexOf(c) < 0) state.roster.push(c); });
+    state.partyIds = (sv.partyIds.every(id => isChar(id) && state.roster.indexOf(id) >= 0) &&
+                      new Set(sv.partyIds).size === PARTY_SIZE)
+      ? sv.partyIds.slice() : DEFAULT_PARTY.slice();
+
+    /* 젬 — 장착 검증은 보유 목록(state.gems)이 정해진 뒤라야 할 수 있다 */
+    state.gems = sv.gems.slice();
+    state.gemLoadout = {};
+    state.roster.forEach(id => { state.gemLoadout[id] = { skill: null, support: null }; });
+    state.roster.forEach(id => {
+      const src = sv.gemLoadout[id];
+      if (!src) return;
+      ['skill', 'support'].forEach(slot => {
+        const g = GEM_BY_KEY[src[slot]];
+        if (g && gemFits(g, id, slot) && gemAvailable(src[slot]) > 0) state.gemLoadout[id][slot] = src[slot];
+      });
+    });
+
+    /* 패시브 트리 — 노드 유효성/연결성 검증은 트리 인덱스(bumpTree)가 필요하다 */
+    state.passiveNodes = [];
+    bumpTree();
+    sv.passiveNodes.forEach(id => {
+      if (PASSIVE_BY_ID[id] && PASSIVE_BY_ID[id].kind !== 'root' && state.passiveNodes.indexOf(id) < 0)
+        state.passiveNodes.push(id);
+    });
+    bumpTree();
+    if (!sv.passiveLegacy) pruneOrphans();
+    state.passivePts = (sv.passivePts === null)
+      ? Math.max(0, state.lv - 1 - passiveSpent())      // 구 세이브 소급 지급
+      : sv.passivePts;
+
+    Object.keys(sv.settings).forEach(k => { state.settings[k] = sv.settings[k]; });
+    state.hints = Object.assign({}, sv.hints);
+    state.newGems = sv.newGems;
+  }
   // 편성 반영 (party 슬롯에 캐릭터를 입힌다)
   applyPartyIds(true);
   // 세이브 유무와 무관하게 로드아웃 골격을 보장
@@ -827,24 +1089,32 @@ function loadSave() {
   // 장비까지 반영한 뒤에야 최대 체력이 확정되므로 HP 초기화는 마지막에 한다
   party.forEach(m => { m.hp = maxHp(m); });
 }
+/* 저장 payload — 모르는 필드(saveExtra)를 먼저 깔고 그 위에 우리가 아는 값을 덮는다 */
+function savePayload() {
+  return Object.assign({}, state.saveExtra, {
+    // 세이브 버전 — 미래 버전에서 온 세이브라면 그 번호를 낮추지 않는다
+    v: Math.max(SAVE_VERSION, state.saveVer || SAVE_VERSION),
+    lv: state.lv, xp: state.xp, gold: state.gold, meta: state.meta, best: state.best,
+    lastDepth: state.lastDepth,
+    // M1 후속 — 아주라이트 / 플레어 / 깊이 기록
+    azurite: state.azurite, flares: state.flares, records: state.records,
+    difficulty: state.difficulty, difficultyPicked: state.difficultyPicked,
+    // M3.5b — 로스터 / 편성 / 트리
+    roster: state.roster, partyIds: state.partyIds, passiveNodes: state.passiveNodes,
+    // Phase 3 (구 필드도 계속 기록 — 구버전으로 되돌려도 읽을 수 있게)
+    classId: state.classId, gems: state.gems, gemLoadout: state.gemLoadout,
+    passivePts: state.passivePts, passives: state.passives,
+    // 리뷰 4차
+    newGems: state.newGems, settings: state.settings, hints: state.hints,
+  // M2 — 장비 / 인벤토리 (영구 소장) · M4 — 도전 과제 / 도감 / 주간
+  }, saveItemsPayload(), saveMetaPayload());
+}
+function flushSave() {
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(savePayload())); return true; }
+  catch (e) { return false; }
+}
 setInterval(() => {
   if (!saveDirty) return;
   saveDirty = false;
-  try {
-    localStorage.setItem('dunjeon-save', JSON.stringify(Object.assign({
-      lv: state.lv, xp: state.xp, gold: state.gold, meta: state.meta, best: state.best,
-      lastDepth: state.lastDepth,
-      // M1 후속 — 아주라이트 / 플레어 / 깊이 기록
-      azurite: state.azurite, flares: state.flares, records: state.records,
-      difficulty: state.difficulty, difficultyPicked: state.difficultyPicked,
-      // M3.5b — 로스터 / 편성 / 트리
-      roster: state.roster, partyIds: state.partyIds, passiveNodes: state.passiveNodes,
-      // Phase 3 (구 필드도 계속 기록 — 구버전으로 되돌려도 읽을 수 있게)
-      classId: state.classId, gems: state.gems, gemLoadout: state.gemLoadout,
-      passivePts: state.passivePts, passives: state.passives,
-      // 리뷰 4차
-      newGems: state.newGems, settings: state.settings, hints: state.hints,
-    // M2 — 장비 / 인벤토리 (영구 소장) · M4 — 도전 과제 / 도감 / 주간
-    }, saveItemsPayload(), saveMetaPayload())));
-  } catch (e) { /* 무시 */ }
+  flushSave();
 }, 3000);

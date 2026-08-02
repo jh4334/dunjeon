@@ -1,0 +1,6 @@
+# 테스트 산출물 (스크린샷 / 로그) — 저장소에 넣지 않는다
+tests/out/
+
+# 개발 의존성 (playwright). 게임 자체는 의존성 없이 index.html 만 열면 돌아간다.
+node_modules
+npm-debug.log*
