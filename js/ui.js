@@ -1131,6 +1131,73 @@ function updateHudMode() {
   bio.classList.toggle('hidden', !dungeon);
   autoPath = null;
 }
+/* ---- M3: 보스전 상단 고정 HP 바 ----
+ * 이름 + 어픽스 스타일 프레임. 히드라는 머리 3개를 분할 표시한다.
+ * (몬스터 머리 위의 작은 바는 draw.js 에서 그대로 유지) */
+function activeBoss() {
+  const w = state.world;
+  if (!w || w.mode !== 'dungeon' || !w.monsters) return null;
+  return w.monsters.find(m => m.boss && m.hp > 0) || null;
+}
+function bossBarInfo() {
+  const b = activeBoss();
+  if (!b) return null;
+  const def = (typeof BOSSES !== 'undefined' && BOSSES[b.type]) || null;
+  const segs = b.heads
+    ? b.heads.map(h => ({ name: h.name, ratio: clamp(h.hp / h.maxHp, 0, 1), hp: Math.max(0, Math.ceil(h.hp)), maxHp: h.maxHp, dead: h.hp <= 0 }))
+    : [{ name: '', ratio: clamp(b.hp / b.maxHp, 0, 1), hp: Math.max(0, Math.ceil(b.hp)), maxHp: Math.ceil(b.maxHp), dead: false }];
+  return {
+    type: b.type,
+    name: MONSTER_KO[b.type] || (def && def.name) || '보스',
+    icon: (def && def.icon) || '👑',
+    gimmick: (def && def.gimmick) || '',
+    hp: Math.max(0, Math.ceil(b.hp)), maxHp: Math.ceil(b.maxHp),
+    ratio: clamp(b.hp / b.maxHp, 0, 1),
+    enraged: !!b.enraged, invuln: !!b.invuln,
+    affixes: (b.affixNames || []).join('·'),
+    segs,
+  };
+}
+let bossBarKey = '';
+function updateBossBar() {
+  const wrap = el('bossBar');
+  if (!wrap) return null;
+  const info = bossBarInfo();
+  if (!info) {
+    if (!wrap.classList.contains('hidden')) {
+      wrap.classList.add('hidden');
+      wrap.classList.remove('enrage', 'invuln');
+      bossBarKey = '';
+    }
+    return null;
+  }
+  const key = `${info.type}:${info.segs.length}`;
+  if (key !== bossBarKey) {
+    bossBarKey = key;
+    el('bossBarSegs').innerHTML = info.segs.map((s, i) =>
+      `<div class="bbSeg" data-seg="${i}"><div class="bbFill"></div><span class="bbSegName">${s.name || ''}</span></div>`).join('');
+  }
+  wrap.classList.remove('hidden');
+  const label = info.affixes ? `${info.affixes} ${info.name}` : info.name;
+  el('bossBarName').textContent = `${info.icon} ${label}`;
+  el('bossBarHp').textContent = `${fmt(info.hp)} / ${fmt(info.maxHp)}`;
+  const segEls = el('bossBarSegs').children;
+  info.segs.forEach((s, i) => {
+    const e = segEls[i];
+    if (!e) return;
+    e.classList.toggle('dead', s.dead);
+    e.querySelector('.bbFill').style.width = (s.ratio * 100).toFixed(1) + '%';
+  });
+  const tag = el('bossBarTag');
+  const tagTxt = info.invuln ? '🛡️ 무적' : info.enraged ? '💢 격노' : '';
+  tag.textContent = tagTxt;
+  tag.classList.toggle('hidden', !tagTxt);
+  el('bossBarGimmick').textContent = info.gimmick;
+  wrap.classList.toggle('enrage', info.enraged);
+  wrap.classList.toggle('invuln', info.invuln);
+  return info;
+}
+
 function updateHud() {
   el('lvVal').textContent = state.lv;
   el('goldVal').textContent = fmt(state.gold);
@@ -1147,6 +1214,8 @@ function updateHud() {
   el('dungeonBanner').classList.toggle('hidden', !nearEntrance);
   el('recLv').textContent = 3;
   updateBuffBar();
+  updateBossBar();
+  syncTopHud();               // 좁은 폭에서 좌상단 줄 아래 요소들을 밀어 준다
   updatePartyBadge();
   checkGoldHint();
 }
@@ -1166,6 +1235,44 @@ function updateDarkHud() {
   el('flareVal').textContent = String(state.flares);
   fbtn.disabled = state.flares <= 0;
 }
+/* ---- 좁은 폭 HUD 재배치 ----
+ * 좌상단 줄(Lv/골드/◆)이 줄바꿈되면 그 아래 요소들이 겹치므로,
+ * 실제 높이를 재서 버프 칩 줄 → 보스 HP 바 → 탈출 버튼 순으로 내려 준다.
+ * (넓은 화면에서는 인라인 스타일을 지워 CSS 값으로 되돌린다) */
+const HUD_NARROW_W = 480;
+const HUD_GAP = 8;
+let hudStackKey = '';
+function syncTopHud() {
+  const bar = el('buffBar'), tl = el('topLeft'), bb = el('bossBar'), ep = el('explorePanel');
+  if (!bar || !tl) return null;
+  const esc = el('escapeBtn'), ban = el('dungeonBanner');
+  const narrow = innerWidth <= HUD_NARROW_W;
+  const bossOn = !!bb && !bb.classList.contains('hidden');
+  // 1) 좁은 폭: 좌상단 줄이 2줄이 되면 버프 칩 줄을 그 아래로
+  const barTop = narrow ? Math.round(tl.getBoundingClientRect().bottom) + 6 : null;
+  const key = `${narrow ? barTop : 'w'}:${bossOn ? 1 : 0}`;
+  if (key === hudStackKey) return null;
+  hudStackKey = key;
+  bar.style.top = narrow ? barTop + 'px' : '';
+  if (!bossOn) {
+    if (bb) bb.style.top = '';
+    [esc, ban].forEach(e => { if (e) e.style.top = ''; });
+    return { narrow, barTop, bossTop: null };
+  }
+  // 2) 보스 바는 항상 버프 칩 줄 · 탐험 패널 아래에 (칩이 늘어 2줄이 돼도 겹치지 않게)
+  const below = Math.max(bar.getBoundingClientRect().bottom, ep ? ep.getBoundingClientRect().bottom : 0);
+  const bossTop = Math.round(below) + HUD_GAP;
+  bb.style.top = bossTop + 'px';
+  // 3) 좁은 폭에서는 탈출 버튼/입구 배너가 보스 바와 같은 줄에 오므로 아래로 민다
+  if (narrow) {
+    const escTop = Math.round(bossTop + bb.getBoundingClientRect().height) + 10;
+    [esc, ban].forEach(e => { if (e) e.style.top = escTop + 'px'; });
+  } else {
+    [esc, ban].forEach(e => { if (e) e.style.top = ''; });
+  }
+  return { narrow, barTop, bossTop };
+}
+
 let buffBarCache = '';
 function updateBuffBar() {
   let html = '';
