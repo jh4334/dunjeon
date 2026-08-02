@@ -754,6 +754,10 @@ function countWalkable(wld) {
 
 // rad 를 주면 그 반경으로 (플레어가 던져진 자리를 밝힐 때 사용)
 function reveal(wld, cx, cy, rad) {
+  revealTiles(wld, cx, cy, rad);
+  noticeDiscoveries(wld);          // 계단/상인을 처음 봤을 때의 대사 (dialogue.js)
+}
+function revealTiles(wld, cx, cy, rad) {
   const R = rad || revealRadius();
   for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
     if (dx * dx + dy * dy > R * R + 1) continue;

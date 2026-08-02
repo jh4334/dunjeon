@@ -621,6 +621,9 @@ function pickupDrop(drop) {
   if (RARITY_RANK[it.rarity] >= RARITY_RANK.rare) {
     toast(`${itemIcon(it)} ${itemLabel(it)} 획득 — 👤 장비 탭에서 장착!`);
   }
+  // 고유 장비는 전용 대사, 그 외 값나가는 드랍은 '보물' 대사
+  if (it.rarity === 'unique') sayEvent('unique', null, { force: true });
+  else if (RARITY_RANK[it.rarity] >= RARITY_RANK.rare) sayEvent('treasure');
   return it;
 }
 

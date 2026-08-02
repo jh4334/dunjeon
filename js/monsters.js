@@ -203,6 +203,8 @@ function aggroPack(wld, mon) {
   if (mon.aggro) return false;
   mon.aggro = true;
   addFloater(mon.px, mon.py - 46, '!', '#ff6b6b', 16);
+  // 전투 개시 / 보스 조우 대사 (쿨다운은 sayEvent 가 관리한다)
+  if (mon.boss) sayBoss(mon); else sayEvent('combat');
   if (mon.packId == null) return true;
   wld.monsters.forEach(o => { if (o.hp > 0 && o.packId === mon.packId) o.aggro = true; });
   return true;
