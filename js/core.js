@@ -54,9 +54,17 @@ const state = {
     lamp: 0, pickaxe: 0, pouch: 0, detector: 0,
   },
   // 깊이 기록판 (초원 비석) — 런 진행 중 자동 갱신
+  // M4: 누적 카운터(kills/goldTotal/bossKills/…) · 주간 기록(weekly)은 meta.js 의
+  //     ensureMeta() 가 골격을 채운다 (구 세이브 호환 — 여기서는 최소 골격만).
   records: { classBest: {}, veins: 0, azurite: 0, bestKills: 0 },
+  // M4 — 주간 모드 / 도전 과제 / 도감 (전부 meta.js 가 관리)
+  weeklyDepth: 1,                                         // 주간 런 체크포인트 (일반 lastDepth 와 분리)
+  achv: {},                                               // { 과제 id: 달성 epoch }
+  title: '',                                              // 달성 구간 칭호
+  codex: { mons: {}, relics: [], gems: [], uniques: [] },  // 도감
   // 어둠 게이지 (광산 층에서만) — 저장하지 않는 런 상태
   darkStack: 0, darkAway: 0, darkTick: 0, darkWarned: false, darkSafe: true,
+  darkHigh: false,                                        // M4: 어둠 8스택을 찍은 적이 있는가 (과제 판정)
   run: null,                                              // 현재 던전 런 (버프/기록)
   paused: false,
   best: 0,                                                // 최고 도달 깊이 (영구 기록)
@@ -99,7 +107,8 @@ const DIFFS = {
 };
 DIFFS.hard.desc = '받는 피해 +35%<br>보상 +50%<br>전멸 시 골드 -25%';
 function diff() { return DIFFS[state.difficulty] || DIFFS.normal; }
-function rewardMult() { return diff().reward; }
+// 주간 런에서는 이번 주 룰의 보상 배율이 곱해진다 (일반 런에서는 weeklyMods().reward === 1)
+function rewardMult() { return diff().reward * weeklyMods().reward; }
 
 /* =====================================================================
  * M3.5b — 캐릭터 보유 / 파티 편성
@@ -308,6 +317,7 @@ function gemAvailable(k) { return gemOwned(k) - gemEquippedCount(k); }
 function giveGem(k) {
   if (!GEM_BY_KEY[k]) return false;
   state.gems.push(k);
+  codexGem(k);                                 // M4: 스킬 젬 도감 등록
   state.newGems = (state.newGems || 0) + 1;    // 👤 버튼 뱃지에 '새 젬'으로 표시
   updatePartyBadge();
   saveDirty = true;
@@ -520,7 +530,8 @@ function loneMult(m) { return hasKeystone('lone') ? (m === leader ? 1.6 : 0.8) :
 // 광부의 헬멧 램프(아주라이트 강화) — 레벨당 시야 +0.5
 function lampSight()       { return 0.5 * mineLv('lamp'); }
 // 장비 '시야 +' 접사는 파티 전원 합산 (items.js)
-function sightRadius()     { return SIGHT + passiveSight() + lampSight() + equipSight(); }
+// 주간 '짙은 안개' 룰은 시야를 2 줄인다 (하한 1.5 — 발밑은 항상 보인다)
+function sightRadius()     { return Math.max(1.5, SIGHT + passiveSight() + lampSight() + equipSight() + weeklyMods().sight); }
 function revealRadius()    { return REVEAL + passiveSight(); }
 
 /* ---------------- 파티 ---------------- */
@@ -603,7 +614,7 @@ function floorRisk() {
   return (w && w.mode === 'dungeon' && w.riskMult) ? w.riskMult : 1;
 }
 // equipGoldMul() = 장비 '골드 획득 +%' × 「도박꾼의 동전」(획득마다 0.5~1.5배 랜덤)
-function goldMult() { return 1.3 * (1 + 0.10 * state.meta.gold) * (1 + 0.20 * runBuff('gold')) * (1 + 0.30 * relicCount('charm')) * rewardMult() * floorRisk() * passiveGoldMult() * equipGoldMul(); }
+function goldMult() { return 1.3 * (1 + 0.10 * state.meta.gold) * (1 + 0.20 * runBuff('gold')) * (1 + 0.30 * relicCount('charm')) * rewardMult() * floorRisk() * passiveGoldMult() * equipGoldMul() * weeklyMods().goldMul; }
 
 /* ---- 실드 (M3.5b) ----
  * 피해를 먼저 흡수하는 임시 보호막. 성기사/무녀/트리 노드가 부여한다. */
@@ -640,7 +651,7 @@ function partyCdAura() {
  * 캠프의 ◆ 광산 장비(시야/채굴/플레어/탐지기)를 사는 데만 쓴다. */
 function addAzurite(n) {
   // 장비 '아주라이트 획득 +%' (파티 합산) + 트리 반영
-  const v = Math.max(0, Math.floor((Number(n) || 0) * equipAzMul() * passiveAzMult()) || 0);
+  const v = Math.max(0, Math.floor((Number(n) || 0) * equipAzMul() * passiveAzMult() * weeklyMods().azMul) || 0);
   if (!v) return 0;
   state.azurite += v;
   if (state.run) state.run.azuriteGained = (state.run.azuriteGained || 0) + v;
@@ -807,6 +818,8 @@ function loadSave() {
   ownedChars().forEach(id => { loadoutOf(id); });
   // M2 장비 — 구 세이브(equipment/inventory 없음)면 빈 상태로 초기화된다
   loadItemsSave(sv);
+  // M4 메타 — 도전 과제 / 도감 / 주간 기록. 장비 로드 뒤라야 고유 장비를 소급 등록할 수 있다
+  loadMetaSave(sv);
   // 장비까지 반영한 뒤에야 최대 체력이 확정되므로 HP 초기화는 마지막에 한다
   party.forEach(m => { m.hp = maxHp(m); });
 }
@@ -827,7 +840,7 @@ setInterval(() => {
       passivePts: state.passivePts, passives: state.passives,
       // 리뷰 4차
       newGems: state.newGems, settings: state.settings, hints: state.hints,
-    // M2 — 장비 / 인벤토리 (영구 소장)
-    }, saveItemsPayload())));
+    // M2 — 장비 / 인벤토리 (영구 소장) · M4 — 도전 과제 / 도감 / 주간
+    }, saveItemsPayload(), saveMetaPayload())));
   } catch (e) { /* 무시 */ }
 }, 3000);

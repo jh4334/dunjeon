@@ -56,6 +56,7 @@ function finishVein(p) {
   const az = veinAzurite(floor);
   addAzurite(az);
   if (state.records) state.records.veins = (state.records.veins || 0) + 1;
+  checkAchievements();                      // M4: '광맥 50회' 과제
   const wx = isoX(p.gx, p.gy), wy = isoY(p.gx, p.gy);
   addFloater(wx, wy - 24, `+${fmt(az)} ◆`, '#7ec8ff', 16);
   addSparkle(wx, wy, '#7ec8ff');
@@ -125,6 +126,7 @@ function updateMining(dt) {
  *  · 플레어는 그 자리에 영구 광원을 만든다 (소지 2 + 플레어 주머니 Lv).
  * =================================================================== */
 const DARK_MAX = 10;               // 스택 상한
+const DARK_SURVIVE_AT = 8;         // M4: 이 스택을 찍고 살아 돌아오면 '어둠을 견디다' 달성
 const DARK_RATE = 1;               // 어둠 속: 초당 스택 +1
 const DARK_RECOVER = 2;            // 광원 근처: 초당 스택 -2
 const DARK_GRACE = 6;              // 광원을 벗어난 뒤 이만큼(초) 지나야 잠식이 시작된다
@@ -137,7 +139,8 @@ const FLARE_BASE = 2;              // 기본 플레어 소지 수
 
 function darkActive() {
   const w = state.world;
-  return !!(w && w.mode === 'dungeon' && w.biome === 'mine');
+  // M4 주간 '짙은 안개' — 갱도(mine) 뿐 아니라 모든 광산 바이옴에서 어둠이 발동한다
+  return !!(w && w.mode === 'dungeon' && (w.biome === 'mine' || weeklyMods().dark));
 }
 function maxFlares() { return FLARE_BASE + mineLv('pouch'); }
 // 광원 반경 — 「등불지기」를 착용하면 +2
@@ -177,6 +180,7 @@ function darkRecoverMul() { return anyUnique('lantern') ? UNIQ_DARK_RECOVER_MUL 
 function resetDarkness() {
   state.darkStack = 0; state.darkAway = 0; state.darkTick = 0;
   state.darkWarned = false; state.darkSafe = true;
+  state.darkHigh = false;                  // M4: '어둠을 견디다' 판정 플래그
 }
 // 어둠 피해는 방어 보정 없이 그대로 들어간다 (난이도 보정은 darkDps 안에서 끝난다)
 function applyDarkDamage(d) {
@@ -215,6 +219,12 @@ function updateDarkness(dt) {
       while (state.darkTick >= 1) { state.darkTick -= 1; applyDarkDamage(darkDps()); }
     }
   }
+  // M4 '어둠을 견디다' — 8스택을 찍고 살아서 1스택 아래로 회복하면 달성
+  if (state.darkStack >= DARK_SURVIVE_AT) state.darkHigh = true;
+  else if (state.darkHigh && state.darkStack <= 1) {
+    state.darkHigh = false;
+    if (aliveMembers().length > 0) noteEvent('dark8');
+  }
   if (state.darkStack < DARK_WARN_AT) state.darkWarned = false;
   else if (!state.darkWarned) {
     state.darkWarned = true;
@@ -235,6 +245,8 @@ function useFlare() {
   reveal(wld, leader.gx, leader.gy, lightRadius());  // 던진 곳 주변을 밝힌다
   state.darkAway = 0;
   state.darkTick = 0;
+  bumpRecord('flares');                     // M4: '플레어 30개' 과제
+  checkAchievements();
   addFloater(leader.px, leader.py - 50, '🔥 플레어!', '#ffb066', 15);
   addSparkle(leader.px, leader.py, '#ffb066');
   sfx('flare');

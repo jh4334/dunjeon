@@ -1324,6 +1324,48 @@ function drawProp(sx, sy, p) {
       ctx.fill();
       break;
     }
+    case 'weekly': {                    // M4 주간 도전 포탈 (초원 캠프 옆 · 보라 아치)
+      const t = state.time;
+      const pg = .5 + Math.sin(t * 2.0) * .28;
+      // 바닥 발광
+      ctx.fillStyle = `rgba(150, 90, 255, ${0.22 + pg * 0.16})`;
+      ctx.beginPath(); ctx.ellipse(0, -3, 24, 11, 0, 0, Math.PI * 2); ctx.fill();
+      // 돌 아치 기둥
+      ctx.fillStyle = '#4b3a63';
+      rr(-19, -50, 8, 46, 3);
+      rr(11, -50, 8, 46, 3);
+      ctx.fillStyle = '#5d4a79';
+      rr(-19, -56, 38, 9, 4);
+      // 포탈 소용돌이
+      ctx.save();
+      ctx.beginPath(); ctx.ellipse(0, -30, 12, 20, 0, 0, Math.PI * 2); ctx.clip();
+      ctx.fillStyle = `rgba(96, 40, 150, ${0.75 + pg * 0.2})`;
+      ctx.fillRect(-14, -52, 28, 44);
+      for (let i = 0; i < 3; i++) {
+        const a = t * 1.5 + i * 2.1;
+        ctx.fillStyle = `rgba(200, 150, 255, ${0.22 + pg * 0.22})`;
+        ctx.beginPath();
+        ctx.ellipse(Math.cos(a) * 5, -30 + Math.sin(a) * 9, 9 - i * 2, 15 - i * 3, a * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+      // 테두리 링
+      ctx.strokeStyle = `rgba(206, 160, 255, ${.55 + pg * .4})`;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath(); ctx.ellipse(0, -30, 12, 20, 0, 0, Math.PI * 2); ctx.stroke();
+      // 떠다니는 룬 입자
+      for (let i = 0; i < 3; i++) {
+        const a = t * 1.1 + i * 2.4;
+        ctx.fillStyle = `rgba(224, 190, 255, ${0.35 + pg * 0.4})`;
+        ctx.beginPath();
+        ctx.arc(Math.cos(a) * 16, -34 + Math.sin(a * 1.3) * 12, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = `rgba(235, 215, 255, ${.7 + pg * .3})`;
+      ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('🌀', 0, -58);
+      break;
+    }
     case 'records': {                   // 깊이 기록 비석 (초원 캠프 옆 · 룬석 확대판)
       // 받침돌
       ctx.fillStyle = '#7d8b99';
