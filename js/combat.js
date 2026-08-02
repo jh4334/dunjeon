@@ -1,6 +1,11 @@
 /* =====================================================================
- * 던전 (DunJeon) — 이동 · 전투 · 직업 능력(미니언/지뢰/블레이드 오라)
- * 로드 순서 5번. monsters.js 의 몬스터 헬퍼를 런타임에 쓴다.
+ * 던전 (DunJeon) — 이동 · 전투 · 캐릭터 고유 능력
+ * 로드 순서 9번. monsters.js 의 몬스터 헬퍼를 런타임에 쓴다.
+ *
+ * M3.5b: "리더 직업"이 아니라 "파티에 편성된 캐릭터"가 능력을 낸다.
+ *   · CHAR_ATTACK  공격 형태 (기본/스플래시/관통/연타/광역/화상/한기/마법/치유)
+ *   · CHAR_TICK    지속 능력 (소환·오라·실드·회복병·감속장·변신)
+ * 두 표 모두 roster.js 의 char.attack / char.tick 키로 찾아 쓴다.
  * =================================================================== */
 'use strict';
 
@@ -52,9 +57,10 @@ function collectItemsNear() {
     if (it.type === 'equip') {
       pickupDrop(it);                                    // M2 장비 — 인벤토리로
     } else if (it.type === 'potion') {
+      const pmul = potionMult();                          // 포포(연금술사) = 2배
       party.forEach(m => {
         if (!m.down) {
-          m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * 0.25);
+          m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * 0.25 * pmul);
           addSparkle(m.px, m.py, '#ff9eae');
         }
       });
@@ -82,10 +88,11 @@ function collectItemsNear() {
 function onLeaderArrive() {
   const wld = state.world;
   reveal(wld, leader.gx, leader.gy);
-  // 폭탄공: 지나온 칸에 지뢰를 남긴다 (쿨 1.2초 · 동시 최대 6개)
-  if (wld.mode === 'dungeon' && state.classId === 'bomber' && (leader.mineCd || 0) <= 0) {
-    const back = trail[0];
-    if (back && placeMine(back.x, back.y)) leader.mineCd = 0.9;
+  // 봄이(폭탄공): 지나온 칸에 지뢰를 남긴다 — 리더가 아니어도 파티에 있으면 깔린다
+  const bm = memberWithAbility('bomb');
+  if (wld.mode === 'dungeon' && bm && !bm.down && (bm.mineCd || 0) <= 0) {
+    const back = (bm === leader) ? trail[0] : { x: bm.fromX, y: bm.fromY };
+    if (back && placeMine(back.x, back.y, bm)) bm.mineCd = 0.9;
   }
   // 아이템 획득 (리더 주변 1칸) — 상자→장비처럼 회수가 회수를 부르므로 소진될 때까지 반복
   for (let pass = 0; pass < 4 && collectItemsNear(); pass++) ;
@@ -133,10 +140,10 @@ function onLeaderArrive() {
       if (Math.random() < 0.4) {
         shrine.cursed = true;
         spawnAmbush(leader.gx, leader.gy, irand(5, 8), 3, 5);
-        sayEvent('shrine_cursed', party[2], { force: true });
+        sayEvent('shrine_cursed', memberWithRole('healer') || party[2], { force: true });
         toast('💀 저주받은 샘! 매복이다!');
       } else {
-        sayEvent('shrine', party[2], { force: true });
+        sayEvent('shrine', memberWithRole('healer') || party[2], { force: true });
         toast('✨ 치유의 샘 — 파티 회복!');
         sfx('heal');
       }
@@ -290,6 +297,12 @@ function damageMember(m, dmg, attacker, opt) {
     return;
   }
   opt = opt || {};
+  // 하루(수도승) — 흘리기: 확률로 공격을 완전히 회피
+  const dodge = charDodge(m);
+  if (dodge > 0 && !opt.dot && Math.random() < dodge) {
+    addFloater(m.px, m.py - 34, '💨 회피!', '#8dffb0', 12);
+    return;
+  }
   // 「수호자의 맹세」 — 받을 피해의 30%를 리더가 대신 받는다 (리더가 착용하면 무효)
   if (!opt.noGuard) {
     const share = guardShare(m);
@@ -302,10 +315,17 @@ function damageMember(m, dmg, attacker, opt) {
   }
   dmg *= Math.max(0.4, 1 - 0.08 * runBuff('def'));
   dmg *= (1 - passiveDR());                   // 패시브 '방벽'
+  dmg *= passiveTakenMult();                  // 키스톤 (유리 대포 / 강철 심장)
   dmg *= (1 - equipDR(m));                    // 장비 '피해 감소 %'
-  if (opt.telegraph) dmg *= (1 - equipTgCut(m));   // 장비 '텔레그래프 피해 감소 %'
+  if (opt.telegraph) dmg *= (1 - equipTgCut(m)) * (1 - passiveTgCut());   // 장비/트리 텔레그래프 감소
   dmg *= diff().dmg;                          // 난이도 보정
   if (opt.capFrac) dmg = Math.min(dmg, maxHp(m) * opt.capFrac);   // 원샷 방지 상한
+  // 실드가 먼저 깎인다 (성기사/무녀/트리)
+  const before = dmg;
+  dmg = absorbShield(m, dmg);
+  if (dmg < before) addFloater(m.px, m.py - 44, `🛡 ${Math.floor(before - dmg)}`, '#9be8ff', 12);
+  onMemberHit(m);                             // 세이나(성기사) 피격 반응
+  if (dmg <= 0) return;
   m.hp -= dmg;
   addFloater(m.px, m.py - 30, String(Math.floor(dmg)), '#ff7a7a', 12);
   // 가시 갑옷: 받은 피해 일부 반사
@@ -368,39 +388,62 @@ function minionList() { const w = state.world; return (w && w.minions) || []; }
 function mineList() { const w = state.world; return (w && w.mines) || []; }
 function minionAt(wld, x, y) { return (wld.minions || []).find(k => k.hp > 0 && k.gx === x && k.gy === y); }
 
-const MINION_HP_RATIO = 0.75;   // 리더 최대 HP 대비 미니언 HP (탱킹 역할이 살도록 상향)
-const MINION_LEASH = 6;         // 리더에게서 이만큼 벗어나면 전투를 포기하고 복귀
+const MINION_HP_RATIO = 0.75;   // 소환자 최대 HP 대비 미니언 HP (탱킹 역할이 살도록 상향)
+const MINION_LEASH = 6;         // 소환자에게서 이만큼 벗어나면 전투를 포기하고 복귀
 const MINION_STEP = 0.4;        // 기본 이동 간격(초)
-const MINION_RETURN_MUL = 0.5;  // 복귀 중에는 간격 절반 → 리더 곁으로 빠르게 붙는다
+const MINION_RETURN_MUL = 0.5;  // 복귀 중에는 간격 절반 → 소환자 곁으로 빠르게 붙는다
 function minionStepInt(k) { return k.stepInt * (k.returning ? MINION_RETURN_MUL : 1); }
-function makeMinion(x, y) {
-  const hp = Math.max(8, Math.floor(maxHp(leader) * MINION_HP_RATIO));
+/* M3.5b — 소환수 종류 (해골 / 정령 / 늑대). 규칙은 전부 같고 수치·외형만 다르다. */
+const MINION_KINDS = {
+  skeleton: { k: 'skeleton', name: '해골', icon: '💀', color: '#8fe07f', hp: 1.0, atk: 1.0, step: MINION_STEP },
+  spirit:   { k: 'spirit',   name: '정령', icon: '🌀', color: '#9be8ff', hp: 0.5, atk: 0.5, step: 0.3 },
+  wolf:     { k: 'wolf',     name: '늑대', icon: '🐺', color: '#d8c89a', hp: 0.7, atk: 0.7, step: 0.28 },
+};
+const MINION_KIND_KEYS = Object.keys(MINION_KINDS);
+function minionKindMax(kind) {
+  if (kind === 'skeleton') return minionMax();
+  const c = MINION_KINDS[kind];
+  return (c && c.max) || 1;
+}
+function minionsOf(owner, kind) {
+  return minionList().filter(k => k.hp > 0 && (!kind || k.kind === kind) && (!owner || k.owner === owner));
+}
+function makeMinion(x, y, owner, kind) {
+  const o = owner || leader;
+  const c = MINION_KINDS[kind] || MINION_KINDS.skeleton;
+  const hp = Math.max(8, Math.floor(maxHp(o) * MINION_HP_RATIO * c.hp * passiveMinionMult()));
   return {
     gx: x, gy: y, px: isoX(x, y), py: isoY(x, y),
     fromX: x, fromY: y, moveT: 1, moving: false, face: 1,
-    hp, maxHp: hp, atkCd: rand(0, .4), stepT: rand(0, .3), stepInt: MINION_STEP, born: 0, returning: false,
+    hp, maxHp: hp, atkCd: rand(0, .4), stepT: rand(0, .3), stepInt: c.step, born: 0, returning: false,
+    owner: o, kind: c.k, power: c.atk, color: c.color,
   };
 }
-// 리더 주변 빈 칸에 해골을 세운다
-function summonSkeleton() {
+/* 소환자 주변 빈 칸에 소환수를 세운다 */
+function summonMinionFor(owner, kind) {
   const wld = state.world;
   if (!wld || wld.mode !== 'dungeon') return null;
+  const o = owner || leader;
+  if (o.down) return null;
+  const kd = MINION_KINDS[kind] ? kind : 'skeleton';
   if (!wld.minions) wld.minions = [];
   wld.minions = wld.minions.filter(k => k.hp > 0);
-  if (wld.minions.length >= minionMax()) return null;
+  if (minionsOf(o, kd).length >= minionKindMax(kd)) return null;
   for (const [dx, dy] of shuffle(DIRS8.slice())) {
-    const x = leader.gx + dx, y = leader.gy + dy;
+    const x = o.gx + dx, y = o.gy + dy;
     if (!walkable(wld, x, y) || monsterAt(wld, x, y)) continue;
     if (party.some(p => p.gx === x && p.gy === y)) continue;
     if (minionAt(wld, x, y)) continue;
-    const k = makeMinion(x, y);
+    const k = makeMinion(x, y, o, kd);
     wld.minions.push(k);
-    addSparkle(isoX(x, y), isoY(x, y), '#8fe07f');
-    addFloater(isoX(x, y), isoY(x, y) - 32, '💀 소환!', '#8fe07f', 12);
+    addSparkle(isoX(x, y), isoY(x, y), k.color);
+    addFloater(isoX(x, y), isoY(x, y) - 32, `${MINION_KINDS[kd].icon} 소환!`, k.color, 12);
     return k;
   }
   return null;
 }
+// 구 이름 (느와르의 해골)
+function summonSkeleton() { return summonMinionFor(memberWithAbility('minion') || leader, 'skeleton'); }
 function damageMinion(k, dmg) {
   if (k.hp <= 0) return;
   k.hp -= dmg;
@@ -420,10 +463,12 @@ function updateMinions(dt) {
     const k = list[i];
     if (k.hp <= 0) { list.splice(i, 1); continue; }   // 죽으면 제거 → 6초 뒤 재소환
     k.born += dt;
+    if (!k.owner || k.owner.down || party.indexOf(k.owner) < 0) k.owner = leader;
     updateEntityMove(k, dt, minionStepInt(k));   // 복귀 중에는 걸음 애니메이션도 2배 빠르게
     k.atkCd -= dt;
-    // 리더와의 거리(리쉬): 6칸을 벗어나면 복귀 모드 (2칸 안으로 들어오면 해제)
-    const leash = cheb(k.gx, k.gy, leader.gx, leader.gy);
+    // 소환자와의 거리(리쉬): 6칸을 벗어나면 복귀 모드 (2칸 안으로 들어오면 해제)
+    const home = k.owner || leader;
+    const leash = cheb(k.gx, k.gy, home.gx, home.gy);
     if (leash > MINION_LEASH) k.returning = true;
     else if (leash <= 2) k.returning = false;
     // 가장 가까운 몬스터 (무적인 적은 뒤로 미룬다 — 분신부터 정리)
@@ -437,7 +482,8 @@ function updateMinions(dt) {
     // 인접 몬스터 자동 공격 (복귀 중에는 교전하지 않는다)
     if (tgt && bd <= 1 && !k.returning) {
       if (k.atkCd <= 0) {
-        damageMonster(tgt, atkPow(leader) * 0.55 * rand(0.85, 1.15), '#9be8a0', { src: leader });
+        damageMonster(tgt, atkPow(home) * 0.55 * (k.power || 1) * passiveMinionMult() * rand(0.85, 1.15),
+          '#9be8a0', { src: home });
         k.face = (tgt.gx > k.gx || tgt.gy < k.gy) ? 1 : -1;
         k.atkCd = 0.9;
         if (!tgt.aggro) aggroPack(wld, tgt);
@@ -448,9 +494,9 @@ function updateMinions(dt) {
     k.stepT -= dt;
     if (k.stepT > 0) continue;
     k.stepT = minionStepInt(k);
-    // 목표: 리쉬 안이면 6칸 내 몬스터 → 아니면 리더 곁으로 복귀
-    const goal = (!k.returning && tgt && bd <= 6) ? tgt : leader;
-    if (goal === leader && leash <= 2) continue;
+    // 목표: 리쉬 안이면 6칸 내 몬스터 → 아니면 소환자 곁으로 복귀
+    const goal = (!k.returning && tgt && bd <= 6) ? tgt : home;
+    if (goal === home && leash <= 2) continue;
     let dx = Math.sign(goal.gx - k.gx), dy = Math.sign(goal.gy - k.gy);
     if (dx && dy) (Math.random() < .5) ? dx = 0 : dy = 0;
     const blocked = (x, y) => !walkable(wld, x, y) || monsterAt(wld, x, y) ||
@@ -468,12 +514,13 @@ function updateMinions(dt) {
 }
 
 /* ---- 폭탄공 지뢰 ---- */
-function placeMine(x, y) {
+function placeMine(x, y, owner) {
   const wld = state.world;
   if (!wld || wld.mode !== 'dungeon') return null;
+  if (!walkable(wld, x, y)) return null;          // 아직 걸음 기록이 없는 자리(0,0) 등은 무시
   if (!wld.mines) wld.mines = [];
   if (wld.mines.some(m => m.gx === x && m.gy === y)) return null;
-  const mine = { gx: x, gy: y, t: 0 };
+  const mine = { gx: x, gy: y, t: 0, owner: owner || memberWithAbility('bomb') || leader };
   wld.mines.push(mine);
   while (wld.mines.length > mineMax()) wld.mines.shift();   // 오래된 것부터 회수
   addSparkle(isoX(x, y), isoY(x, y), '#ffa23a');
@@ -481,7 +528,8 @@ function placeMine(x, y) {
 }
 function explodeMine(mine) {
   const wld = state.world;
-  const dmg = atkPow(leader) * 1.8;
+  const src = (mine && mine.owner && party.indexOf(mine.owner) >= 0) ? mine.owner : leader;
+  const dmg = atkPow(src) * 1.8 * passiveProjMult();
   const R = mineBlastR();                                     // 「폭죽 심장」이면 반경 +1
   addFloater(isoX(mine.gx, mine.gy), isoY(mine.gx, mine.gy) - 20, '💥 폭발!', '#ff8a4a', 15);
   addSparkle(isoX(mine.gx, mine.gy), isoY(mine.gx, mine.gy), '#ff9a5a');
@@ -489,7 +537,7 @@ function explodeMine(mine) {
   wld.monsters.forEach(mon => {
     if (mon.hp <= 0) return;
     if (cheb(mon.gx, mon.gy, mine.gx, mine.gy) > R) return;   // 주변 R칸 광역
-    damageMonster(mon, dmg * rand(0.9, 1.1), '#ff9a5a', { src: leader });
+    damageMonster(mon, dmg * rand(0.9, 1.1), '#ff9a5a', { src });
     if (!mon.aggro) aggroPack(wld, mon);
     hit++;
   });
@@ -521,39 +569,42 @@ const BOMB_FLIGHT = 0.6;     // 비행 시간(초) — 포물선으로 떠올랐
 const BOMB_MULT = 1.8;       // 지뢰와 동일 배율
 
 // 사거리 안에서 가장 가까운 적 (무적인 적은 뒤로 미룬다 — 분신부터)
-function bombTarget() {
+function bombTarget(who) {
   const wld = state.world;
   if (!wld || wld.mode !== 'dungeon') return null;
+  const src = who || memberWithAbility('bomb') || leader;
   let best = null, bd = 99, bestInv = true;
   wld.monsters.forEach(mon => {
     if (mon.hp <= 0) return;
-    const d = cheb(mon.gx, mon.gy, leader.gx, leader.gy);
+    const d = cheb(mon.gx, mon.gy, src.gx, src.gy);
     if (d > BOMB_RANGE) return;
     const inv = !!mon.invuln;
     if ((bestInv && !inv) || (inv === bestInv && d < bd)) { best = mon; bd = d; bestInv = inv; }
   });
   return best;
 }
-function throwBomb(tgt) {
+function throwBomb(tgt, who) {
   const wld = state.world;
   if (!wld || wld.mode !== 'dungeon') return null;
-  const t = tgt || bombTarget();
+  const o = who || memberWithAbility('bomb') || leader;
+  const t = tgt || bombTarget(o);
   if (!t || t.hp <= 0) return null;
   if (!wld.projectiles) wld.projectiles = [];
   const p = {
-    kind: 'bomb', src: leader,
-    x0: leader.gx, y0: leader.gy, gx: t.gx, gy: t.gy,
-    t: 0, dur: BOMB_FLIGHT, dmg: atkPow(leader) * BOMB_MULT, r: mineBlastR(),
+    kind: 'bomb', src: o,
+    x0: o.gx, y0: o.gy, gx: t.gx, gy: t.gy,
+    t: 0, dur: BOMB_FLIGHT, dmg: atkPow(o) * BOMB_MULT * passiveProjMult(), r: mineBlastR(),
   };
   wld.projectiles.push(p);
-  leader.face = (t.gx > leader.gx || t.gy < leader.gy) ? 1 : -1;
-  addFloater(leader.px, leader.py - 46, '💣', '#ff9a5a', 13);
+  o.face = (t.gx > o.gx || t.gy < o.gy) ? 1 : -1;
+  addFloater(o.px, o.py - 46, '💣', '#ff9a5a', 13);
   sfx('warn');
   return p;
 }
 // 착탄 — 지뢰와 같은 폭발 규칙 (반경 r · damageMonster 경로 · 팩 어그로)
 function explodeBomb(p) {
   const wld = state.world;
+  const src = (p.src && party.indexOf(p.src) >= 0) ? p.src : leader;
   const R = (p.r === undefined ? mineBlastR() : p.r);
   const wx = isoX(p.gx, p.gy), wy = isoY(p.gx, p.gy);
   addFloater(wx, wy - 20, '💥 폭발!', '#ff8a4a', 15);
@@ -564,7 +615,7 @@ function explodeBomb(p) {
   wld.monsters.forEach(mon => {
     if (mon.hp <= 0) return;
     if (cheb(mon.gx, mon.gy, p.gx, p.gy) > R) return;
-    damageMonster(mon, p.dmg * rand(0.9, 1.1), '#ff9a5a', { src: leader });
+    damageMonster(mon, p.dmg * rand(0.9, 1.1), '#ff9a5a', { src });
     if (!mon.aggro) aggroPack(wld, mon);
     hit++;
   });
@@ -818,58 +869,302 @@ function priestHeal(m, mods) {
   return n;
 }
 
-/* ---- 직업 능력 갱신 (소환 타이머 / 오라 / 지뢰) ---- */
-function updateClassAbilities(dt) {
+/* =====================================================================
+ * M3.5b — 캐릭터 공격 형태 (CHAR_ATTACK)
+ * 모든 핸들러는 { dmg, extra } 를 돌려준다 (흡혈 계산용 주피해 / 부가피해).
+ * =================================================================== */
+// 한 대상 타격 (근접·원거리 공용) — damageMonster 경로를 그대로 타므로
+// 치명타/처형/장비 효과가 자동으로 적용된다.
+function memberStrike(m, mon, dmg, color, mods) {
+  damageMonster(mon, dmg * rand(0.85, 1.2), color, { src: m });
+  applyLeaderGems(mon, dmg, mods);
+  if (!mon.aggro) aggroPack(state.world, mon);
+  return dmg;
+}
+// 캐릭터의 기본 타격력 (근접 배율 · 젬 · 원거리 트리 보정)
+function memberBase(m, mods) {
+  const c = charDef(m.id);
+  const mul = c.kind === 'melee' ? c.melee : 1;
+  const proj = c.kind === 'ranged' ? passiveProjMult() : 1;
+  return atkPow(m) * mul * mods.dmg * proj;
+}
+// 캐릭터별 공격 간격 (수정 지팡이 유물은 마법 역할에만 적용 — 기존 규칙 그대로)
+function charCd(m) {
+  const c = charDef(m.id);
+  let cd = c.cd;
+  if (charHasRole(m.id, 'caster')) cd /= (1 + 0.2 * relicCount('crystal'));
+  return cd;
+}
+// 마법 스킬 젬(화염구/연쇄/빙결)을 낀 원거리 캐릭터는 젬 경로를 그대로 탄다.
+// 캐릭터 고유 효과(화상/한기)는 그 위에 얹힌다.
+const CASTER_GEMS = ['fireball', 'chain', 'freeze'];
+function rangedCore(m, best, mons, mods, color) {
+  if (CASTER_GEMS.indexOf(mods.skill) >= 0) {
+    mageAttack(m, best, mons, mods);
+    return atkPow(m) * mods.dmg;
+  }
+  return memberStrike(m, best, memberBase(m, mods), color, mods);
+}
+const CHAR_ATTACK = {
+  /* 기본 단일 타격 */
+  basic(m, best, mons, mods) {
+    return { dmg: memberStrike(m, best, memberBase(m, mods), '#fff', mods) };
+  },
+  basicRanged(m, best, mons, mods) {
+    return { dmg: rangedCore(m, best, mons, mods, '#9be8ff') };
+  },
+  /* 유리 — 인접 1체 스플래시 */
+  splash(m, best, mons, mods) {
+    const dmg = memberStrike(m, best, memberBase(m, mods), '#fff', mods);
+    const hit = knightSplash(best, dmg, m);
+    return { dmg, extra: hit ? dmg * KNIGHT_SPLASH : 0 };
+  },
+  /* 모리 — 스킬 젬 기반 마법 */
+  gemcast(m, best, mons, mods) {
+    const dmg = atkPow(m) * mods.dmg;
+    mageAttack(m, best, mons, mods);
+    return { dmg };
+  },
+  /* 라온·시온 — 직선 관통 */
+  pierce(m, best, mons, mods) {
+    const ab = charDef(m.id).ability;
+    const base = memberBase(m, mods);
+    let dx = Math.sign(best.gx - m.gx), dy = Math.sign(best.gy - m.gy);
+    if (!dx && !dy) dx = m.face;
+    let total = 0, hits = 0;
+    for (let i = 1; i <= ab.len; i++) {
+      const x = m.gx + dx * i, y = m.gy + dy * i;
+      const mon = monsterAt(state.world, x, y);
+      if (!mon || mon.hp <= 0) continue;
+      const mul = hits === 0 ? 1 : ab.falloff;
+      const d = memberStrike(m, mon, base * mul, '#ffd7a0', mods);
+      addSparkle(mon.px, mon.py, '#ffd7a0');
+      total += d; hits++;
+    }
+    if (!hits) total = memberStrike(m, best, base, '#ffd7a0', mods);   // 선상에 없으면 그냥 때린다
+    else if (hits > 1) addFloater(m.px, m.py - 54, `🔱 관통 ×${hits}`, '#ffd7a0', 13);
+    return { dmg: total };
+  },
+  /* 하루 — 2연타 */
+  flurry(m, best, mons, mods) {
+    const ab = charDef(m.id).ability;
+    const base = memberBase(m, mods);
+    let total = memberStrike(m, best, base, '#fff', mods);
+    if (best.hp > 0) total += memberStrike(m, best, base * ab.second, '#ffe88a', mods);
+    addFloater(m.px, m.py - 50, '👊 연타!', '#ffe88a', 12);
+    return { dmg: total };
+  },
+  /* 도르 — 반달 광역 */
+  cleave(m, best, mons, mods) {
+    const ab = charDef(m.id).ability;
+    const base = memberBase(m, mods);
+    let total = memberStrike(m, best, base, '#fff', mods);
+    let n = 1;
+    mons.forEach(mon => {
+      if (mon === best || mon.hp <= 0) return;
+      if (cheb(mon.gx, mon.gy, best.gx, best.gy) > ab.r) return;
+      total += memberStrike(m, mon, base * ab.side, '#ffb347', mods);
+      n++;
+    });
+    addFloater(m.px, m.py - 54, `🪃 반달 ×${n}`, '#ffb347', 13);
+    return { dmg: total };
+  },
+  /* 비단 — 화상 장판 */
+  burn(m, best, mons, mods) {
+    const ab = charDef(m.id).ability;
+    const base = memberBase(m, mods);
+    const dmg = rangedCore(m, best, mons, mods, '#ff9a5a');
+    let n = 0;
+    mons.forEach(mon => {
+      if (mon.hp <= 0 || cheb(mon.gx, mon.gy, best.gx, best.gy) > ab.r) return;
+      addDot(mon, base * ab.dps, ab.dur, 'burn');
+      n++;
+    });
+    addSparkle(best.px, best.py, '#ff9a5a');
+    addFloater(best.px, best.py - 54, `🔥 화상 ×${n}`, '#ff9a5a', 13);
+    return { dmg };
+  },
+  /* 서리 — 슬로우 + 빙결 */
+  chill(m, best, mons, mods) {
+    const ab = charDef(m.id).ability;
+    const dmg = rangedCore(m, best, mons, mods, '#9be8ff');
+    applySlow(best, ab.slow);
+    if (Math.random() < ab.freeze) applyStun(best, ab.stun);
+    addSparkle(best.px, best.py, '#9be8ff');
+    return { dmg };
+  },
+};
+
+/* =====================================================================
+ * M3.5b — 캐릭터 지속 능력 (CHAR_TICK)
+ * 파티에 편성된 4인을 매 프레임 돌면서 각자의 tick 핸들러를 실행한다.
+ * 리더 전용이 아니므로 느와르/봄이/칼리를 파티원으로 데려가도 그대로 작동한다.
+ * =================================================================== */
+const CHAR_TICK = {
+  /* 느와르 — 6초마다 해골 (최대 3) */
+  skeleton(m, dt) {
+    m.summonT -= dt;
+    if (m.summonT <= 0) { m.summonT = 6; summonMinionFor(m, 'skeleton'); }
+  },
+  /* 봄이 — 사거리 안이면 폭탄 투척 (지뢰는 onLeaderArrive) */
+  bomb(m, dt) {
+    if (m.bombCd <= 0 && throwBomb(null, m)) m.bombCd = BOMB_CD;
+  },
+  /* 칼리 — 0.5초마다 회전 칼날 */
+  blade(m, dt) {
+    m.auraT -= dt;
+    if (m.auraT <= 0) { m.auraT = 0.5 * gemMods(m).cd; bladeAura(gemMods(m), m); }
+  },
+  /* 미르 — 추적 정령 1기 유지 (죽으면 4초 뒤 재소환) */
+  spirit(m, dt) {
+    m.abilT -= dt;
+    if (m.abilT > 0) return;
+    if (minionsOf(m, 'spirit').length >= 1) { m.abilT = 1; return; }
+    m.abilT = summonMinionFor(m, 'spirit') ? 1 : 0.5;
+  },
+  /* 카야 — 늑대 펫 1마리 유지 */
+  wolf(m, dt) {
+    m.abilT -= dt;
+    if (m.abilT > 0) return;
+    if (minionsOf(m, 'wolf').length >= 1) { m.abilT = 1; return; }
+    m.abilT = summonMinionFor(m, 'wolf') ? 1 : 0.5;
+  },
+  /* 아야메 — 주기적 파티 실드 */
+  ward(m, dt) {
+    m.abilT -= dt;
+    if (m.abilT > 0) return;
+    const ab = charDef(m.id).ability;
+    m.abilT = ab.every;
+    partyShield(m, ab.mul, ab.dur);
+  },
+  /* 포포 — 주기적 회복병 투척 */
+  flask(m, dt) {
+    m.abilT -= dt;
+    if (m.abilT > 0) return;
+    const ab = charDef(m.id).ability;
+    m.abilT = ab.every;
+    throwFlask(m, ab.mul);
+  },
+  /* 세라 — 주변 적 감속장 (0.5초 간격 갱신) */
+  chrono(m, dt) {
+    m.abilT -= dt;
+    if (m.abilT > 0) return;
+    m.abilT = 0.5;
+    slowAura(m);
+  },
+  /* 나무 — 근처에 적이 있으면 곰으로 변신 */
+  bear(m, dt) {
+    const ab = charDef(m.id).ability;
+    const near = (state.world.monsters || []).some(mon => mon.hp > 0 && cheb(mon.gx, mon.gy, m.gx, m.gy) <= ab.r);
+    if (near === !!m.bear) return;
+    const before = maxHp(m);
+    m.bear = near;
+    const after = maxHp(m);
+    if (after > before) m.hp += after - before; else m.hp = Math.min(m.hp, after);
+    addFloater(m.px, m.py - 48, near ? '🐻 변신!' : '🌿 해제', near ? '#9ad86a' : '#8a8a96', 13);
+    addSparkle(m.px, m.py, '#9ad86a');
+  },
+};
+
+/* 파티 전원 실드 (무녀 / 성기사) */
+function partyShield(src, mul, dur) {
+  let n = 0;
+  party.forEach(a => {
+    if (a.down) return;
+    const v = addShield(a, maxHp(a) * mul, dur);
+    if (v > 0) { addSparkle(a.px, a.py, '#9be8ff'); n++; }
+  });
+  if (n) addFloater(src.px, src.py - 52, `🛡 결계 ×${n}`, '#9be8ff', 13);
+  return n;
+}
+/* 회복병 투척 (연금술사) — 파티 전원 소량 회복 */
+function throwFlask(m, mul) {
+  const h = healPow(m) * mul;
+  let n = 0;
+  party.forEach(a => {
+    if (a.down || a.hp >= maxHp(a)) return;
+    a.hp = Math.min(maxHp(a), a.hp + h);
+    addFloater(a.px, a.py - 34, `+${Math.floor(h)}`, '#8dffb0', 12);
+    addSparkle(a.px, a.py, '#8dffb0');
+    n++;
+  });
+  if (n) addFloater(m.px, m.py - 52, `⚗️ 회복병 ×${n}`, '#8dffb0', 13);
+  return n;
+}
+/* 감속장 (시간술사) */
+function slowAura(m) {
+  const ab = charDef(m.id).ability;
+  let n = 0;
+  (state.world.monsters || []).forEach(mon => {
+    if (mon.hp <= 0 || cheb(mon.gx, mon.gy, m.gx, m.gy) > ab.r) return;
+    mon.slowT = Math.max(mon.slowT || 0, ab.dur);
+    n++;
+  });
+  if (n) addSparkle(m.px, m.py, '#c9a4ff');
+  return n;
+}
+/* 성기사 — 피격 시 주변 아군에게 실드 (쿨 4초) */
+function onMemberHit(m) {
+  const ab = charDef(m.id).ability;
+  if (ab.k !== 'guard' || m.down) return 0;
+  if ((m.abilT || 0) > 0) return 0;
+  m.abilT = ab.cd;
+  let n = 0;
+  party.forEach(a => {
+    if (a.down || cheb(a.gx, a.gy, m.gx, m.gy) > ab.r) return;
+    if (addShield(a, maxHp(a) * ab.mul, ab.dur) > 0) { addSparkle(a.px, a.py, '#e8d18a'); n++; }
+  });
+  if (n) addFloater(m.px, m.py - 52, `⚜️ 수호 ×${n}`, '#e8d18a', 13);
+  return n;
+}
+/* 수도승 회피율 */
+function charDodge(m) {
+  const ab = charDef(m.id).ability;
+  return ab.k === 'flurry' ? (ab.dodge || 0) : 0;
+}
+/* 포션 효과 배율 (연금술사) */
+function potionMult() {
+  const a = memberWithAbility('alchemy');
+  return a ? charDef(a.id).ability.potion : 1;
+}
+
+/* ---- 캐릭터 능력 갱신 (구 이름 updateClassAbilities 유지) ---- */
+function updateCharAbilities(dt) {
   const wld = state.world;
   if (!wld || wld.mode !== 'dungeon') return;
-  const cls = curClass();
-  const mods = gemMods(leader);
-  if (leader.summonT === undefined) leader.summonT = 0;
-  if (leader.auraT === undefined) leader.auraT = 0;
-  if (leader.mineCd === undefined) leader.mineCd = 0;
-  if (leader.bombCd === undefined) leader.bombCd = 0;
-  leader.mineCd = Math.max(0, leader.mineCd - dt);
-  leader.bombCd = Math.max(0, leader.bombCd - dt);
-
-  // 폭탄공: 사거리 안에 적이 있으면 폭탄을 던진다 (근접 공격과 쿨 분리)
-  if (cls.k === 'bomber' && !leader.down && leader.bombCd <= 0) {
-    if (throwBomb()) leader.bombCd = BOMB_CD;
-  }
-  if (cls.k === 'necro' && !leader.down) {
-    leader.summonT -= dt;
-    if (leader.summonT <= 0) {
-      leader.summonT = 6;                       // 6초마다 소환 (최대 3)
-      summonSkeleton();
-    }
-  }
-  if (cls.k === 'blade' && !leader.down) {
-    leader.auraT -= dt;
-    if (leader.auraT <= 0) {
-      leader.auraT = 0.5 * mods.cd;             // 0.5초 틱 (가속 젬 반영)
-      bladeAura(mods);
-    }
-  }
+  party.forEach(m => {
+    // 공용 쿨다운 (지뢰 / 폭탄 / 능력)
+    m.mineCd = Math.max(0, (m.mineCd || 0) - dt);
+    m.bombCd = Math.max(0, (m.bombCd || 0) - dt);
+    if (charDef(m.id).ability.k === 'guard') m.abilT = Math.max(0, (m.abilT || 0) - dt);
+    if (m.down) return;
+    const tick = CHAR_TICK[charDef(m.id).tick];
+    if (tick) tick(m, dt);
+  });
   updateMinions(dt);
   updateMines(dt);
 }
+const updateClassAbilities = updateCharAbilities;
+
 // 주변 8칸 회전 칼날
 const BLADE_AURA_TICK = 0.65;    // 틱당 공격력 계수 (근접 공격이 없는 만큼 다수전 정리 속도로 생존)
-function bladeAura(mods) {
+function bladeAura(mods, who) {
   const wld = state.world;
+  const m = who || memberWithAbility('aura') || leader;
   // 「회전목마」 — 반경 +1, 이동 중이면 피해 +50%
   const R = bladeAuraR();
-  const moveUp = (hasUnique(leader, 'carousel') && leader.moving) ? UNIQ_AURA_MOVE_MUL : 1;
-  const dmg = atkPow(leader) * BLADE_AURA_TICK * mods.dmg * moveUp;
+  const moveUp = (hasUnique(m, 'carousel') && m.moving) ? UNIQ_AURA_MOVE_MUL : 1;
+  const dmg = atkPow(m) * BLADE_AURA_TICK * mods.dmg * moveUp * passiveAuraMult();
   let hit = 0;
   wld.monsters.forEach(mon => {
     if (mon.hp <= 0) return;
-    if (cheb(mon.gx, mon.gy, leader.gx, leader.gy) > R) return;
-    damageMonster(mon, dmg * rand(0.9, 1.1), '#7ee8d8', { src: leader });
+    if (cheb(mon.gx, mon.gy, m.gx, m.gy) > R) return;
+    damageMonster(mon, dmg * rand(0.9, 1.1), '#7ee8d8', { src: m });
     applyLeaderGems(mon, dmg, mods);
     if (!mon.aggro) aggroPack(wld, mon);
     hit++;
   });
-  if (hit) addSparkle(leader.px, leader.py, '#7ee8d8');
+  if (hit) addSparkle(m.px, m.py, '#7ee8d8');
   return hit;
 }
 
@@ -878,8 +1173,9 @@ function bladeAura(mods) {
  * 주 대상 기준 인접(체비셰프 1)의 다른 몬스터 1마리에게 절반 피해를 나눠준다.
  * damageMonster 경로를 그대로 타므로 치명타·처형 규칙이 자동 적용된다. (짐꾼은 제외) */
 const KNIGHT_SPLASH = 0.5;
-function knightSplash(best, dmg) {
+function knightSplash(best, dmg, who) {
   const wld = state.world;
+  const src = who || memberWithAbility('splash') || leader;
   let tgt = null, bd = 99;
   wld.monsters.forEach(mon => {
     if (mon === best || mon.hp <= 0) return;
@@ -887,7 +1183,7 @@ function knightSplash(best, dmg) {
     if (d <= 1 && d < bd) { tgt = mon; bd = d; }
   });
   if (!tgt) return null;
-  damageMonster(tgt, dmg * KNIGHT_SPLASH * rand(0.85, 1.2), '#ffd7a0', { src: leader });
+  damageMonster(tgt, dmg * KNIGHT_SPLASH * rand(0.85, 1.2), '#ffd7a0', { src });
   if (!tgt.aggro) aggroPack(wld, tgt);
   addSparkle(tgt.px, tgt.py, '#ffd7a0');
   return tgt;
@@ -910,20 +1206,21 @@ function updateCombat(dt) {
   updateProjectiles(dt);
   updateShamanAura(wld, dt);
 
-  // 파티 공격
+  // 파티 공격 — 캐릭터별 공격 형태(CHAR_ATTACK)로 분기한다
+  updateShields(dt);
   party.forEach(m => {
     if (m.invulnT > 0) m.invulnT = Math.max(0, m.invulnT - dt);
     if (m.down) return;
     updateMemberDots(m, dt);          // 독 도트 (포자 / 히드라)
     if (m.down) return;
+    const c = charDef(m.id);
     const mods = gemMods(m);
     m.atkCd -= dt;
     if (m.atkCd > 0) return;
-    if (m.role === 'priest') { priestHeal(m, mods); return; }
-    // 리더는 직업에 따라 근접 배율이 다르다 (블레이드 댄서는 근접 공격 없음)
-    const meleeMult = (m === leader) ? curClass().melee : 1;
-    if (m === leader && meleeMult <= 0) { m.atkCd = 0; return; }
-    const range = m.role === 'mage' ? 3.5 : 1;
+    if (c.kind === 'heal') { priestHeal(m, mods); return; }
+    // 근접 배율 0 (칼리) 은 공격 대신 오라로 싸운다
+    if (c.kind === 'melee' && c.melee <= 0) { m.atkCd = 0; return; }
+    const range = c.range;
     // 사거리 안에서 가장 가까운 적 — 단, 무적인 적(분신 소환 중인 보스)은 뒤로 미룬다
     let best = null, bd = 99, bestInv = true;
     mons.forEach(mon => {
@@ -934,26 +1231,16 @@ function updateCombat(dt) {
       if ((bestInv && !inv) || (inv === bestInv && d < bd)) { best = mon; bd = d; bestInv = inv; }
     });
     if (best) {
-      let dmg, splash = 0;
-      if (m.role === 'mage') {
-        dmg = atkPow(m) * mods.dmg;
-        mageAttack(m, best, mons, mods);
-      } else {
-        dmg = atkPow(m) * meleeMult * mods.dmg;
-        damageMonster(best, dmg * rand(0.85, 1.2), '#fff', { src: m });
-        if (m === leader) {
-          applyLeaderGems(best, dmg, mods);
-          // 기사: 주 대상 인접 1마리에게 50% 스플래시
-          if (curClass().k === 'knight' && knightSplash(best, dmg)) splash = dmg * KNIGHT_SPLASH;
-        }
-      }
-      // 흡혈 송곳니 + 장비 '흡혈 %': 가한 피해의 일부 회복 (스플래시 포함)
-      const leechRate = 0.08 * relicCount('fang') + equipLeech(m);
+      const handler = CHAR_ATTACK[c.attack] || CHAR_ATTACK.basic;
+      const out = handler(m, best, mons, mods) || {};
+      const dmg = out.dmg || 0, splash = out.extra || 0;
+      // 흡혈 송곳니 + 장비/트리 '흡혈 %': 가한 피해의 일부 회복 (부가 피해 포함)
+      const leechRate = 0.08 * relicCount('fang') + equipLeech(m) + passiveLeech();
       if (leechRate > 0) {
         m.hp = Math.min(maxHp(m), m.hp + (dmg + splash) * leechRate);
       }
       m.face = (best.gx > m.gx || best.gy < m.gy) ? 1 : -1;
-      m.atkCd = { knight: 0.55, mage: 1.1 / (1 + 0.2 * relicCount('crystal')), porter: 0.9 }[m.role] * mods.cd;
+      m.atkCd = charCd(m) * mods.cd;
     }
   });
 
@@ -1062,13 +1349,16 @@ function updateCombat(dt) {
   const downed = party.filter(m => m.down);
   if (downed.length) {
     const combatNear = mons.some(mon => mon.hp > 0 && cheb(mon.gx, mon.gy, leader.gx, leader.gy) <= REVIVE_BLOCK_R);
-    const priestOk = !party[2].down;
+    // '치유 역할' 태그를 가진 생존자가 있으면 그가 일으킨다.
+    // 사제 없는 파티도 성립한다 — 자력 부활이라 기본 시간의 2배가 걸릴 뿐이다.
+    const healer = party.find(a => !a.down && charHasRole(a.id, 'healer')) || null;
+    const priestOk = !!healer;
     // 우선순위: 리더 최우선 → 나머지는 파티 순서대로 한 명씩
     const m = leader.down ? leader : downed[0];
     let rate = 1;
     if (combatNear) rate *= 0.5;      // 전투 중에는 느리게 (리셋하지 않는다)
     if (!priestOk) rate *= 0.5;       // 사제도 쓰러졌다면 자력 회복이라 더 느리다
-    rate *= equipReviveMul();         // 장비 '부활 속도 +%' (파티 합산)
+    rate *= equipReviveMul() * passiveReviveMult();   // 장비/트리 '부활 속도 +%'
     m.reviveT += dt * rate;
     let need = Math.max(3, 6 - 0.5 * state.meta.revive);
     if (m === leader && priestOk) need *= 0.5;   // 사제는 리더부터 일으킨다
@@ -1080,7 +1370,7 @@ function updateCombat(dt) {
       m.gx = leader.gx; m.gy = leader.gy; m.moving = false;
       addSparkle(isoX(m.gx, m.gy), isoY(m.gx, m.gy), '#8dffb0');
       addFloater(isoX(m.gx, m.gy), isoY(m.gx, m.gy) - 40, '✨ 부활!', '#8dffb0', 13);
-      sayEvent('revive', priestOk ? party[2] : m, { force: true });
+      sayEvent('revive', priestOk ? healer : m, { force: true });
     }
   }
 }

@@ -245,7 +245,7 @@ function openPathChoice() {
 }
 
 /* ---- 떠돌이 상인 ---- */
-function merchantPriceMult(floor) { return 1 + 0.3 * (floor - 1); }
+function merchantPriceMult(floor) { return (1 + 0.3 * (floor - 1)) * passiveShopMult(); }
 function makeMerchantStock(floor) {
   const fm = merchantPriceMult(floor);
   const stock = [];
@@ -263,7 +263,7 @@ function makeMerchantStock(floor) {
       kind: 'equip', item: it, icon: itemIcon(it), name: itemLabel(it),
       desc: `${SLOTS[it.slot].name} · ilvl ${it.ilvl} · ` +
             (it.affixes.map(affixText).join(' / ') || '접사 없음'),
-      price: buyPrice(it), sold: false, rarity: it.rarity,   // ilvl 이 이미 깊이 스케일
+      price: buyPrice(it, passiveShopMult()), sold: false, rarity: it.rarity,   // ilvl 이 이미 깊이 스케일
     });
   }
   // 스킬 젬 1개 확률 등장 (영구 소장 아이템)
@@ -338,52 +338,148 @@ function openMerchant(p) {
 }
 
 /* =====================================================================
- * Phase 3 UI — 직업 선택 / 파티(젬·패시브) 모달
+ * M3.5b UI — 🎭 파티 편성 (캐릭터 22종 그리드 + 4슬롯 + 리더 지정)
+ * 던전 밖(초원 캠프)에서만 열린다.
  * =================================================================== */
-function openClassChoice() {
-  if (!canChangeClass()) {
-    toast('🎭 광산 안에서는 직업을 바꿀 수 없어요!');
+function charTagHtml(c) {
+  return c.roles.map(r => {
+    const t = ROLE_TAGS[r];
+    return `<em class="rTag" data-tag="${r}" style="color:${t.color};border-color:${t.color}">${t.name}</em>`;
+  }).join('');
+}
+function openRoster(pickSlot) {
+  if (state.paused || state.transitioning) return;
+  if (!canChangeParty()) {
+    toast('🎭 광산 안에서는 파티를 바꿀 수 없어요!');
     return;
   }
-  openModal('🎭 직업 변경', body => {
+  let slot = (pickSlot === undefined || pickSlot === null) ? 0 : pickSlot;
+  let detail = null;                       // 상세 표시 중인 캐릭터 id
+  openModal('🎭 파티 편성', body => {
     const render = () => {
-      body.innerHTML = `<div class="shopGold"><span class="coin"></span>${fmt(state.gold)}</div>`;
-      CLASS_KEYS.forEach(k => {
-        const c = CLASSES[k];
-        const unlocked = classUnlocked(k);
-        const cur = state.classId === k;
-        const row = document.createElement('div');
-        row.className = 'shopRow classRow' + (cur ? ' cur' : '');
-        row.dataset.class = k;
-        const label = cur ? '사용 중' : unlocked ? '선택' : fmt(c.cost);
-        row.innerHTML = `<span class="sIcon">${c.icon}</span>
-          <div class="sInfo"><b>${c.name} ${cur ? '<em>현재</em>' : unlocked ? '<em>해금됨</em>' : ''}</b>
-          <small>${c.desc}</small></div>
-          <button class="buyBtn" data-class="${k}" ${(cur || (!unlocked && state.gold < c.cost)) ? 'disabled' : ''}>${label}</button>`;
-        row.querySelector('.buyBtn').addEventListener('click', () => {
-          if (cur) return;
-          if (!unlocked) {
-            if (state.gold < c.cost) return;
-            state.gold -= c.cost;
-            unlockClass(k);
-            toast(`${c.icon} ${c.name} 해금!`);
-          }
-          if (setClass(k)) {
-            addSparkle(leader.px, leader.py, '#c9a4ff');
-            toast(`${c.icon} 직업 변경 — ${c.name}`);
-          }
-          saveDirty = true;
-          render();
-        });
-        body.appendChild(row);
+      body.innerHTML = `<div class="shopGold"><span class="coin"></span>${fmt(state.gold)}` +
+        `<span class="azIcon" style="margin-left:10px"></span>${fmt(state.azurite)}</div>`;
+
+      /* ---- 4슬롯 ---- */
+      const slots = document.createElement('div');
+      slots.className = 'partySlots';
+      slots.id = 'partySlots';
+      state.partyIds.forEach((id, i) => {
+        const c = charDef(id);
+        const b = document.createElement('button');
+        b.className = 'pSlotCard' + (i === slot ? ' picking' : '') + (i === 0 ? ' leader' : '');
+        b.dataset.slot = String(i);
+        b.dataset.char = id;
+        b.innerHTML = `<span class="sIcon">${c.icon}</span><b>${c.name}</b>` +
+          `<small>${i === 0 ? '👑 리더' : `${i + 1}번`}</small>`;
+        b.addEventListener('click', () => { slot = i; detail = id; render(); });
+        slots.appendChild(b);
       });
+      body.appendChild(slots);
+
       const hint = document.createElement('p');
       hint.className = 'sumHint';
-      hint.textContent = '직업은 초원(광산 밖)에서만 바꿀 수 있어요.';
+      hint.id = 'rosterHint';
+      hint.textContent = `${slot === 0 ? '👑 리더' : `${slot + 1}번`} 자리에 넣을 캐릭터를 고르세요 · 파티는 초원에서만 바꿀 수 있어요`;
       body.appendChild(hint);
+
+      /* ---- 상세 ---- */
+      if (detail) {
+        const c = charDef(detail);
+        const owned = charOwned(detail);
+        const inParty = state.partyIds.indexOf(detail);
+        const d = document.createElement('div');
+        d.className = 'charDetail';
+        d.id = 'charDetail';
+        d.dataset.char = detail;
+        d.innerHTML = `<div class="cdHead"><span class="cdIcon">${c.icon}</span>
+            <div class="cdName"><b style="color:${c.nameColor}">${c.name}</b>
+            <small>${c.tagline}</small></div></div>
+          <div class="cdTags">${charTagHtml(c)}</div>
+          <div class="cdAbil"><b>${c.ability.name}</b><span>${c.ability.desc}</span></div>
+          <div class="cdStats">체력 ${c.hp[0]}(+${c.hp[1]}/Lv) · 공격 ${c.atk[0]}(+${c.atk[1]}/Lv)` +
+          ` · 사거리 ${c.range} · 쿨 ${c.cd}s</div>
+          <p class="cdLong">${c.long}</p>`;
+        const btns = document.createElement('div');
+        btns.className = 'cdBtns';
+        if (!owned) {
+          const blockers = unlockBlockers(detail);
+          const buy = document.createElement('button');
+          buy.className = 'modalBtn charBuy';
+          buy.id = 'charBuy';
+          buy.dataset.char = detail;
+          buy.disabled = blockers.length > 0;
+          buy.textContent = blockers.length ? `🔒 ${blockers.join(' · ')}` : `🔓 해금 (${unlockText(detail)})`;
+          buy.addEventListener('click', () => {
+            if (unlockChar(detail)) {
+              toast(`${c.icon} ${c.name} 해금!`);
+              sfx('levelup');
+              saveDirty = true;
+              render();
+            }
+          });
+          btns.appendChild(buy);
+        } else {
+          const put = document.createElement('button');
+          put.className = 'modalBtn charPut';
+          put.id = 'charPut';
+          put.dataset.char = detail;
+          put.textContent = inParty === slot ? '이미 이 자리에 있어요'
+            : `${slot === 0 ? '👑 리더' : `${slot + 1}번`} 자리에 배치`;
+          put.disabled = inParty === slot;
+          put.addEventListener('click', () => {
+            if (setPartySlot(slot, detail)) { sfx('ui'); toast(`${c.icon} ${c.name} 편성!`); render(); }
+          });
+          btns.appendChild(put);
+          const ld = document.createElement('button');
+          ld.className = 'modalBtn charLeader';
+          ld.id = 'charLeader';
+          ld.dataset.char = detail;
+          ld.textContent = inParty === 0 ? '👑 현재 리더' : '👑 리더로 지정';
+          ld.disabled = inParty === 0;
+          ld.addEventListener('click', () => {
+            if (setLeader(detail)) { sfx('ui'); slot = 0; toast(`👑 리더 — ${c.name}`); render(); }
+          });
+          btns.appendChild(ld);
+        }
+        d.appendChild(btns);
+        body.appendChild(d);
+      }
+
+      /* ---- 22종 그리드 (분류별) ---- */
+      CHAR_GROUPS.forEach(g => {
+        const head = document.createElement('div');
+        head.className = 'charGroupHead';
+        head.dataset.group = g.k;
+        const list = charsByGroup(g.k);
+        head.innerHTML = `${g.icon} <b>${g.name}</b> <em>${list.filter(c => charOwned(c.id)).length}/${list.length}</em>`;
+        body.appendChild(head);
+        const grid = document.createElement('div');
+        grid.className = 'charGrid';
+        grid.dataset.group = g.k;
+        list.forEach(c => {
+          const owned = charOwned(c.id);
+          const inParty = state.partyIds.indexOf(c.id) >= 0;
+          const b = document.createElement('button');
+          b.className = 'charCard' + (owned ? '' : ' locked') + (inParty ? ' inParty' : '') +
+            (detail === c.id ? ' on' : '');
+          b.dataset.char = c.id;
+          b.dataset.owned = owned ? '1' : '0';
+          b.dataset.group = c.group;
+          b.innerHTML = `<span class="cIcon">${owned ? c.icon : '🔒'}</span>` +
+            `<b style="color:${owned ? c.nameColor : '#8a8a96'}">${c.name}</b>` +
+            `<span class="cTags">${charTagHtml(c)}</span>` +
+            `<small>${c.ability.name} — ${c.ability.desc}</small>` +
+            `<em class="cUnlock">${owned ? (inParty ? '편성 중' : '보유') : unlockText(c.id)}</em>`;
+          b.addEventListener('click', () => { detail = c.id; render(); });
+          grid.appendChild(b);
+        });
+        body.appendChild(grid);
+      });
+
       const close = document.createElement('button');
       close.className = 'modalBtn';
-      close.id = 'classClose';
+      close.id = 'rosterClose';
       close.textContent = '닫기';
       close.addEventListener('click', () => { closeModal(); openShop(); });
       body.appendChild(close);
@@ -391,6 +487,8 @@ function openClassChoice() {
     render();
   });
 }
+// 구 이름 (캠프 버튼 / 테스트 훅)
+function openClassChoice() { return openRoster(0); }
 
 /* ---- 파티 모달 (장비 / 젬 장착 / 패시브 트리) ---- */
 let partyTab = 'gem';
@@ -436,8 +534,8 @@ function openParty(tab) {
     };
 
     /* =============== 🗡️ 장비 탭 =============== */
-    const memberIcon = m => (m === leader ? curClass().icon : { mage: '🔮', priest: '✨', porter: '🎒' }[m.role]);
-    const memberRole = m => ({ knight: curClass().name, mage: '마법사', priest: '사제', porter: '짐꾼' }[m.role]);
+    const memberIcon = m => charDef(m.id).icon;
+    const memberRole = m => charDef(m.id).roleNames.join('·') + (m === leader ? ' · 👑' : '');
     const detailMember = () => party.find(p => p.id === ((eqDetail && eqDetail.memberId) || (eqPick && eqPick.memberId) || leader.id)) || leader;
 
     // 인벤토리/픽 목록의 아이템 버튼
@@ -642,8 +740,8 @@ function openParty(tab) {
         const row = document.createElement('div');
         row.className = 'partyRow';
         row.dataset.member = m.id;
-        const roleName = { knight: curClass().name, mage: '마법사', priest: '사제', porter: '짐꾼' }[m.role];
-        const icon = m === leader ? curClass().icon : { mage: '🔮', priest: '✨', porter: '🎒' }[m.role];
+        const roleName = memberRole(m);
+        const icon = memberIcon(m);
         const hpNow = clamp(Math.floor(m.hp), 0, maxHp(m));
         row.innerHTML = `<div class="pFace">${icon}</div>
           <div class="pInfo"><b>${m.name}</b><small>${roleName}</small>
@@ -700,45 +798,154 @@ function openParty(tab) {
       body.appendChild(inv);
     };
 
+    /* =============== 🌳 패시브 트리 =============== */
+    const TREE_SCALE = 34, TREE_PAD = 70;
+    const treeX = n => (n.x + 11.6) * TREE_SCALE + TREE_PAD;
+    const treeY = n => (n.y + 9.8) * TREE_SCALE + TREE_PAD;
+    const TREE_W = Math.ceil((11.6 + 11.6) * TREE_SCALE + TREE_PAD * 2);
+    const TREE_H = Math.ceil((9.8 + 10.2) * TREE_SCALE + TREE_PAD * 2);
+    let nodePick = null;
+
+    const nodeState = id => {
+      if (nodeTaken(id)) return 'taken';
+      return nodeReachable(id) ? 'next' : 'far';
+    };
     const renderPassives = () => {
       const head = document.createElement('div');
       head.className = 'sumRow';
-      head.innerHTML = `<span>남은 포인트</span><b id="ptsVal">${state.passivePts}</b>`;
+      head.innerHTML = `<span>남은 포인트</span><b id="ptsVal">${state.passivePts}</b>` +
+        `<span class="treeSpent" id="treeSpent">찍은 노드 ${passiveSpent()} / ${PASSIVE_TREE.counts.total}</span>`;
       body.appendChild(head);
-      PASSIVE_KEYS.forEach(tk => {
-        const tree = PASSIVE_TREES[tk];
-        const took = passiveN(tk);
-        const wrap = document.createElement('div');
-        wrap.className = 'treeRow';
-        wrap.dataset.tree = tk;
-        wrap.innerHTML = `<div class="treeHead">${tree.icon} <b>${tree.name}</b> <em>${took}/5</em></div>`;
-        const line = document.createElement('div');
-        line.className = 'treeLine';
-        tree.nodes.forEach((nd, i) => {
-          const b = document.createElement('button');
-          const taken = took > i;
-          const next = took === i;
-          b.className = 'pNode' + (taken ? ' taken' : next ? ' next' : ' far');
-          b.dataset.tree = tk;
-          b.dataset.i = String(i);
-          b.disabled = !next || state.passivePts <= 0;
-          b.innerHTML = `<b>${i + 1}</b><small>${nd.name}</small><em>${nd.desc}</em>`;
-          b.addEventListener('click', () => {
-            if (addPassive(tk)) {
-              addSparkle(leader.px, leader.py, '#8fe0ff');
-              toast(`🌳 ${tree.name} — ${nd.name}!`);
-              render();
-            }
-          });
-          line.appendChild(b);
-        });
-        wrap.appendChild(line);
-        body.appendChild(wrap);
+
+      const wrap = document.createElement('div');
+      wrap.className = 'treeWrap';
+      wrap.id = 'treeWrap';
+      const map = document.createElement('div');
+      map.className = 'treeMap';
+      map.id = 'treeMap';
+      map.style.width = TREE_W + 'px';
+      map.style.height = TREE_H + 'px';
+
+      // 간선 (캔버스 1장)
+      const cv = document.createElement('canvas');
+      cv.className = 'treeLinks';
+      cv.id = 'treeLinks';
+      cv.width = TREE_W; cv.height = TREE_H;
+      map.appendChild(cv);
+      const g = cv.getContext('2d');
+      PASSIVE_LINKS.forEach(([a, b]) => {
+        const na = PASSIVE_BY_ID[a], nb = PASSIVE_BY_ID[b];
+        if (!na || !nb) return;
+        const on = (a === PASSIVE_ROOT || nodeTaken(a)) && (b === PASSIVE_ROOT || nodeTaken(b));
+        g.strokeStyle = on ? '#ffe88a' : 'rgba(180,190,210,0.22)';
+        g.lineWidth = on ? 3 : 2;
+        g.beginPath();
+        g.moveTo(treeX(na), treeY(na));
+        g.lineTo(treeX(nb), treeY(nb));
+        g.stroke();
       });
-      const hint = document.createElement('p');
-      hint.className = 'sumHint';
-      hint.textContent = '노드는 순서대로만 찍을 수 있어요. 레벨업마다 포인트 1개!';
-      body.appendChild(hint);
+
+      // 노드
+      PASSIVE_NODES.forEach(nd => {
+        const b = document.createElement('button');
+        const st = nd.kind === 'root' ? 'taken' : nodeState(nd.id);
+        b.className = `tNode k-${nd.kind} s-${st} br-${nd.br}` + (nodePick === nd.id ? ' on' : '');
+        b.dataset.node = nd.id;
+        b.dataset.kind = nd.kind;
+        b.dataset.branch = nd.br;
+        b.dataset.state = st;
+        const size = nd.kind === 'keystone' ? 46 : nd.kind === 'notable' ? 36 : 24;
+        b.style.width = size + 'px';
+        b.style.height = size + 'px';
+        b.style.left = (treeX(nd) - size / 2) + 'px';
+        b.style.top = (treeY(nd) - size / 2) + 'px';
+        b.style.borderColor = BRANCH_COLOR[nd.br];
+        // 찍은 노드는 가지 색으로 채우고, 아직이면 글리프만 가지 색으로 남긴다
+        if (st === 'taken') { b.style.background = BRANCH_COLOR[nd.br]; b.style.color = '#0a151c'; }
+        else b.style.color = BRANCH_COLOR[nd.br];
+        b.title = `${nd.name} — ${nd.desc.replace(/<br>/g, ' / ')}`;
+        b.innerHTML = nd.kind === 'keystone' ? '★' : nd.kind === 'notable' ? '◆' : nd.kind === 'root' ? '⬤' : '';
+        if (nd.kind !== 'root') b.addEventListener('click', () => {
+          nodePick = (nodePick === nd.id) ? null : nd.id;
+          render();
+        });
+        map.appendChild(b);
+      });
+      wrap.appendChild(map);
+      body.appendChild(wrap);
+
+      // 드래그 패닝 (모바일은 기본 스크롤도 동작)
+      let drag = null;
+      wrap.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, l: wrap.scrollLeft, t: wrap.scrollTop, moved: 0 }; });
+      wrap.addEventListener('pointermove', e => {
+        if (!drag) return;
+        const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+        drag.moved = Math.max(drag.moved, Math.abs(dx) + Math.abs(dy));
+        wrap.scrollLeft = drag.l - dx;
+        wrap.scrollTop = drag.t - dy;
+      });
+      const endDrag = () => { drag = null; };
+      wrap.addEventListener('pointerup', endDrag);
+      wrap.addEventListener('pointerleave', endDrag);
+      wrap.addEventListener('pointercancel', endDrag);
+      // 처음 열면 시작점이 가운데 오도록
+      setTimeout(() => {
+        const st = PASSIVE_BY_ID[PASSIVE_ROOT];
+        wrap.scrollLeft = Math.max(0, treeX(st) - wrap.clientWidth / 2);
+        wrap.scrollTop = Math.max(0, treeY(st) - wrap.clientHeight / 2);
+      }, 0);
+
+      // 선택 노드 상세
+      const nd = nodePick ? PASSIVE_BY_ID[nodePick] : null;
+      const det = document.createElement('div');
+      det.className = 'nodeDetail';
+      det.id = 'nodeDetail';
+      if (nd) {
+        det.dataset.node = nd.id;
+        const st = nodeState(nd.id);
+        const kindName = nd.kind === 'keystone' ? '키스톤' : nd.kind === 'notable' ? '노터블' : '소형';
+        det.innerHTML = `<div class="ndHead"><b style="color:${BRANCH_COLOR[nd.br]}">${nd.name}</b>` +
+          `<em>${BRANCH_NAME[nd.br]} · ${kindName}</em></div><p>${nd.desc}</p>`;
+        const take = document.createElement('button');
+        take.className = 'modalBtn';
+        take.id = 'nodeTake';
+        take.dataset.node = nd.id;
+        take.disabled = !canTakeNode(nd.id);
+        take.textContent = st === 'taken' ? '✔ 찍음'
+          : st === 'far' ? '🔒 인접한 노드를 먼저 찍으세요'
+          : state.passivePts <= 0 ? '포인트가 없어요' : '🌳 찍기 (1 포인트)';
+        take.addEventListener('click', () => {
+          if (takeNode(nd.id)) {
+            addSparkle(leader.px, leader.py, '#8fe0ff');
+            toast(`🌳 ${nd.name}!`);
+            sfx('levelup');
+            render();
+          }
+        });
+        det.appendChild(take);
+      } else {
+        det.innerHTML = '<p class="sumHint">노드를 눌러 효과를 확인하고 찍으세요. 인접한 노드만 찍을 수 있어요.</p>';
+      }
+      body.appendChild(det);
+
+      // 리스펙
+      const res = document.createElement('button');
+      res.className = 'modalBtn danger';
+      res.id = 'treeRespec';
+      const rc = respecCost();
+      res.disabled = passiveSpent() <= 0 || state.gold < rc;
+      res.textContent = `♻️ 전체 초기화 (골드 ${fmt(rc)})`;
+      res.addEventListener('click', () => {
+        if (respecTree()) { toast('♻️ 패시브 트리 초기화!'); nodePick = null; render(); }
+      });
+      body.appendChild(res);
+
+      const legend = document.createElement('p');
+      legend.className = 'sumHint';
+      legend.id = 'treeLegend';
+      legend.innerHTML = `소형 ${PASSIVE_TREE.counts.small} · ◆ 노터블 ${PASSIVE_TREE.counts.notable} · ★ 키스톤 ${PASSIVE_TREE.counts.keystone}` +
+        ` — 레벨업마다 포인트 1개!`;
+      body.appendChild(legend);
     };
 
     render();
@@ -770,7 +977,8 @@ function openRunInfo() {
       rows.push(['레벨', `Lv.${state.lv}`]);
       rows.push(['보유 골드', fmt(state.gold)]);
       rows.push(['보유 아주라이트', `${fmt(state.azurite)} ◆`]);
-      rows.push(['직업', `${curClass().icon} ${curClass().name}`]);
+      rows.push(['리더', `${curClass().icon} ${curClass().name}`]);
+      rows.push(['파티', state.partyIds.map(id => charDef(id).name).join(' · ')]);
     }
     const wrap = document.createElement('div');
     wrap.id = 'runInfoBody';
@@ -810,9 +1018,8 @@ function openRunInfo() {
       chipList('◆ 광산 장비', 'riMine', MINE_DEFS
         .filter(d => mineLv(d.k) > 0)
         .map(d => ({ k: d.k, icon: d.icon, name: d.name, n: mineLv(d.k) })));
-      chipList('해금한 직업', 'riClasses', CLASS_KEYS
-        .filter(k => classUnlocked(k))
-        .map(k => ({ k, icon: CLASSES[k].icon, name: CLASSES[k].name, n: 1 })));
+      chipList('보유 캐릭터', 'riClasses', ownedChars()
+        .map(k => ({ k, icon: charDef(k).icon, name: charDef(k).name, n: 1 })));
     }
 
     const hint = document.createElement('p');
@@ -1005,8 +1212,8 @@ function openShop() {
       const cbtn = document.createElement('button');
       cbtn.className = 'modalBtn';
       cbtn.id = 'classBtn';
-      cbtn.textContent = `🎭 직업 변경 (현재: ${curClass().name})`;
-      cbtn.addEventListener('click', () => { closeModal(); openClassChoice(); });
+      cbtn.textContent = `🎭 파티 편성 (리더: ${curClass().name})`;
+      cbtn.addEventListener('click', () => { closeModal(); openRoster(0); });
       body.appendChild(cbtn);
       const dbtn = document.createElement('button');
       dbtn.className = 'modalBtn';
@@ -1046,20 +1253,20 @@ function openRecords() {
 
     const h = document.createElement('div');
     h.className = 'riHead';
-    h.textContent = '직업별 최고 깊이';
+    h.textContent = '리더별 최고 깊이';
     wrap.appendChild(h);
     const box = document.createElement('div');
     box.className = 'riChips';
     box.id = 'recClassBest';
-    const items = CLASS_KEYS.filter(k => (cb[k] || 0) > 0);
+    const items = ROSTER_IDS.filter(k => (cb[k] || 0) > 0);
     box.innerHTML = items.length
-      ? items.map(k => `<span class="riChip" data-k="${k}">${CLASSES[k].icon} ${CLASSES[k].name}<b>깊이 ${cb[k]}</b></span>`).join('')
+      ? items.map(k => `<span class="riChip" data-k="${k}">${charDef(k).icon} ${charDef(k).name}<b>깊이 ${cb[k]}</b></span>`).join('')
       : '<span class="riNone">아직 기록이 없습니다</span>';
     wrap.appendChild(box);
 
     const hint = document.createElement('p');
     hint.className = 'sumHint';
-    hint.textContent = '직업을 바꿔가며 더 깊이 내려가 보세요.';
+    hint.textContent = '리더를 바꿔가며 더 깊이 내려가 보세요.';
     body.appendChild(hint);
     const close = document.createElement('button');
     close.className = 'modalBtn';

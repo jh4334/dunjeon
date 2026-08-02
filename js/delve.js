@@ -22,7 +22,8 @@ let miningCur = null;              // 지금 캐고 있는 광맥 (렌더/테스
 
 // 실제 채널링 시간 — '단단한 곡괭이' Lv당 -0.2초 (하한 0.8초)
 function veinChannel() {
-  return Math.max(VEIN_CHANNEL_MIN, VEIN_CHANNEL - VEIN_PICK_STEP * mineLv('pickaxe'));
+  // 트리 '채굴 속도 +%' 는 채널링 시간을 줄인다 (하한은 그대로)
+  return Math.max(VEIN_CHANNEL_MIN, (VEIN_CHANNEL - VEIN_PICK_STEP * mineLv('pickaxe')) / passiveMiningMult());
 }
 
 function veinList() {
@@ -208,7 +209,7 @@ function updateDarkness(dt) {
     state.darkAway += dt;
     if (state.darkAway >= DARK_GRACE) {
       // 장비 '어둠 저항 %' — 스택이 차오르는 속도를 늦춘다
-      state.darkStack = Math.min(DARK_MAX, state.darkStack + DARK_RATE * (1 - equipDarkRes()) * dt);
+      state.darkStack = Math.min(DARK_MAX, state.darkStack + DARK_RATE * (1 - equipDarkRes()) * (1 - passiveDarkRes()) * dt);
       // 스택 피해는 1초 간격으로 묶어서 (플로터 도배 방지)
       state.darkTick += dt;
       while (state.darkTick >= 1) { state.darkTick -= 1; applyDarkDamage(darkDps()); }

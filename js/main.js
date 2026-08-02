@@ -152,7 +152,7 @@ window.GAME = {
   openMerchant, makeMerchantStock,
   arena: () => state.world.arena,
   finishArena,
-  /* ---- Phase 3 (직업 & 젬 빌드) 훅 ---- */
+  /* ---- Phase 3 (직업 & 젬 빌드) 훅 — 구 이름 유지 ---- */
   CLASSES, CLASS_KEYS, GEMS, GEM_BY_KEY, PASSIVE_TREES, PASSIVE_KEYS,
   SUPPORT_LV, MINION_MAX, MINE_MAX,
   curClass, classUnlocked, unlockClass, setClass, canChangeClass,
@@ -163,10 +163,43 @@ window.GAME = {
   addPassive, canTakePassive, passiveN, passiveSpent,
   passiveDmgMult, passiveHpMult, passiveGoldMult, passiveCrit, passiveDR,
   hasExecute, hasUnyielding, passiveSpeedMult, passiveSight, sightRadius, revealRadius,
-  maxHp, atkPow, healPow, goldMult, leaderStepTime,
-  // 직업 능력
+  maxHp, maxHpBase, atkPow, healPow, goldMult, leaderStepTime,
+  // 캐릭터 능력 (구 이름)
   summonSkeleton, minions: () => minionList(), damageMinion, updateMinions,
   MINION_HP_RATIO, MINION_LEASH, BLADE_AURA_TICK,
+
+  /* ---- M3.5b: 캐릭터 로스터 / 파티 편성 ---- */
+  ROSTER, ROSTER_BY_ID, ROSTER_IDS, ROLE_TAGS, ROLE_TAG_KEYS, PERSONAS, PERSONA_KEYS,
+  CHAR_GROUPS, BASE_CHARS, DEFAULT_PARTY, LEGACY_CLASS_KEYS, PARTY_SIZE,
+  charDef, isChar, charHasRole, charsByGroup, unlockText,
+  ownedChars, charOwned, ownChar, disownChar, unlockReady, unlockBlockers, unlockChar,
+  canChangeParty, setParty, setPartySlot, setLeader, forceLeader, applyPartyIds,
+  partyIds: () => state.partyIds.slice(),
+  partyHasChar, partyHasRole, partyHasAbility, memberWithAbility, memberWithRole, memberOf,
+  openRoster,
+  // 캐릭터 능력 (신규)
+  CHAR_ATTACK, CHAR_TICK, MINION_KINDS, MINION_KIND_KEYS,
+  summonMinionFor, minionsOf, minionKindMax, makeMinion,
+  charAtkMul, charHpMul, charDodge, charCd, potionMult,
+  memberStrike, memberBase, partyShield, throwFlask, slowAura, onMemberHit,
+  updateCharAbilities,
+  // 실드
+  addShield, absorbShield, updateShields, partyCdAura,
+  shields: () => party.map(m => ({ id: m.id, shield: m.shield, t: m.shieldT })),
+
+  /* ---- M3.5b: PoE식 패시브 트리 (58노드) ---- */
+  PASSIVE_TREE, PASSIVE_NODES, PASSIVE_BY_ID, PASSIVE_LINKS, PASSIVE_ADJ,
+  PASSIVE_ROOT, PASSIVE_TAKEABLE, LEGACY_CHAIN, BRANCH_COLOR, BRANCH_NAME,
+  passiveReachable, treeStats, hasKeystone, keystonesTaken,
+  nodeTaken, nodeReachable, canTakeNode, takeNode, pruneOrphans,
+  respecTree, respec: respecTree, respecCost, RESPEC_COST_PER, bumpTree,
+  takenNodes: () => (state.passiveNodes || []).slice(),
+  passiveAzMult, passiveTakenMult, passiveCdMult, passiveGemCdMult, passiveHealMult,
+  passiveGemMul, passiveTgCut, passiveDarkRes, passiveLeech, passiveMinionMult,
+  passiveProjMult, passiveAuraMult, passiveMiningMult, passiveShopMult,
+  passiveShieldMult, passiveReviveMult, passiveTelegraphMult, passiveMonHpMult, loneMult,
+  // 대사
+  CHAR_LINES, PERSONA_DIALOGUE, charLineCount,
   // 리뷰 3차 수정 훅 (텔레그래프 상한 / 기사 스플래시)
   TELEGRAPH_MULT, TELEGRAPH_CAP, KNIGHT_SPLASH, knightSplash,
   updateTelegraphs,
@@ -184,6 +217,7 @@ window.GAME = {
   autoDodgeStep, telegraphCount, updateAuto, autoDest: () => autoDest(state.world),
   autoPath: () => autoPath,
   placeMine, explodeMine, mines: () => mineList(),
+  equipCharIds, resetEquipmentFor,
   /* ---- M3.5a: 자동 풀 루팅 훅 ---- */
   AUTO_ADJ_DIST, AUTO_NEAR_DIST,
   autoPlan: () => autoPlan(state.world),
