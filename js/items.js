@@ -62,28 +62,111 @@ function baseOf(slot, key) {
 /* ---------------- 접사 풀 16종 ----------------
  * base/per: 값 = (base + per × ilvl) × 베이스 배율 × 0.8~1.2 랜덤
  * scope: 'member' 착용자 본인 / 'leader' 리더 장비만 / 'party' 파티 전원 합산
- * dec: 표기 소수 자릿수 (없으면 정수) */
+ * dec: 표기 소수 자릿수 (없으면 정수)
+ *
+ * M8a — 접두/접미 분류:
+ *   kind 'prefix' (힘 — 공격력/체력/치명타/공속/흡혈/치유/젬) 8종
+ *   kind 'suffix' (방어·유틸 — 피해 감소/저항/이동/시야/재화/부활) 8종
+ *   group   같은 그룹의 접사는 한 아이템에 동시에 붙지 않는다 (기존 dedup 을 명시화한 것 —
+ *           지금은 접사 1종 = 그룹 1개라 동작이 완전히 같다. 그룹을 묶으면 배타 규칙이 된다.)
+ *   tag     태그 제작(원소 각인/수호 각인)이 노리는 계열 */
 const AFFIX_POOL = [
-  { k: 'atk',      name: '공격력',              pre: '사나운',       unit: '%', base: 4,   per: 0.80, scope: 'member' },
-  { k: 'hp',       name: '최대 체력',            pre: '튼튼한',       unit: '%', base: 5,   per: 0.90, scope: 'member' },
-  { k: 'crit',     name: '치명타 확률',          pre: '날카로운',     unit: '%', base: 2,   per: 0.35, scope: 'member' },
-  { k: 'critDmg',  name: '치명타 피해',          pre: '잔혹한',       unit: '%', base: 8,   per: 1.60, scope: 'member' },
-  { k: 'atkSpd',   name: '공격 속도',            pre: '재빠른',       unit: '%', base: 3,   per: 0.60, scope: 'member' },
-  { k: 'moveSpd',  name: '이동 속도',            pre: '경쾌한',       unit: '%', base: 3,   per: 0.50, scope: 'leader' },
-  { k: 'gold',     name: '골드 획득',            pre: '탐욕스러운',   unit: '%', base: 6,   per: 1.20, scope: 'party' },
-  { k: 'azurite',  name: '아주라이트 획득',      pre: '수정빛',       unit: '%', base: 6,   per: 1.20, scope: 'party' },
-  { k: 'leech',    name: '흡혈',                pre: '피에 젖은',    unit: '%', base: 1.5, per: 0.25, scope: 'member', dec: 1 },
-  { k: 'dr',       name: '피해 감소',            pre: '견고한',       unit: '%', base: 2,   per: 0.35, scope: 'member' },
-  { k: 'sight',    name: '시야',                pre: '밝은',         unit: '',  base: 0.3, per: 0.06, scope: 'party',  dec: 1 },
-  { k: 'heal',     name: '치유량',              pre: '자애로운',     unit: '%', base: 5,   per: 1.00, scope: 'member' },
-  { k: 'tgReduce', name: '텔레그래프 피해 감소', pre: '굳건한',       unit: '%', base: 4,   per: 0.70, scope: 'member' },
-  { k: 'darkRes',  name: '어둠 저항',            pre: '어둠을 견디는', unit: '%', base: 4,  per: 0.80, scope: 'party' },
-  { k: 'gem',      name: '스킬 젬 효과',         pre: '각인된',       unit: '%', base: 5,   per: 1.00, scope: 'member' },
-  { k: 'revive',   name: '부활 속도',            pre: '구원의',       unit: '%', base: 5,   per: 1.00, scope: 'party' },
+  { k: 'atk',      name: '공격력',              pre: '사나운',       unit: '%', base: 4,   per: 0.80, scope: 'member', kind: 'prefix', group: 'atk',      tag: 'elem' },
+  { k: 'hp',       name: '최대 체력',            pre: '튼튼한',       unit: '%', base: 5,   per: 0.90, scope: 'member', kind: 'prefix', group: 'hp' },
+  { k: 'crit',     name: '치명타 확률',          pre: '날카로운',     unit: '%', base: 2,   per: 0.35, scope: 'member', kind: 'prefix', group: 'crit' },
+  { k: 'critDmg',  name: '치명타 피해',          pre: '잔혹한',       unit: '%', base: 8,   per: 1.60, scope: 'member', kind: 'prefix', group: 'critDmg', tag: 'elem' },
+  { k: 'atkSpd',   name: '공격 속도',            pre: '재빠른',       unit: '%', base: 3,   per: 0.60, scope: 'member', kind: 'prefix', group: 'atkSpd' },
+  { k: 'moveSpd',  name: '이동 속도',            pre: '경쾌한',       unit: '%', base: 3,   per: 0.50, scope: 'leader', kind: 'suffix', group: 'moveSpd' },
+  { k: 'gold',     name: '골드 획득',            pre: '탐욕스러운',   unit: '%', base: 6,   per: 1.20, scope: 'party',  kind: 'suffix', group: 'gold' },
+  { k: 'azurite',  name: '아주라이트 획득',      pre: '수정빛',       unit: '%', base: 6,   per: 1.20, scope: 'party',  kind: 'suffix', group: 'azurite' },
+  { k: 'leech',    name: '흡혈',                pre: '피에 젖은',    unit: '%', base: 1.5, per: 0.25, scope: 'member', kind: 'prefix', group: 'leech', dec: 1 },
+  { k: 'dr',       name: '피해 감소',            pre: '견고한',       unit: '%', base: 2,   per: 0.35, scope: 'member', kind: 'suffix', group: 'dr',      tag: 'guard' },
+  { k: 'sight',    name: '시야',                pre: '밝은',         unit: '',  base: 0.3, per: 0.06, scope: 'party',  kind: 'suffix', group: 'sight', dec: 1 },
+  { k: 'heal',     name: '치유량',              pre: '자애로운',     unit: '%', base: 5,   per: 1.00, scope: 'member', kind: 'prefix', group: 'heal' },
+  { k: 'tgReduce', name: '텔레그래프 피해 감소', pre: '굳건한',       unit: '%', base: 4,   per: 0.70, scope: 'member', kind: 'suffix', group: 'tgReduce', tag: 'guard' },
+  { k: 'darkRes',  name: '어둠 저항',            pre: '어둠을 견디는', unit: '%', base: 4,  per: 0.80, scope: 'party',  kind: 'suffix', group: 'darkRes',  tag: 'guard' },
+  { k: 'gem',      name: '스킬 젬 효과',         pre: '각인된',       unit: '%', base: 5,   per: 1.00, scope: 'member', kind: 'prefix', group: 'gem',      tag: 'elem' },
+  { k: 'revive',   name: '부활 속도',            pre: '구원의',       unit: '%', base: 5,   per: 1.00, scope: 'party',  kind: 'suffix', group: 'revive' },
 ];
 const AFFIX_BY_KEY = {};
 AFFIX_POOL.forEach(a => { AFFIX_BY_KEY[a.k] = a; });
 const AFFIX_KEYS = AFFIX_POOL.map(a => a.k);
+const AFFIX_KINDS = ['prefix', 'suffix'];
+const AFFIX_KIND_NAME = { prefix: '접두', suffix: '접미' };
+const PREFIX_POOL = AFFIX_POOL.filter(a => a.kind === 'prefix');
+const SUFFIX_POOL = AFFIX_POOL.filter(a => a.kind === 'suffix');
+const PREFIX_KEYS = PREFIX_POOL.map(a => a.k);
+const SUFFIX_KEYS = SUFFIX_POOL.map(a => a.k);
+const AFFIX_TAGS = {
+  elem:  { k: 'elem',  icon: '🔥', name: '원소', kind: 'prefix' },
+  guard: { k: 'guard', icon: '🛡️', name: '방어', kind: 'suffix' },
+};
+function affixKind(k) { const a = AFFIX_BY_KEY[k]; return a ? a.kind : 'prefix'; }
+function affixGroup(k) { const a = AFFIX_BY_KEY[k]; return a ? (a.group || a.k) : k; }
+function affixesByTag(tag) { return AFFIX_POOL.filter(a => a.tag === tag); }
+
+/* ---------------- 접사 티어 3단계 (M8a) ----------------
+ * 기존 굴림 폭 0.8~1.2 를 정확히 3등분한다 → T2 의 중앙이 기존 평균(×1.0)과 같다.
+ *   T3  ×0.800~0.933   ilvl 1+    (흔함)
+ *   T2  ×0.933~1.067   ilvl 8+
+ *   T1  ×1.067~1.200   ilvl 16+   (드묾)
+ * ilvl 이 낮으면 상위 티어가 아예 등장하지 않는다 (깊이 = 아이템 품질). */
+const AFFIX_ROLL_LO = 0.8, AFFIX_ROLL_HI = 1.2;
+const AFFIX_TIER_STEP = (AFFIX_ROLL_HI - AFFIX_ROLL_LO) / 3;
+const AFFIX_TIERS = [
+  { t: 1, mark: 'T1', ilvl: 16, w: 15 },
+  { t: 2, mark: 'T2', ilvl: 8,  w: 30 },
+  { t: 3, mark: 'T3', ilvl: 1,  w: 55 },
+];
+AFFIX_TIERS.forEach(t => {
+  t.lo = AFFIX_ROLL_LO + AFFIX_TIER_STEP * (3 - t.t);
+  t.hi = t.lo + AFFIX_TIER_STEP;
+});
+const AFFIX_TIER_BY_T = {};
+AFFIX_TIERS.forEach(t => { AFFIX_TIER_BY_T[t.t] = t; });
+const TIER_MAX = 1, TIER_MIN = 3;
+function tierDef(t) { return AFFIX_TIER_BY_T[clamp(Math.floor(t) || TIER_MIN, TIER_MAX, TIER_MIN)]; }
+/* 이 ilvl 에서 굴릴 수 있는 티어 목록 (상위 티어일수록 깊이 요구가 높다) */
+function tiersFor(ilvl) {
+  const lv = clamp(Math.floor(ilvl) || 1, 1, 999);
+  return AFFIX_TIERS.filter(t => lv >= t.ilvl);
+}
+function rollTier(ilvl, R) {
+  const rng = R || MATH_RNG;
+  const list = tiersFor(ilvl);
+  if (!list.length) return TIER_MIN;
+  let total = 0;
+  list.forEach(t => { total += t.w; });
+  let r = rng.next() * total;
+  for (const t of list) { r -= t.w; if (r < 0) return t.t; }
+  return list[list.length - 1].t;
+}
+/* 접사 값의 중심(= 랜덤 배율 1.0 일 때의 값) */
+function affixCenter(a, ilvl, baseMul) {
+  return (a.base + a.per * (clamp(Math.floor(ilvl) || 1, 1, 999))) * (baseMul || 1);
+}
+function roundAffix(a, raw) {
+  const dec = a.dec || 0;
+  const p = Math.pow(10, dec);
+  return Math.max(dec ? 1 / p : 1, Math.round(raw * p) / p);
+}
+/* 지정 티어 안에서 값 굴리기 */
+function rollTierValue(a, ilvl, baseMul, tier, R) {
+  const rng = R || MATH_RNG;
+  const td = tierDef(tier);
+  return roundAffix(a, affixCenter(a, ilvl, baseMul) * rng.rand(td.lo, td.hi));
+}
+/* 값 → 티어 역산 (구 세이브 접사 소급 분류 · 수치는 건드리지 않는다) */
+function tierOfValue(key, v, ilvl, baseMul) {
+  const a = AFFIX_BY_KEY[key];
+  if (!a) return TIER_MIN;
+  const c = affixCenter(a, ilvl, baseMul);
+  if (!(c > 0)) return 2;
+  const r = Math.abs(v) / c;
+  if (r >= AFFIX_TIER_BY_T[1].lo) return 1;
+  if (r >= AFFIX_TIER_BY_T[2].lo) return 2;
+  return 3;
+}
 
 // 합산 상한 (극단 빌드로 무적이 되는 것을 막는다)
 const AFFIX_CAP = { dr: 60, tgReduce: 70, darkRes: 80, leech: 25 };
@@ -101,11 +184,14 @@ function affixText(af) {
   const a = AFFIX_BY_KEY[af.k];
   return a ? `${a.name} ${affixValueText(af.k, af.v)}` : '';
 }
+/* 티어를 무시한 옛 굴림 (0.8~1.2 균등) — 외부 호출 호환용으로 남겨 둔다 */
 function rollAffixValue(a, ilvl, baseMul) {
-  const raw = (a.base + a.per * ilvl) * (baseMul || 1) * rand(0.8, 1.2);
-  const dec = a.dec || 0;
-  const p = Math.pow(10, dec);
-  return Math.max(dec ? 1 / p : 1, Math.round(raw * p) / p);
+  return roundAffix(a, affixCenter(a, ilvl, baseMul) * rand(AFFIX_ROLL_LO, AFFIX_ROLL_HI));
+}
+/* 접사 인스턴스 하나 만들기 (kind/tier 포함) */
+function makeAffix(a, ilvl, baseMul, R, tier) {
+  const t = tier || rollTier(ilvl, R);
+  return { k: a.k, v: rollTierValue(a, ilvl, baseMul, t, R), kind: a.kind, tier: t };
 }
 
 /* ---------------- 고유 아이템 7종 (빌드를 바꾸는 고정 효과) ---------------- */
@@ -163,14 +249,17 @@ const RARE_WORD_A = ['황혼의', '심연의', '핏빛', '서리의', '폭풍의
   '저주받은', '새벽의', '잿빛', '비탄의', '천공의', '망각의', '무쇠의', '별빛'];
 const RARE_WORD_B = ['송곳니', '수호', '속삭임', '파멸', '맹세', '굴레',
   '노래', '발톱', '심장', '유물', '서약', '종말', '기원', '메아리'];
-function rollRareName() { return `${pick(RARE_WORD_A)} ${pick(RARE_WORD_B)}`; }
+function rollRareName(R) {
+  const rng = R || MATH_RNG;
+  return `${rng.pick(RARE_WORD_A)} ${rng.pick(RARE_WORD_B)}`;
+}
 // 마법 = "접두 + 베이스" / 희귀 = 2어절 고유 이름 / 그 외 = 베이스 이름
-function itemAutoName(rarity, base, affixes) {
+function itemAutoName(rarity, base, affixes, R) {
   if (rarity === 'magic') {
     const a = affixes && affixes.length ? AFFIX_BY_KEY[affixes[0].k] : null;
     return `${(a && a.pre) || '기묘한'} ${base.name}`;
   }
-  if (rarity === 'rare') return rollRareName();
+  if (rarity === 'rare') return rollRareName(R);
   return base.name;
 }
 // 희귀는 고유 이름 + 베이스 병기
@@ -182,6 +271,16 @@ function itemIcon(it) {
   if (!it) return '❔';
   if (it.unique && UNIQUE_BY_KEY[it.unique]) return UNIQUE_BY_KEY[it.unique].icon;
   return baseOf(it.slot, it.base).icon;
+}
+/* ---- M8a 표시 헬퍼 ---- */
+function itemCorrupted(it) { return !!(it && it.corrupt); }
+function lockedAffixes(it) { return (it && Array.isArray(it.affixes)) ? it.affixes.filter(a => a.lock) : []; }
+function lockCount(it) { return lockedAffixes(it).length; }
+function affixTierMark(af) { return 'T' + clamp(Math.floor((af && af.tier) || TIER_MIN), TIER_MAX, TIER_MIN); }
+function affixLine(af) {
+  const a = AFFIX_BY_KEY[af.k];
+  if (!a) return '';
+  return `[${affixTierMark(af)}] ${AFFIX_KIND_NAME[af.kind || a.kind]} ${a.name} ${affixValueText(af.k, af.v)}`;
 }
 
 /* ---------------- 아이템 생성 ---------------- */
@@ -212,12 +311,12 @@ function rarityWeights(ilvl, opt) {
   }
   return w;
 }
-function rollRarity(ilvl, opt) {
+function rollRarity(ilvl, opt, R) {
   const w = rarityWeights(ilvl, opt);
   let total = 0;
   RARITY_KEYS.forEach(k => { total += w[k]; });
   if (total <= 0) return 'common';
-  let r = Math.random() * total;
+  let r = (R || MATH_RNG).next() * total;
   for (const k of RARITY_KEYS) {
     r -= w[k];
     if (r < 0) return k;
@@ -225,34 +324,101 @@ function rollRarity(ilvl, opt) {
   return 'common';
 }
 
-function makeUnique(u, ilvl) {
+function makeUnique(u, ilvl, seed) {
   const base = baseOf(u.slot, u.base);
   return {
     id: nextItemId(), slot: u.slot, base: base.k, baseName: base.name,
     name: `「${u.name}」`, rarity: 'unique',
     ilvl: clamp(Math.floor(ilvl) || 1, 1, 999),
     affixes: [], unique: u.k,
+    seed: seed === undefined ? newSeed() : (Math.floor(seed) >>> 0),
+    craftN: 0, implicit: null, corrupt: false,
   };
 }
-/* opt: { slot, base, rarity, unique, bonus, minRarity } */
+
+/* ---- 레어리티별 접두/접미 슬롯 상한 (M8a) ----
+ *   마법 = 접두 1 + 접미 1  ·  희귀 = 접두 2 + 접미 2
+ * 총 개수 자체는 RARITY[].affixes 범위(마법 1~2 / 희귀 3~4) 그대로다. */
+const RARITY_AFFIX_SLOTS = {
+  common: { prefix: 0, suffix: 0 },
+  magic:  { prefix: 1, suffix: 1 },
+  rare:   { prefix: 2, suffix: 2 },
+  unique: { prefix: 0, suffix: 0 },
+};
+const LOCK_MAX = 1;              // 아이템당 고정(🔒) 가능한 접사 수
+function affixSlots(rarity) { return RARITY_AFFIX_SLOTS[rarity] || RARITY_AFFIX_SLOTS.common; }
+function affixSlotMax(rarity, kind) { return affixSlots(rarity)[kind] || 0; }
+function countAffixKind(it, kind) {
+  if (!it || !Array.isArray(it.affixes)) return 0;
+  return it.affixes.filter(a => affixKind(a.k) === kind).length;
+}
+function freeSlots(it, kind) {
+  if (!it) return 0;
+  return Math.max(0, affixSlotMax(it.rarity, kind) - countAffixKind(it, kind));
+}
+/* 이미 붙은 그룹을 피해서 kind 계열 접사를 하나 고른다 */
+function pickAffixFor(kind, used, R, tag) {
+  const rng = R || MATH_RNG;
+  let pool = (kind === 'suffix' ? SUFFIX_POOL : PREFIX_POOL);
+  if (tag) {
+    const tagged = pool.filter(a => a.tag === tag);
+    if (tagged.some(a => !used[a.group || a.k])) pool = tagged;
+  }
+  const free = pool.filter(a => !used[a.group || a.k]);
+  if (!free.length) return null;
+  return rng.pick(free);
+}
+/* 접두/접미 상한을 지키며 접사 n개를 굴린다 */
+function rollAffixSet(rarity, n, ilvl, baseMul, R, opt) {
+  opt = opt || {};
+  const rng = R || MATH_RNG;
+  const slots = affixSlots(rarity);
+  const bag = [];
+  for (let i = 0; i < slots.prefix; i++) bag.push('prefix');
+  for (let i = 0; i < slots.suffix; i++) bag.push('suffix');
+  rng.shuffle(bag);
+  const want = bag.slice(0, clamp(n, 0, bag.length));
+  // 태그 보장 제작(원소 각인/수호 각인)은 해당 계열 한 자리를 먼저 확보한다
+  if (opt.tag && AFFIX_TAGS[opt.tag]) {
+    const need = AFFIX_TAGS[opt.tag].kind;
+    if (want.indexOf(need) < 0 && want.length) want[0] = need;
+  }
+  const used = Object.assign({}, opt.used || {});
+  const out = [];
+  let tagDone = false;
+  want.forEach(kind => {
+    const wantTag = (opt.tag && !tagDone && AFFIX_TAGS[opt.tag] && AFFIX_TAGS[opt.tag].kind === kind) ? opt.tag : null;
+    const a = pickAffixFor(kind, used, rng, wantTag);
+    if (!a) return;
+    if (wantTag && a.tag === wantTag) tagDone = true;
+    used[a.group || a.k] = 1;
+    out.push(makeAffix(a, ilvl, baseMul, rng));
+  });
+  return out;
+}
+
+/* opt: { slot, base, rarity, unique, bonus, minRarity, seed }
+ * seed 를 주면 아이템 전체가 그 시드로 결정된다 (같은 시드 = 같은 아이템). */
 function rollItem(ilvl, opt) {
   opt = opt || {};
+  const R = rngFrom(opt.seed);
+  const seed = opt.seed === undefined ? newSeed() : (Math.floor(opt.seed) >>> 0);
   const lv = clamp(Math.floor(ilvl) || 1, 1, 999);
-  if (opt.unique) return makeUnique(UNIQUE_BY_KEY[opt.unique] || pick(DROP_UNIQUES), lv);
-  const rarity = RARITY[opt.rarity] ? opt.rarity : rollRarity(lv, opt);
+  if (opt.unique) return makeUnique(UNIQUE_BY_KEY[opt.unique] || R.pick(DROP_UNIQUES), lv, seed);
+  const rarity = RARITY[opt.rarity] ? opt.rarity : rollRarity(lv, opt, R);
   if (rarity === 'unique') {
     const pool = opt.slot ? DROP_UNIQUES.filter(u => u.slot === opt.slot) : DROP_UNIQUES;
-    return makeUnique(pick(pool.length ? pool : DROP_UNIQUES), lv);
+    return makeUnique(R.pick(pool.length ? pool : DROP_UNIQUES), lv, seed);
   }
-  const slot = SLOTS[opt.slot] ? opt.slot : pick(SLOT_KEYS);
-  const base = opt.base ? baseOf(slot, opt.base) : pick(ITEM_BASES[slot]);
+  const slot = SLOTS[opt.slot] ? opt.slot : R.pick(SLOT_KEYS);
+  const base = opt.base ? baseOf(slot, opt.base) : R.pick(ITEM_BASES[slot]);
   const range = RARITY[rarity].affixes;
-  const n = irand(range[0], range[1]);
-  const affixes = shuffle(AFFIX_POOL.slice()).slice(0, n)
-    .map(a => ({ k: a.k, v: rollAffixValue(a, lv, base.mul) }));
+  const n = R.irand(range[0], range[1]);
+  const affixes = rollAffixSet(rarity, n, lv, base.mul, R);
   return {
     id: nextItemId(), slot, base: base.k, baseName: base.name,
-    name: itemAutoName(rarity, base, affixes), rarity, ilvl: lv, affixes,
+    name: itemAutoName(rarity, base, affixes, R), rarity, ilvl: lv, affixes,
+    seed, craftN: 0, implicit: null, corrupt: false,
   };
 }
 
@@ -344,6 +510,9 @@ function computeStats(id) {
     const it = e[s];
     if (!it || !Array.isArray(it.affixes)) return;
     it.affixes.forEach(af => { if (o[af.k] !== undefined) o[af.k] += af.v; });
+    // M8a — 타락으로 얻은 암시 옵션도 착용 효과에 합산된다
+    const im = it.implicit;
+    if (im && o[im.k] !== undefined) o[im.k] += im.v;
   });
   AFFIX_KEYS.forEach(k => { o[k] = capped(k, o[k]); });
   equipCalcCount++;
@@ -380,8 +549,11 @@ function equipBonus(m, key) {
   if (a.scope === 'leader') return equipStat(leader, key);
   return equipStat(m, key);
 }
-// 비율 접사용 배율 (미착용이면 정확히 1 — 무회귀 보장)
-function equipMul(m, key) { return 1 + equipBonus(m, key) / 100; }
+/* 비율 접사용 배율 (미착용이면 정확히 1 — 무회귀 보장)
+ * M8a: 타락의 '부정 접사'로 합이 -100% 아래로 내려가도 스탯이 0/음수가 되지 않도록
+ * 바닥을 둔다 (접사가 양수이거나 없으면 결과가 완전히 동일하다). */
+const EQUIP_MUL_FLOOR = 0.1;
+function equipMul(m, key) { return Math.max(EQUIP_MUL_FLOOR, 1 + equipBonus(m, key) / 100); }
 
 /* ---- 고유 아이템 조회 (캐시) ---- */
 function uniqueMap() {
@@ -420,12 +592,12 @@ function equipAtkMul(m)  {
 }
 function equipHealMul(m) { return equipMul(m, 'heal'); }
 function equipGoldMul()  { return equipMul(leader, 'gold') * gamblerMult(); }
-function equipAzMul()    { return 1 + equipStatParty('azurite') / 100; }
-function equipSpeedMul() { return 1 + equipStat(leader, 'moveSpd') / 100; }
+function equipAzMul()    { return Math.max(EQUIP_MUL_FLOOR, 1 + equipStatParty('azurite') / 100); }
+function equipSpeedMul() { return Math.max(EQUIP_MUL_FLOOR, 1 + equipStat(leader, 'moveSpd') / 100); }
 function equipSight()    { return equipStatParty('sight'); }
 function equipCrit(m)    { return m ? equipStat(m, 'crit') / 100 : 0; }
 function equipCritDmg(m) { return m ? equipStat(m, 'critDmg') / 100 : 0; }
-function equipCdMul(m)   { return 1 / (1 + equipStat(m, 'atkSpd') / 100); }
+function equipCdMul(m)   { return 1 / Math.max(EQUIP_MUL_FLOOR, 1 + equipStat(m, 'atkSpd') / 100); }
 function equipDR(m)      { return clamp(equipStat(m, 'dr') / 100, 0, 0.9); }
 function equipTgCut(m)   { return clamp(equipStat(m, 'tgReduce') / 100, 0, 0.9); }
 function equipLeech(m)   { return equipStat(m, 'leech') / 100; }
@@ -434,7 +606,7 @@ function equipGemMul(m)  { return equipMul(m, 'gem') * (hasUnique(m, 'voidcrown'
 function uniqueTakenMul(m) { return hasUnique(m, 'voidcrown') ? UNIQ_CROWN_TAKEN : 1; }
 // 「모르그란의 곡괭이」 — 채굴 속도 2배
 function uniqueMiningMul() { return anyUnique('morgpick') ? UNIQ_PICK_MINING : 1; }
-function equipReviveMul(){ return 1 + equipStatParty('revive') / 100; }
+function equipReviveMul(){ return Math.max(EQUIP_MUL_FLOOR, 1 + equipStatParty('revive') / 100); }
 function equipDarkRes()  {
   const uber = anyUnique('morgpick') ? UNIQ_PICK_DARKRES : 0;
   return clamp((equipStatParty('darkRes') + uber) / 100, 0, 0.9);
@@ -670,32 +842,59 @@ function pickupDrop(drop) {
 /* =====================================================================
  * 저장 / 로드 (구 세이브 = equipment/inventory 없음 → 빈 상태)
  * =================================================================== */
+/* 구 세이브 접사 소급 분류 (M8a) — kind 는 풀에서, tier 는 값에서 역산한다.
+ * 수치(v)는 절대 바꾸지 않는다. */
+function adoptAffix(a, ilvl, baseMul) {
+  const def = AFFIX_BY_KEY[a.k];
+  const v = clamp(a.v, -999, 999);
+  const out = { k: a.k, v, kind: def.kind, tier: TIER_MIN };
+  out.tier = (typeof a.tier === 'number' && a.tier >= TIER_MAX && a.tier <= TIER_MIN)
+    ? Math.floor(a.tier) : tierOfValue(a.k, v, ilvl, baseMul);
+  if (a.lock) out.lock = true;
+  if (a.neg || v < 0) out.neg = true;
+  return out;
+}
 function sanitizeItem(o) {
   if (!o || typeof o !== 'object') return null;
   if (!RARITY[o.rarity]) return null;
   const ilvl = clamp(Math.floor(o.ilvl || 1), 1, 999);
+  const seed = (typeof o.seed === 'number' && isFinite(o.seed)) ? (Math.floor(o.seed) >>> 0) : newSeed();
+  const craftN = clamp(Math.floor((typeof o.craftN === 'number' && isFinite(o.craftN)) ? o.craftN : 0), 0, 99999);
   if (o.rarity === 'unique') {
     const u = UNIQUE_BY_KEY[o.unique];
     if (!u) return null;
-    const it = makeUnique(u, ilvl);
+    const it = makeUnique(u, ilvl, seed);
     if (typeof o.id === 'string' && o.id) it.id = o.id;
     return it;
   }
   if (!SLOTS[o.slot]) return null;
   const base = baseOf(o.slot, o.base);
   const max = RARITY[o.rarity].affixes[1];
+  const corrupt = !!o.corrupt;
   const seen = {}, affixes = [];
+  let locks = 0;
   (Array.isArray(o.affixes) ? o.affixes : []).forEach(a => {
     if (!a || !AFFIX_BY_KEY[a.k] || typeof a.v !== 'number' || !isFinite(a.v)) return;
-    if (seen[a.k] || affixes.length >= max) return;
-    seen[a.k] = 1;
-    affixes.push({ k: a.k, v: clamp(a.v, -999, 999) });
+    const g = affixGroup(a.k);
+    // 타락으로 붙은 부정 접사는 슬롯 상한 밖이라 개수 제한에서 뺀다
+    const neg = !!a.neg || a.v < 0;
+    if (seen[g] || (!neg && affixes.length >= max)) return;
+    seen[g] = 1;
+    const af = adoptAffix(a, ilvl, base.mul);
+    if (af.lock) { if (locks >= LOCK_MAX) delete af.lock; else locks++; }
+    affixes.push(af);
   });
+  let implicit = null;
+  const im = o.implicit;
+  if (im && AFFIX_BY_KEY[im.k] && typeof im.v === 'number' && isFinite(im.v)) {
+    implicit = { k: im.k, v: clamp(im.v, -999, 999), tier: TIER_MAX, implicit: true };
+  }
   return {
     id: (typeof o.id === 'string' && o.id) ? o.id : nextItemId(),
     slot: o.slot, base: base.k, baseName: base.name,
     name: (typeof o.name === 'string' && o.name) ? o.name : itemAutoName(o.rarity, base, affixes),
     rarity: o.rarity, ilvl, affixes,
+    seed, craftN, implicit, corrupt,
   };
 }
 function saveItemsPayload() {

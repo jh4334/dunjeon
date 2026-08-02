@@ -85,6 +85,11 @@ function collectItemsNear() {
       if (it.type === 'chest' && Math.random() < .5) sayEvent('treasure', party[3]);
       // 상자 25% — 장비가 함께 튀어나온다 (같은 칸이면 이어지는 패스에서 바로 줍는다)
       if (it.type === 'chest' && wld.mode === 'dungeon') rollChestDrop(it.gx, it.gy, wld.floor);
+      // M8a — 상자 12% 제작 재화
+      if (it.type === 'chest') {
+        const ck = rollCurrencyDrop('chest');
+        if (ck) toast(currencyGetMsg(ck, 1));
+      }
     }
     wld.items.splice(i, 1);
     saveDirty = true;
@@ -261,6 +266,8 @@ function damageMonster(mon, dmg, color, opt) {
     if (mon.boss) dropGem(mon);                       // 보스 100% 스킬 젬
     // M2 장비 드랍 (일반 8% / 엘리트 40%+어픽스 / 보스 100% 희귀 이상)
     rollMonsterDrop(mon, state.world.floor);
+    // M8a 제작 재화 드랍 (일반 3.5% / 엘리트 16% / 보스 55%)
+    rollMonsterCurrency(mon);
     // 「굶주린 검」 — 처치 시 공격력 중첩
     addHungryStack(src);
     // '폭발하는' 어픽스: 죽을 때 주변 1칸 광역 피해
