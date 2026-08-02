@@ -133,6 +133,13 @@ function onLeaderArrive() {
       if (!adj) wk.open = false;
       else if (!wk.open && !state.auto && !modalIsOpen()) { wk.open = true; openWeeklyGate(); return; }
     }
+    // M7c 우버 제단 — 인접하면 1회 열린다 (해금 전에는 안내만)
+    const ub = wld.props.find(p => p.type === 'uberAltar');
+    if (ub) {
+      const adj = cheb(ub.gx, ub.gy, leader.gx, leader.gy) <= 1;
+      if (!adj) ub.open = false;
+      else if (!ub.open && !state.auto && !modalIsOpen()) { ub.open = true; openUberGate(); return; }
+    }
   }
   if (wld.mode === 'dungeon') {
     if (wld.stairs && leader.gx === wld.stairs.x && leader.gy === wld.stairs.y) {
@@ -164,6 +171,12 @@ function onLeaderArrive() {
     }
     const altar = wld.props.find(p => p.type === 'altar' && !p.used && p.gx === leader.gx && p.gy === leader.gy);
     if (altar) openAltar(altar);
+    // M7c 환영의 거울 — 처음 밟으면 안개가 퍼지고, 안개 중에 되밟으면 종료 정산
+    const mirror = wld.props.find(p => p.type === 'mirror' && p.gx === leader.gx && p.gy === leader.gy);
+    if (mirror) {
+      if (!mirror.used) startDelirium(mirror);
+      else if (deliriumActive()) endDelirium('mirror');
+    }
     // 도착 즉시 장판 재평가 (이동 중에 장판이 깔린 경우 한 프레임도 지체하지 않는다)
     if (!state.paused) autoDodgeStep();
   }
@@ -183,6 +196,8 @@ function updateFollowers(dt) {
 }
 
 /* ---------------- 전투 ---------------- */
+const BLOOD_MAGIC_COST = 0.05;      // 키스톤 「혈마법」 — 스킬 1회당 최대 체력 5%
+const WARLORD_MINION_BONUS = 2;     // 키스톤 「소환군주」 — 미니언 최대 +2
 function aliveMembers() { return party.filter(m => !m.down); }
 
 // opt: { silent, noCrit, src(공격한 파티원 — 장비 치명타/흡혈/굶주린 검 판정용) }
@@ -200,7 +215,7 @@ function damageMonster(mon, dmg, color, opt) {
   dmg *= weeklyMods().dealtMul;               // M4 주간 '유리 정신' — 주는 피해 2배
   const crit = !opt.noCrit && Math.random() < (0.08 * runBuff('crit') + passiveCrit() + equipCrit(src));
   // 장비 '치명타 피해 +%' 는 기본 2배에 곱해진다
-  if (crit) { dmg *= 2 * (1 + equipCritDmg(src)); addHitStop(); }      // 치명타 히트스톱
+  if (crit) { dmg *= 2 * (1 + equipCritDmg(src) + passiveCritDmg()); addHitStop(); }   // 치명타 히트스톱
   if (mon.dr) dmg *= (1 - mon.dr);           // '단단한' 어픽스
   // M3: 히드라 — 본체는 무적, 피해는 남아 있는 머리에 들어간다 (머리를 모두 잘라야 처치)
   if (mon.heads) damageHydraHead(mon, dmg);
@@ -258,7 +273,11 @@ function damageMonster(mon, dmg, color, opt) {
           damageMember(p, mon.atk * 1.8, null, { cause: 'mon:' + mon.type });
       });
     }
-    if (mon.boss) onBossDefeated(mon);
+    // M7c — 환영 보상 게이지 / 아주라이트 수정 파괴 / 우버 처치
+    noteDeliriumKill(mon);
+    if (mon.crystal) onUberCrystalBreak(mon);
+    if (mon.uber) onUberDefeated(mon);
+    else if (mon.boss) onBossDefeated(mon);
     checkLevelUp();
     saveDirty = true;
   }
@@ -344,6 +363,8 @@ function damageMember(m, dmg, attacker, opt) {
   dmg *= Math.max(0.4, 1 - 0.08 * runBuff('def'));
   dmg *= (1 - passiveDR());                   // 패시브 '방벽'
   dmg *= passiveTakenMult();                  // 키스톤 (유리 대포 / 강철 심장)
+  dmg *= bastionMult(m);                      // M7c 키스톤 「부동심」 — 멈춰 있으면 -40%
+  dmg *= uniqueTakenMul(m);                   // M7c 「공허의 왕관」 — 착용자가 받는 피해 +12%
   dmg *= (1 - equipDR(m));                    // 장비 '피해 감소 %'
   if (m.tauntT > 0) dmg *= (1 - (m.tauntCut || 0.25));   // M7b 도발 / 각성 성역
   if (opt.telegraph) dmg *= (1 - equipTgCut(m)) * (1 - passiveTgCut());   // 장비/트리 텔레그래프 감소
@@ -437,7 +458,7 @@ const MINION_KINDS = {
 };
 const MINION_KIND_KEYS = Object.keys(MINION_KINDS);
 function minionKindMax(kind, bonus) {
-  const b = bonus || 0;
+  const b = (bonus || 0) + (hasKeystone('warlord') ? WARLORD_MINION_BONUS : 0);
   if (kind === 'skeleton' || kind === 'archer') return minionMax() + b;
   const c = MINION_KINDS[kind];
   return ((c && c.max) || 1) + b;
@@ -678,6 +699,8 @@ function applyStun(mon, dur) {
 // 몬스터와 파티원 모두에게 쓸 수 있다 (독안개 포자 / 히드라 독 뱉기)
 function addDot(mon, dps, dur, k) {
   if (!mon || mon.hp <= 0 || mon.down) return;
+  // M7c 트리 '도트 피해 +%' — 몬스터에게 거는 도트에만 적용된다 (파티가 받는 도트는 그대로)
+  if (mon.type && mon.slot === undefined) dps *= passiveDotMult();
   if (!mon.dots) mon.dots = [];
   const ex = mon.dots.find(d => d.k === k);
   if (ex) { ex.t = Math.max(ex.t, dur); ex.dps = Math.max(ex.dps, dps); }
@@ -1011,6 +1034,7 @@ function gemTrigger(m, mods) {
 function gemDamage(m, mon, dmg, color, mods, opt) {
   opt = opt || {};
   if (!mon || mon.hp <= 0) return 0;
+  dmg *= passiveElemMult();                   // M7c 트리 '원소 피해 +%' / 키스톤 「원소 과부하」
   const res = damageMonster(mon, dmg, color, { src: m }) || { dmg: 0, crit: false };
   if (res.crit) gemTrigger(m, mods);
   applyConvert(mon, mods, res.dmg);
@@ -1450,6 +1474,12 @@ function castSkill(m, key, mods, opt) {
   const mult = (opt.mult === undefined) ? 1 : opt.mult;
   const aw = (opt.aw !== undefined) ? opt.aw : gemIsAwakened(key);
 
+  // M7c 키스톤 「혈마법」 — 스킬을 쓸 때마다 최대 체력 5% 를 태운다 (피해 +35% 는 passiveDmgMult)
+  if (hasKeystone('bloodmagic') && !opt.noCost) {
+    const bc = maxHp(m) * BLOOD_MAGIC_COST;
+    m.hp = Math.max(1, m.hp - bc);
+    addFloater(m.px, m.py - 46, `🩸 -${Math.floor(bc)}`, '#ff6f8a', 11);
+  }
   // 희생 — 시전마다 자기 HP 소모 (피해 +45% 는 gemMods.dmg 가 이미 반영)
   if (mods.sacrifice && !opt.noCost) {
     const cost = maxHp(m) * SACRIFICE_COST * mods.sacrifice;
@@ -1909,12 +1939,17 @@ function updateCombat(dt) {
   // M7b: 젬 장판(성역/지옥 화염) · 지연 발동(운석 낙하/메아리)
   updateGemZones(dt);
   updateGemCasts(dt);
+  // M7c: 환영 안개 확산/스폰/피해 · 우버 아레나 타이머
+  updateDelirium(dt);
+  updateUberRun(dt);
 
   // 파티 공격 — 캐릭터별 공격 형태(CHAR_ATTACK)로 분기한다
   updateShields(dt);
+  const regen = passiveRegenRate();  // M7c 키스톤 「불사의 서약」 — 치유 무효 대신 초당 재생
   party.forEach(m => {
     if (m.invulnT > 0) m.invulnT = Math.max(0, m.invulnT - dt);
     if (m.down) return;
+    if (regen > 0) m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * regen * dt);
     updateMemberStatus(m, dt);        // M7a: 둔화/속박/감전/저주 감쇠
     updateMemberDots(m, dt);          // 독 도트 (포자 / 히드라 / 화상)
     if (m.down) return;
@@ -2082,6 +2117,8 @@ function updateCombat(dt) {
 }
 
 function partyWipe() {
+  // M7c 우버 아레나: 실패해도 잃는 것은 입장권뿐 — 골드 손실 없이 정산한다
+  if (typeof uberActiveRun === 'function' && uberActiveRun()) { showRunSummary(true); return; }
   // M4 주간 '하드코어': 부활 수단을 모두 무시하고 즉시 정산한다
   if (weeklyMods().noRevive) { showRunSummary(false); return; }
   // 패시브 '불굴': 런당 1회, HP 1로 버틴다

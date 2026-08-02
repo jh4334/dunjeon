@@ -72,6 +72,12 @@
   <button id="flareBtn" class="hidden">🔥<span id="flareVal">0</span></button>
 
   <div id="vignette" class="hidden"></div>
+  <!-- M7c 환영 안개 (보라 오버레이 + 보상 게이지) -->
+  <div id="delFog" class="hidden"></div>
+  <div id="deliriumPanel" class="hidden">
+    <div class="dlRow"><span>🪞 환영</span><span class="dlTier" id="delTier">0/5</span><span id="delKills">0</span></div>
+    <div id="delGaugeWrap"><div id="delGauge"></div></div>
+  </div>
 
   <div id="modalWrap" class="hidden">
     <div id="modal">
@@ -90,7 +96,7 @@
      빌드 단계도 없으므로, 일반 <script> 를 의존 순서대로 나열해 전역을 공유한다)
 
        1. roster.js   캐릭터 22종 정의 (역할 태그 · 스탯 · 고유 능력 · 외형)
-       2. tree.js     PoE식 패시브 트리 58노드 (그래프 · 효과 · 구 패시브 사슬)
+       2. tree.js     PoE식 패시브 트리 290노드 (클러스터 그래프 · 키스톤 15 · 룬 소켓 4)
        3. gems.js     M7b 젬 표 54종 (스킬 21 · 서포트 12 · 각성 21) · 태그/콤보 규칙
        4. core.js     상수 · 유틸 · state/party · 편성/젬/트리 · 스탯 · 세이브
        5. dialogue.js 상황별 캐릭터 대사 테이블 · 성격군 공용 풀 · 대사 엔진
@@ -102,10 +108,11 @@
       11. delve.js    광맥 채굴 · 어둠 게이지 · 플레어
       12. meta.js     주간 모드(ISO 주차 시드) · 도전 과제 30종 · 도감
       13. world.js    맵 전환(진입/하강/탈출/정산) · 자동 탐험(풀 루팅)
-      14. ui.js       모달 · HUD · 토스트 · 힌트 · 편성/트리 UI
-      15. draw.js     미니맵 · 렌더링
-      16. title.js    타이틀 화면 · 첫 런 가이드(코치마크) · service worker 등록
-      17. main.js     입력 · 잡담 · 메인 루프 · 부트 · window.GAME
+      14. endgame.js  M7c 환영 모드(안개·보상 게이지·파편) · 우버 보스 2종 · 룬 소켓 재화
+      15. ui.js       모달 · HUD · 토스트 · 힌트 · 편성/트리 UI
+      16. draw.js     미니맵 · 렌더링
+      17. title.js    타이틀 화면 · 첫 런 가이드(코치마크) · service worker 등록
+      18. main.js     입력 · 잡담 · 메인 루프 · 부트 · window.GAME
 
      함수 선언은 파일 안에서만 호이스팅되므로, "로드 시점에 즉시 평가되는"
      참조만 순서를 지키면 된다. 실제로 걸리는 곳은 아래 몇 군데:
@@ -116,6 +123,8 @@
        · items.js 가 로드 중 resetEquipment() 실행, state/party(core.js) 사용 → core.js 가 먼저
        · ui.js 가 로드 중 escapeDungeon(world.js) 을 버튼에 바인딩 → world.js 가 먼저
        · draw.js 가 로드 중 resize() 실행, el()(ui.js) 사용 → ui.js 가 먼저
+       · endgame.js 는 world.js 의 transition/showRunSummary, meta.js 의 ensureMeta 를
+         런타임에만 쓰므로 world.js 뒤 · ui.js 앞이면 충분하다
      dialogue.js 는 로드 시점에 문자열 테이블만 만들고 state/party/say 는 전부
      런타임에 쓰므로 core.js 뒤 어디에 놓아도 되지만, 다른 모듈이 sayEvent()를
      부르는 것을 눈에 띄게 하려고 core.js 바로 다음에 둔다.
@@ -136,6 +145,7 @@
 <script src="js/delve.js"></script>
 <script src="js/meta.js"></script>
 <script src="js/world.js"></script>
+<script src="js/endgame.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/draw.js"></script>
 <script src="js/title.js"></script>

@@ -1,9 +1,9 @@
-/* M4 — 주간 모드 · 도전 과제 30종 · 도감 검증
+/* M4 — 주간 모드 · 도전 과제 36종(M7c 6종 추가) · 도감 검증
  *  1) ISO 주차 시드 결정성 (같은 주 = 같은 룰 2종 / 다른 주 = 다른 조합)
  *  2) 변형 룰 8종 각각의 효과 + 일반 런 무영향
  *  3) weeklyDepth / records.weekly 분리 · 주 바뀌면 리셋
  *  4) 주간 첫 도달 보상 6/9/12 (주차별 1회)
- *  5) 도전 과제 30종 — 트리거 / 중복 방지 / 누적 카운터 / 구간 보상 + 칭호
+ *  5) 도전 과제 36종 — 트리거 / 중복 방지 / 누적 카운터 / 구간 보상 + 칭호
  *  6) 도감 — 몬스터·유물·젬·고유 등록 / 소급 등록 / 실루엣 / 수집률
  *  7) ❗ 모달 탭 3개 UI
  *  8) 구 세이브 호환 · 콘솔 에러 0
@@ -337,7 +337,8 @@ const MAKE_RUN = () => {
       const G = window.GAME;
       const count = () => {
         let el = 0, mons = 0;
-        for (let i = 0; i < 10; i++) {
+        // 표본 30층 — 12% vs 24% 를 안정적으로 가르려면 10층으로는 분산이 너무 크다
+        for (let i = 0; i < 30; i++) {
           const w = G.genDungeon(8, { biome: 'catacomb', kind: 'safe' });
           w.monsters.forEach(m => { mons++; if (m.elite) el++; });
         }
@@ -350,7 +351,7 @@ const MAKE_RUN = () => {
       G.state.run.weekly = null; G.bumpWeekly();
       return { off, on };
     }, { week: weekOf.elite });
-    check('룰① 실효과 — 엘리트 출현률이 유의하게 증가 (10층 표본)',
+    check('룰① 실효과 — 엘리트 출현률이 유의하게 증가 (30층 표본)',
       (elite.on.el / elite.on.mons) > (elite.off.el / elite.off.mons) * 1.4,
       `off ${elite.off.el}/${elite.off.mons} · on ${elite.on.el}/${elite.on.mons}`);
 
@@ -591,7 +592,7 @@ const MAKE_RUN = () => {
   }
 
   /* =====================================================================
-   * 5. 도전 과제 30종
+   * 5. 도전 과제 36종
    * =================================================================== */
   {
     const page = await freshPage(browser, errors);
@@ -613,7 +614,8 @@ const MAKE_RUN = () => {
         tiers: G.ACHV_TIERS.map(t => `${t.n}:${t.az}:${t.title}`),
       };
     });
-    check('도전 과제 30종이 정의된다', meta.n === 30 && meta.uniq === 30, `${meta.n}/${meta.uniq}`);
+    // M7c: 엔드게임 과제 6종 추가 (우버 2 · 환영 2 · 빌드 2)
+    check('도전 과제 36종이 정의된다', meta.n === 36 && meta.uniq === 36, `${meta.n}/${meta.uniq}`);
     check('과제 전부 id·이름·설명·아이콘·목표치·진행함수를 갖는다', meta.allFields, '');
     check('과제 — 몬스터 도감 목표치는 하드코딩이 아니라 동적 계산 (몬스터 종수)',
       meta.fnGoals.indexOf('monsall') >= 0 && meta.monsallGoal >= 40,
@@ -930,9 +932,9 @@ const MAKE_RUN = () => {
     });
     check('state.codex 구조 = { mons, relics, gems, uniques }', shape.keys === 'gems,mons,relics,uniques', shape.keys);
     check('새 세이브 — 도감이 비어 있고 수집률 0%', shape.empty && shape.pct === 0, JSON.stringify(shape));
-    // M7a: 몬스터 41종(일반) + 보스 5종 = 46 · M7b: 젬 9 → 54종 → 총 46 + 6 + 54 + 7 = 113
-    check('도감 총 항목 = 몬스터 46 + 유물 6 + 젬 54 + 고유 7 = 113',
-      shape.total === 113 && shape.monKeys === 46, JSON.stringify(shape));
+    // M7c: 우버 보스 2종 + 우버 고유 2종이 더해져 48 + 6 + 54 + 9 = 117
+    check('도감 총 항목 = 몬스터 48 + 유물 6 + 젬 54 + 고유 9 = 117',
+      shape.total === 117 && shape.monKeys === 48, JSON.stringify(shape));
 
     const reg = await page.evaluate(() => {
       const G = window.GAME;
@@ -960,8 +962,8 @@ const MAKE_RUN = () => {
     check('도감 — 몬스터 처치 수가 누적된다 (슬라임 3킬)', reg.slime === 3 && reg.bat === 0, JSON.stringify(reg));
     check('도감 — 젬/유물/고유 장비가 획득 경로에서 등록된다',
       reg.gem && reg.relic && reg.uniq, JSON.stringify(reg));
-    check('도감 — 수집률이 등록 수에 맞게 계산된다 (4/113)',
-      reg.got === 4 && reg.pct === Math.floor(4 / 113 * 100), `${reg.got}/113 = ${reg.pct}%`);
+    check('도감 — 수집률이 등록 수에 맞게 계산된다 (4/117)',
+      reg.got === 4 && reg.pct === Math.floor(4 / 117 * 100), `${reg.got}/117 = ${reg.pct}%`);
 
     // 중복 등록 방지
     const dup = await page.evaluate(() => {
@@ -1005,8 +1007,9 @@ const MAKE_RUN = () => {
         bar: !!document.getElementById('codexBar'),
       };
     });
-    check('도감 탭 — 4개 섹션(몬스터46/유물6/젬54/고유7)이 모두 렌더된다',
-      ui.sections.join() === '46,6,54,7', ui.sections.join());
+    // M7c: 우버 보스 2 + 우버 고유 2가 더해진다
+    check('도감 탭 — 4개 섹션(몬스터48/유물6/젬54/고유9)이 모두 렌더된다',
+      ui.sections.join() === '48,6,54,9', ui.sections.join());
     check('도감 탭 — 미조우 항목은 검은 실루엣 + ???',
       ui.unknown > 0 && ui.unknownSilhouette && ui.unknownName, JSON.stringify({ u: ui.unknown, s: ui.unknownSilhouette }));
     check('도감 탭 — 조우한 몬스터는 이름과 처치 수가 보인다',
@@ -1039,7 +1042,7 @@ const MAKE_RUN = () => {
     check('❗ 모달 — 기본은 런 정보 탭 (기존 내용 유지)',
       tabs.on.join() === 'riTabRun' && tabs.runBody && tabs.close, JSON.stringify(tabs.on));
     check('❗ 모달 — 탭 라벨에 달성 수 / 수집률이 표시된다',
-      /\d+\/30/.test(tabs.labels[1]) && /%/.test(tabs.labels[2]), tabs.labels.join(' | '));
+      /\d+\/36/.test(tabs.labels[1]) && /%/.test(tabs.labels[2]), tabs.labels.join(' | '));
 
     await page.click('#riTabAchv');
     const achvUi = await page.evaluate(() => {
@@ -1054,11 +1057,11 @@ const MAKE_RUN = () => {
         head: !!document.getElementById('achvBar'),
       };
     });
-    check('도전 과제 탭 — 30종 전부 목록에 나온다', achvUi.rows === 30, String(achvUi.rows));
+    check('도전 과제 탭 — 36종 전부 목록에 나온다', achvUi.rows === 36, String(achvUi.rows));
     check('도전 과제 탭 — 카테고리 5개로 묶여 표시된다', achvUi.cats === 5, String(achvUi.cats));
     check('도전 과제 탭 — 진행형 과제에 진행도 바가 붙는다', achvUi.bars >= 20, String(achvUi.bars));
     check('도전 과제 탭 — 달성 수와 다음 보상이 표시된다',
-      /0 \/ 30/.test(achvUi.count) && /5개 달성/.test(achvUi.next), `${achvUi.count} · ${achvUi.next}`);
+      /0 \/ 36/.test(achvUi.count) && /5개 달성/.test(achvUi.next), `${achvUi.count} · ${achvUi.next}`);
 
     // 진행도 표기 (킬 742/1,000 형태)
     const progText = await page.evaluate(() => {

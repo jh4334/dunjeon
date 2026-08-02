@@ -423,7 +423,7 @@ function enrageCheck(mon) {
   addSparkle(mon.px, mon.py, '#ff5a5a');
   addShake(SHAKE_MAG_SMASH);
   sfx('warn');
-  toast(`💢 ${MONSTER_KO[mon.type] || '보스'}가 격노했다! 공격이 빨라진다`);
+  toast(`💢 ${mon.uberName || MONSTER_KO[mon.type] || '보스'}가 격노했다! 공격이 빨라진다`);
   return true;
 }
 // 주술사 오라를 반영한 실제 공격력
@@ -844,6 +844,8 @@ function updateShadowPhase(mon) {
 /* ---- 보스 AI 갱신 (combat.js 의 몬스터 루프에서 매 프레임 호출) ---- */
 function updateBossAI(mon, dt) {
   if (!mon || !mon.boss || mon.hp <= 0) return false;
+  // M7c 우버 보스는 전용 4페이즈 AI 로 넘긴다 (endgame.js)
+  if (mon.uber) { enrageCheck(mon); return updateUberAI(mon, dt); }
   enrageCheck(mon);
   const rate = bossRate(mon);
   if (mon.type === 'golem') {

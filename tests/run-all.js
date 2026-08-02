@@ -20,7 +20,7 @@ const SUITES = [
   'test-review1', 'test-review2', 'test-review3', 'test-review4',
   'test-delve',
   'test-m1', 'test-m2', 'test-m3', 'test-m35a', 'test-m35b', 'test-m4', 'test-m5', 'test-m6',
-  'test-m7a', 'test-m7b',
+  'test-m7a', 'test-m7b', 'test-m7c',
 ];
 
 const SUITE_TIMEOUT = Number(process.env.SUITE_TIMEOUT_MS || 15 * 60 * 1000);   // 스위트당 15분

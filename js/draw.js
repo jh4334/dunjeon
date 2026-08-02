@@ -238,6 +238,26 @@ function drawTelegraphs(offX, offY) {
       ctx.closePath();
       ctx.stroke();
     });
+    // M7c 전멸기 — 유일한 안전지대를 금빛으로 강하게 표시한다
+    if (tg.safe) {
+      const sx = isoX(tg.safe.x, tg.safe.y) + offX, sy = isoY(tg.safe.x, tg.safe.y) + offY;
+      ctx.globalAlpha = 0.55 + 0.45 * Math.sin(state.time * 9);
+      drawDiamond(sx, sy, 'rgba(255, 232, 138, 0.75)');
+      ctx.strokeStyle = '#fff6c8';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - TILE_H / 2);
+      ctx.lineTo(sx + TILE_W / 2, sy);
+      ctx.lineTo(sx, sy + TILE_H / 2);
+      ctx.lineTo(sx - TILE_W / 2, sy);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#fff6c8';
+      ctx.font = 'bold 12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('안전', sx, sy - 14);
+    }
   });
   ctx.restore();
   ctx.globalAlpha = 1;
@@ -1100,8 +1120,60 @@ function drawMonster(sx, sy, mon) {
     ctx.globalAlpha = 1;
     return;
   }
+  // M7c 아주라이트 수정 — 몬스터가 아니라 부술 수 있는 광원으로 그린다
+  if (mon.crystal) {
+    ctx.save();
+    ctx.translate(sx, sy);
+    const pg = .6 + Math.sin(state.time * 3 + mon.gx) * .3;
+    ctx.fillStyle = `rgba(126, 200, 255, ${0.22 + pg * 0.2})`;
+    ctx.beginPath(); ctx.ellipse(0, -2, 18, 9, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#7ec8ff';
+    ctx.beginPath();
+    ctx.moveTo(0, -26); ctx.lineTo(8, -8); ctx.lineTo(0, 2); ctx.lineTo(-8, -8);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(230, 250, 255, 0.75)';
+    ctx.beginPath();
+    ctx.moveTo(0, -24); ctx.lineTo(4, -10); ctx.lineTo(0, -4); ctx.lineTo(-2, -10);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+    if (mon.hp < mon.maxHp) {
+      const w = 26, ratio = clamp(mon.hp / mon.maxHp, 0, 1);
+      ctx.fillStyle = 'rgba(10,25,35,0.8)';
+      ctx.fillRect(sx - w / 2, sy - 34, w, 4.5);
+      ctx.fillStyle = '#7ec8ff';
+      ctx.fillRect(sx - w / 2 + 1, sy - 33, (w - 2) * ratio, 2.5);
+    }
+    return;
+  }
+  // M7c 우버 보스 — 발밑에 맥동하는 공허/광산 고리
+  if (mon.uber) {
+    const uc = (typeof UBER_BOSSES !== 'undefined' && UBER_BOSSES[mon.uber]) ? UBER_BOSSES[mon.uber].color : '#c9a4ff';
+    const pg = .5 + Math.sin(state.time * 2.6) * .35;
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.globalAlpha = 0.28 + pg * 0.22;
+    ctx.fillStyle = uc;
+    ctx.beginPath(); ctx.ellipse(0, 0, 34 * mon.scale, 16 * mon.scale, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.5 + pg * 0.4;
+    ctx.strokeStyle = uc;
+    ctx.lineWidth = 2.4;
+    ctx.beginPath(); ctx.ellipse(0, 0, 34 * mon.scale, 16 * mon.scale, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
   ctx.save();
   ctx.translate(sx, sy);
+  // M7c 우버 보스 — 짙은 발광
+  if (mon.uber) {
+    ctx.shadowColor = (typeof UBER_BOSSES !== 'undefined' && UBER_BOSSES[mon.uber]) ? UBER_BOSSES[mon.uber].color : '#c9a4ff';
+    ctx.shadowBlur = 18;
+  }
+  // M7c 환영 몬스터 — 보라 잔상 + 반투명
+  if (mon.phantom) {
+    ctx.globalAlpha = 0.82;
+    ctx.shadowColor = '#c77dff';
+    ctx.shadowBlur = 12;
+  }
   ctx.scale(mon.scale, mon.scale);
   // 피격 플래시 — 0.1초간 몸통을 하얗게 (ctx.restore()에서 원래대로)
   if (mon.flashT > 0) ctx.filter = 'brightness(2.6) saturate(0.25)';
@@ -1808,6 +1880,72 @@ function drawProp(sx, sy, p) {
       ctx.fillStyle = `rgba(235, 215, 255, ${.7 + pg * .3})`;
       ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center';
       ctx.fillText('🌀', 0, -58);
+      break;
+    }
+    case 'mirror': {                    // M7c 환영의 거울 (일반 층 · 보라 타원 거울)
+      const t = state.time;
+      const pg = .5 + Math.sin(t * 2.4) * .3;
+      const used = !!p.used;
+      ctx.fillStyle = `rgba(160, 80, 255, ${(used ? 0.10 : 0.22) + pg * 0.14})`;
+      ctx.beginPath(); ctx.ellipse(0, -2, 18, 8, 0, 0, Math.PI * 2); ctx.fill();
+      // 받침대
+      ctx.fillStyle = '#4b3a63';
+      rr(-8, -8, 16, 8, 3);
+      // 거울면
+      ctx.save();
+      ctx.beginPath(); ctx.ellipse(0, -24, 10, 16, 0, 0, Math.PI * 2); ctx.clip();
+      ctx.fillStyle = used ? 'rgba(60, 40, 80, 0.9)' : `rgba(112, 46, 172, ${0.75 + pg * 0.2})`;
+      ctx.fillRect(-12, -42, 24, 36);
+      for (let i = 0; i < 3 && !used; i++) {
+        const a2 = t * 1.7 + i * 2.1;
+        ctx.fillStyle = `rgba(216, 164, 255, ${0.2 + pg * 0.24})`;
+        ctx.beginPath();
+        ctx.ellipse(Math.cos(a2) * 4, -24 + Math.sin(a2) * 7, 7 - i * 2, 11 - i * 2, a2 * .4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+      ctx.strokeStyle = used ? 'rgba(150,130,170,0.5)' : `rgba(216, 164, 255, ${.6 + pg * .4})`;
+      ctx.lineWidth = 2.4;
+      ctx.beginPath(); ctx.ellipse(0, -24, 10, 16, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = `rgba(235, 215, 255, ${used ? .35 : .8})`;
+      ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('🪞', 0, -46);
+      break;
+    }
+    case 'uberAltar': {                 // M7c 우버 제단 (초원 캠프 옆 · 검은 오벨리스크)
+      const t = state.time;
+      const open = typeof uberUnlocked === 'function' && uberUnlocked();
+      const pg = .5 + Math.sin(t * 1.6) * .3;
+      ctx.fillStyle = open ? `rgba(180, 140, 255, ${0.2 + pg * 0.18})` : 'rgba(90, 90, 110, 0.16)';
+      ctx.beginPath(); ctx.ellipse(0, -2, 24, 11, 0, 0, Math.PI * 2); ctx.fill();
+      // 제단 기단
+      ctx.fillStyle = '#2b2338';
+      rr(-16, -12, 32, 12, 3);
+      ctx.fillStyle = '#3b3050';
+      rr(-12, -18, 24, 8, 2);
+      // 오벨리스크
+      ctx.fillStyle = open ? '#241a38' : '#2a2a34';
+      ctx.beginPath();
+      ctx.moveTo(-7, -18); ctx.lineTo(7, -18); ctx.lineTo(4, -56); ctx.lineTo(-4, -56);
+      ctx.closePath(); ctx.fill();
+      // 균열 빛
+      ctx.strokeStyle = open ? `rgba(199, 125, 255, ${.5 + pg * .5})` : 'rgba(120,120,140,0.35)';
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(-2, -22); ctx.lineTo(2, -34); ctx.lineTo(-2, -42); ctx.lineTo(2, -52);
+      ctx.stroke();
+      if (open) {
+        for (let i = 0; i < 3; i++) {
+          const a2 = t * 1.1 + i * 2.4;
+          ctx.fillStyle = `rgba(216, 164, 255, ${0.3 + pg * 0.4})`;
+          ctx.beginPath();
+          ctx.arc(Math.cos(a2) * 15, -34 + Math.sin(a2 * 1.3) * 12, 1.8, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      ctx.fillStyle = open ? `rgba(235, 215, 255, ${.7 + pg * .3})` : 'rgba(180,180,190,0.5)';
+      ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(open ? '🕳️' : '🔒', 0, -62);
       break;
     }
     case 'records': {                   // 깊이 기록 비석 (초원 캠프 옆 · 룬석 확대판)

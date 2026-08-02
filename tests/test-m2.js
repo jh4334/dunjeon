@@ -136,8 +136,9 @@ const PREP = `(() => {
       ['atk', 'hp', 'crit', 'critDmg', 'atkSpd', 'moveSpd', 'gold', 'azurite', 'leech', 'dr',
         'sight', 'heal', 'tgReduce', 'darkRes', 'gem', 'revive'].every(k => tbl.affixKeys.indexOf(k) >= 0),
       JSON.stringify(tbl.affixNames));
-    check('고유 아이템 7종 정의 (망자의 서약/폭죽 심장/회전목마/수호자의 맹세/굶주린 검/등불지기/도박꾼의 동전)',
-      tbl.uniqN === 7 &&
+    // M7c: 우버 전용 고유 2종(공허의 왕관/모르그란의 곡괭이)이 더해져 9종
+    check('고유 아이템 9종 정의 (기본 7종 + 우버 전용 2종)',
+      tbl.uniqN === 9 &&
       ['망자의 서약', '폭죽 심장', '회전목마', '수호자의 맹세', '굶주린 검', '등불지기', '도박꾼의 동전']
         .every(n => tbl.uniqNames.indexOf(n) >= 0) &&
       tbl.uniqSlots.every(s => tbl.slots.indexOf(s) >= 0),
@@ -360,7 +361,7 @@ const PREP = `(() => {
     await page.close();
   }
 
-  /* ================= 3. 고유 아이템 7종 ================= */
+  /* ================= 3. 고유 아이템 (기본 7종) ================= */
   {
     const page = await freshPage(browser, errors, { audio: true });
     await page.evaluate(PREP);
