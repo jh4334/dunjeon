@@ -26,9 +26,13 @@ function newWorld(mode, w, h) {
     entrance: null, stairs: null, shrineUsed: false,
     // Phase 2: 바이옴 / 갈림길
     biome: null,          // 'catacomb' | 'cave' | 'waterway' | 'lava'
-    kind: 'safe',         // 'safe' | 'risk' | 'treasure' | 'challenge'
-    riskMult: 1,          // 층 단위 보상 배율
+    kind: 'safe',         // 'safe' | 'risk' | 'treasure' | 'challenge' | 'invasion'
+    riskMult: 1,          // 층 단위 보상 배율 (= 계약 위험 점수에서 나온다)
+    // M8b: 이 층에 걸린 스테이지 계약 (위험 Modifier · 제한 시간 · 경과)
+    contract: null,
+    contractLate: false,  // '시간 압박' 제한을 넘겼는가 (보상 절반)
     arena: null,          // 도전방 웨이브 상태
+    invasion: null,       // M8b 침공 인카운터 상태
     maxDist: 0,
     // M4: 이 층에서 텔레그래프에 맞은 횟수 (0이면 '무결점 보스전' 과제 달성)
     tgHits: 0,
@@ -285,12 +289,16 @@ function spawnHazard(type, x, y, opt) {
   return h;
 }
 
-/* ---- 경로 성격 (갈림길 선택지) ---- */
+/* ---- 경로 성격 (갈림길 선택지) ----
+ * M8b: 성격마다 '기본 위험 점수(danger)'를 갖는다. 층의 보상 배율은
+ *      riskMult = 1 + 0.18 × (성격 위험 + 계약 Modifier 위험) 으로 한 곳에서 나온다.
+ *      (예: 위험한 경로 단독 = 위험 2점 → ×1.36) */
 const PATH_KINDS = {
-  safe:      { key: 'safe',      name: '안전한 경로', icon: '🛡️', riskMult: 1.0,  desc: '표준 생성' },
-  risk:      { key: 'risk',      name: '위험한 경로', icon: '💀', riskMult: 1.4,  desc: '엘리트 2배 · 팩 +1<br>골드/XP ×1.4' },
-  treasure:  { key: 'treasure',  name: '보물방',     icon: '💰', riskMult: 1.0,  desc: '몬스터 없음 · 보물 다수<br>함정이 촘촘하다' },
-  challenge: { key: 'challenge', name: '도전방',     icon: '⚔️', riskMult: 1.25, desc: '3웨이브 아레나<br>클리어 시 유물' },
+  safe:      { key: 'safe',      name: '안전한 경로', icon: '🛡️', danger: 0, riskMult: 1.0,  desc: '표준 생성' },
+  risk:      { key: 'risk',      name: '위험한 경로', icon: '💀', danger: 2, riskMult: 1.36, desc: '엘리트 2배 · 팩 +1<br>위험 2점' },
+  treasure:  { key: 'treasure',  name: '보물방',     icon: '💰', danger: 0, riskMult: 1.0,  desc: '몬스터 없음 · 보물 다수<br>함정이 촘촘하다' },
+  challenge: { key: 'challenge', name: '도전방',     icon: '⚔️', danger: 1, riskMult: 1.18, desc: '3웨이브 아레나<br>클리어 시 유물' },
+  invasion:  { key: 'invasion',  name: '침공',       icon: '⚡', danger: 1, riskMult: 1.18, desc: '90초 침공 아레나<br>처치 수만큼 보상 단계' },
 };
 
 /* ---- 저수준 지형 헬퍼 ---- */
@@ -568,58 +576,67 @@ function carveLavaRivers(wld) {
   }
 }
 
-/* ---- 층 생성 (바이옴 × 경로 성격) ---- */
-function genFloor(biomeKey, kind, floor) {
+/* ---- 층 생성 (바이옴 × 경로 성격 × 계약) ----
+ * M8b: 네 번째 인자로 계약 카드를 받는다. 카드가 없으면 '위험 Modifier 0개' 계약으로
+ *      정규화되므로 기존 호출부(genFloor(b, k, f))는 그대로 동작한다. */
+function genFloor(biomeKey, kind, floor, contract) {
   const biome = BIOMES[biomeKey] || BIOMES.catacomb;
   kind = PATH_KINDS[kind] ? kind : 'safe';
-  const pk = PATH_KINDS[kind];
-  const size = kind === 'treasure' ? 24 : kind === 'challenge' ? 26 : 38;
+  const size = kind === 'treasure' ? 24 : (kind === 'challenge' || kind === 'invasion') ? 26 : 38;
   const wld = newWorld('dungeon', size, size);
   wld.floor = floor;
   wld.biome = biome.key;
   wld.kind = kind;
   wld.theme = themeForFloor(biome.theme, floor);   // 9층+ = 심연 변형
-  wld.riskMult = pk.riskMult;
+  // M8b: 계약 확정 → 층 보상 배율은 위험 점수 하나에서 나온다
+  wld.contract = normalizeContract(contract, kind, floor, biome.key);
+  wld.riskMult = contractRewardMult(wld.contract);
+  wld.contractLate = false;
+  // 층을 만드는 동안에도 계약이 적용돼야 한다 (state.world 는 아직 이전 층이다)
+  beginContractGen(wld.contract);
+  try {
+    // 1) 레이아웃
+    let rooms;
+    if (kind === 'challenge' || kind === 'invasion') rooms = layoutArena(wld);
+    else if (kind === 'treasure') rooms = layoutRooms(wld, { count: 4, min: 4, max: 7 });
+    else if (biome.gen === 'cave') rooms = layoutCave(wld);
+    else if (biome.gen === 'mine') rooms = layoutMine(wld);
+    else rooms = layoutRooms(wld, { count: 8, min: 4, max: 8 });
 
-  // 1) 레이아웃
-  let rooms;
-  if (kind === 'challenge') rooms = layoutArena(wld);
-  else if (kind === 'treasure') rooms = layoutRooms(wld, { count: 4, min: 4, max: 7 });
-  else if (biome.gen === 'cave') rooms = layoutCave(wld);
-  else if (biome.gen === 'mine') rooms = layoutMine(wld);
-  else rooms = layoutRooms(wld, { count: 8, min: 4, max: 8 });
+    // 2) 바이옴 지형 (특수 층은 순수 구조 유지)
+    if (kind === 'safe' || kind === 'risk') {
+      if (biome.gen === 'waterway') { carveCanals(wld); ensureConnectivity(wld); }
+      else if (biome.gen === 'lava') { carveLavaRivers(wld); ensureConnectivity(wld); }
+    }
+    // 3) 연결성 보장 + 벽 세우기
+    keepLargestRegion(wld);
+    buildWalls(wld);
 
-  // 2) 바이옴 지형 (특수 층은 순수 구조 유지)
-  if (kind === 'safe' || kind === 'risk') {
-    if (biome.gen === 'waterway') { carveCanals(wld); ensureConnectivity(wld); }
-    else if (biome.gen === 'lava') { carveLavaRivers(wld); ensureConnectivity(wld); }
+    // 4) 스폰 & 거리장 (모든 배치는 '도달 가능한 걷기 칸' 기준)
+    const anchor = rooms.length ? rooms[0] : { cx: size >> 1, cy: size >> 1 };
+    wld.spawn = nearestWalk(wld, anchor.cx, anchor.cy);
+    const dist = bfsField(wld, wld.spawn.x, wld.spawn.y);
+    const cells = [];
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const d = dist[y * size + x];
+      if (d >= 0) cells.push({ x, y, d });
+    }
+    cells.sort((a, b) => a.d - b.d);
+    wld.maxDist = cells.length ? cells[cells.length - 1].d : 0;
+
+    // 5) 내용물 배치
+    populateFloor(wld, biome, kind, floor, cells);
+    countWalkable(wld);
+  } finally {
+    endContractGen();
   }
-  // 3) 연결성 보장 + 벽 세우기
-  keepLargestRegion(wld);
-  buildWalls(wld);
-
-  // 4) 스폰 & 거리장 (모든 배치는 '도달 가능한 걷기 칸' 기준)
-  const anchor = rooms.length ? rooms[0] : { cx: size >> 1, cy: size >> 1 };
-  wld.spawn = nearestWalk(wld, anchor.cx, anchor.cy);
-  const dist = bfsField(wld, wld.spawn.x, wld.spawn.y);
-  const cells = [];
-  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-    const d = dist[y * size + x];
-    if (d >= 0) cells.push({ x, y, d });
-  }
-  cells.sort((a, b) => a.d - b.d);
-  wld.maxDist = cells.length ? cells[cells.length - 1].d : 0;
-
-  // 5) 내용물 배치
-  populateFloor(wld, biome, kind, floor, cells);
-  countWalkable(wld);
   return wld;
 }
-// 기존 호출 호환: genDungeon(floor) / genDungeon(floor, {biome, kind})
+// 기존 호출 호환: genDungeon(floor) / genDungeon(floor, {biome, kind}) / genDungeon(floor, 계약카드)
 function genDungeon(floor, opt) {
   opt = opt || {};
   const bk = BIOMES[opt.biome] ? opt.biome : biomeForFloor(floor);
-  return genFloor(bk, opt.kind || 'safe', floor);
+  return genFloor(bk, opt.kind || 'safe', floor, opt);
 }
 
 /* ---- 통행 차단 프롭(버팀목/광차) 배치 안전 검사 ----
@@ -667,15 +684,19 @@ function populateFloor(wld, biome, kind, floor, cells) {
   const far = cells.length ? cells[cells.length - 1] : { x: wld.spawn.x, y: wld.spawn.y, d: 0 };
   const normal = (kind === 'safe' || kind === 'risk');
   const risk = kind === 'risk';
+  const arenaKind = (kind === 'challenge' || kind === 'invasion');   // M8b: 침공도 아레나 규격
   const bossFloor = normal && floor % 3 === 0;
   occ[wld.spawn.y * wld.w + wld.spawn.x] = 1;
 
-  // --- 계단 / 보스 / 아레나 ---
+  // --- 계단 / 보스 / 아레나 / 침공 ---
   occ[far.y * wld.w + far.x] = 1;
   if (kind === 'challenge') {
     // 진입하면 입구가 닫힌다 — 웨이브를 전부 정리해야 계단이 나타난다
     wld.stairs = null;
     wld.arena = { wave: 0, total: 3, t: 1.6, done: false, stair: { x: far.x, y: far.y } };
+  } else if (kind === 'invasion') {
+    // M8b 침공 — 90초 동안 적이 쏟아진다. 정산이 끝나야 계단이 열린다
+    startInvasion(wld, { x: far.x, y: far.y });
   } else if (bossFloor) {
     wld.stairs = null;
     wld.stairsPending = { x: far.x, y: far.y };
@@ -690,7 +711,7 @@ function populateFloor(wld, biome, kind, floor, cells) {
   }
 
   // --- 치유/저주 샘 ---
-  if (kind !== 'challenge') {
+  if (!arenaKind) {
     const s = takeCell(wld, cells, occ, Math.floor(maxD * 0.3), Math.floor(maxD * 0.8));
     if (s) wld.props.push({ type: 'shrine', gx: s.x, gy: s.y, solid: false });
   }
@@ -716,7 +737,8 @@ function populateFloor(wld, biome, kind, floor, cells) {
     // M4 주간: '엘리트 광란'은 엘리트 확률 ×2, '군단'은 팩 크기 +2, '심연 개방'은 몬스터 깊이 +2
     const wm = weeklyMods();
     const mfloor = monsterFloor(floor);
-    const eliteP = (floor >= 2 ? 0.12 : 0) * (risk ? 2 : 1) * wm.eliteMul;
+    // M8b: 주간 룰과 계약 Modifier 는 자연스럽게 곱해진다 (중첩 허용)
+    const eliteP = (floor >= 2 ? 0.12 : 0) * (risk ? 2 : 1) * wm.eliteMul * contractEliteMul();
     const packCount = clamp(3 + Math.floor(floor / 3), 3, 5) + (risk ? 1 : 0);
     for (let p = 0; p < packCount; p++) {
       const anchor = takeCell(wld, cells, occ, 8, null);
@@ -731,7 +753,7 @@ function populateFloor(wld, biome, kind, floor, cells) {
       }
       shuffle(spots);
       const packId = ++packSeq;
-      const size = Math.min(irand(3, 6) + wm.packBonus, spots.length);
+      const size = Math.min(irand(3, 6) + wm.packBonus + contractPackBonus(), spots.length);
       for (let i = 0; i < size; i++) {
         const mon = makeMonster(pick(types), mfloor, spots[i].x, spots[i].y);
         mon.packId = packId;
@@ -744,7 +766,7 @@ function populateFloor(wld, biome, kind, floor, cells) {
   }
 
   // --- 아이템 (골드 / 상자 / 포션) ---
-  const itemCount = kind === 'treasure' ? irand(16, 22) : kind === 'challenge' ? 0 : 11;
+  const itemCount = kind === 'treasure' ? irand(16, 22) : arenaKind ? 0 : 11;
   for (let i = 0; i < itemCount; i++) {
     const c = takeCell(wld, cells, occ, 2, null);
     if (!c) break;
@@ -755,7 +777,9 @@ function populateFloor(wld, biome, kind, floor, cells) {
     wld.items.push({ type, gx: c.x, gy: c.y });
   }
   // --- 가시 함정 (보물방은 촘촘하게) ---
-  const trapCount = kind === 'treasure' ? irand(14, 20) : kind === 'challenge' ? 0 : 3 + Math.min(4, floor);
+  // M8b '가시 지형' 계약 — 함정 2배
+  const trapCount = Math.round(
+    (kind === 'treasure' ? irand(14, 20) : arenaKind ? 0 : 3 + Math.min(4, floor)) * contractTrapMul());
   for (let i = 0; i < trapCount; i++) {
     const c = takeCell(wld, cells, occ, 4, null);
     if (!c) break;
@@ -773,7 +797,7 @@ function populateFloor(wld, biome, kind, floor, cells) {
     }
   }
   // --- 아주라이트 광맥 (광산 2~4 / 그 외 0~1 · 도전방 제외) ---
-  const veinCount = kind === 'challenge' ? 0
+  const veinCount = arenaKind ? 0
     : biome.key === 'mine' ? irand(VEIN_COUNT_MINE[0], VEIN_COUNT_MINE[1])
     : (Math.random() < 0.5 ? 1 : 0);
   for (let i = 0; i < veinCount; i++) {

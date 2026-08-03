@@ -1144,8 +1144,8 @@ const LEGACY_LINKS = [
         ids: ['uber1', 'uberall', 'delirium5', 'frag100', 'tree100', 'runes4'].filter(id => !!G.ACHV_BY_ID[id]),
       };
     });
-    check('도전 과제 — M7c 6종이 추가되어 36종 + M8a 제작 3종 = 39종 (우버/환영/트리/룬)',
-      achv.n === 39 && achv.ids.length === 6, JSON.stringify({ n: achv.n, ids: achv.ids }));
+    check('도전 과제 — M7c 6종 + M8a 제작 3종 + M8b 계약·침공 2종 = 41종 (우버/환영/트리/룬)',
+      achv.n === 41 && achv.ids.length === 6, JSON.stringify({ n: achv.n, ids: achv.ids }));
     check("도전 과제 — '우버 도전자'가 처치로 달성된다", achv.uber1 === true, String(achv.uber1));
 
     await page.close();
@@ -1372,12 +1372,12 @@ const LEGACY_LINKS = [
     const sw = fs.readFileSync(path.join(SRC, 'sw.js'), 'utf8');
     const html = fs.readFileSync(path.join(SRC, 'index.html'), 'utf8');
     const jsFiles = fs.readdirSync(path.join(SRC, 'js')).filter(f => f.endsWith('.js')).sort();
-    // M8a: js/craft.js 추가 → 19개 모듈 · 캐시 v9
-    check('배포 — js/ 모듈이 19개이고 sw.js 캐시 목록에 전부 들어 있다',
-      jsFiles.length === 19 && jsFiles.every(f => sw.indexOf(`'js/${f}'`) >= 0),
+    // M8a: js/craft.js · M8b: js/contract.js 추가 → 20개 모듈 · 캐시 v10
+    check('배포 — js/ 모듈이 20개이고 sw.js 캐시 목록에 전부 들어 있다',
+      jsFiles.length === 20 && jsFiles.every(f => sw.indexOf(`'js/${f}'`) >= 0),
       `${jsFiles.length}개`);
-    check('배포 — sw.js 캐시 버전이 dunjeon-v9 로 올라갔다',
-      /const CACHE = 'dunjeon-v9'/.test(sw), (sw.match(/const CACHE = '([^']+)'/) || [])[1]);
+    check('배포 — sw.js 캐시 버전이 dunjeon-v10 으로 올라갔다',
+      /const CACHE = 'dunjeon-v10'/.test(sw), (sw.match(/const CACHE = '([^']+)'/) || [])[1]);
     check('배포 — index.html 이 endgame.js 를 world.js 뒤 · ui.js 앞에 로드한다',
       html.indexOf('js/endgame.js') > html.indexOf('js/world.js') &&
       html.indexOf('js/endgame.js') < html.indexOf('js/ui.js'), 'ok');

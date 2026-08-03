@@ -78,6 +78,12 @@
     <div class="dlRow"><span>🪞 환영</span><span class="dlTier" id="delTier">0/5</span><span id="delKills">0</span></div>
     <div id="delGaugeWrap"><div id="delGauge"></div></div>
   </div>
+  <!-- M8b 침공 인카운터 (타이머 + 킬 카운트 + 다음 마일스톤) -->
+  <div id="invasionPanel" class="hidden">
+    <div class="ivRow"><span>⚡ 침공</span><span class="ivTime" id="invTime">90</span><span id="invKills">☠ 0</span></div>
+    <div id="invGaugeWrap"><div id="invGauge"></div></div>
+    <div class="ivNext" id="invNext">다음 보상 10킬</div>
+  </div>
 
   <div id="modalWrap" class="hidden">
     <div id="modal">
@@ -103,16 +109,17 @@
        6. items.js    장비(슬롯/레어리티/접사/고유) · 인벤토리 · 드랍 · 스탯 합산
        7. audio.js    WebAudio SFX 신스
        8. mapgen.js   바이옴 · 레이아웃 알고리즘 · 층 생성/배치
-       9. monsters.js 몬스터 · 어픽스 · 팩 · 텔레그래프
-      10. combat.js   이동 · 전투 · 캐릭터 능력(미니언/지뢰/오라/실드/변신) · 젬 스킬 엔진
-      11. delve.js    광맥 채굴 · 어둠 게이지 · 플레어
-      12. meta.js     주간 모드(ISO 주차 시드) · 도전 과제 30종 · 도감
-      13. world.js    맵 전환(진입/하강/탈출/정산) · 자동 탐험(풀 루팅)
-      14. endgame.js  M7c 환영 모드(안개·보상 게이지·파편) · 우버 보스 2종 · 룬 소켓 재화
-      15. ui.js       모달 · HUD · 토스트 · 힌트 · 편성/트리 UI
-      16. draw.js     미니맵 · 렌더링
-      17. title.js    타이틀 화면 · 첫 런 가이드(코치마크) · service worker 등록
-      18. main.js     입력 · 잡담 · 메인 루프 · 부트 · window.GAME
+       9. contract.js M8b 스테이지 계약(위험 Modifier·보상 공식·계약 제작) · 침공 인카운터
+      10. monsters.js 몬스터 · 어픽스 · 팩 · 텔레그래프
+      11. combat.js   이동 · 전투 · 캐릭터 능력(미니언/지뢰/오라/실드/변신) · 젬 스킬 엔진
+      12. delve.js    광맥 채굴 · 어둠 게이지 · 플레어
+      13. meta.js     주간 모드(ISO 주차 시드) · 도전 과제 30종 · 도감
+      14. world.js    맵 전환(진입/하강/탈출/정산) · 자동 탐험(풀 루팅)
+      15. endgame.js  M7c 환영 모드(안개·보상 게이지·파편) · 우버 보스 2종 · 룬 소켓 재화
+      16. ui.js       모달 · HUD · 토스트 · 힌트 · 편성/트리 UI
+      17. draw.js     미니맵 · 렌더링
+      18. title.js    타이틀 화면 · 첫 런 가이드(코치마크) · service worker 등록
+      19. main.js     입력 · 잡담 · 메인 루프 · 부트 · window.GAME
 
      함수 선언은 파일 안에서만 호이스팅되므로, "로드 시점에 즉시 평가되는"
      참조만 순서를 지키면 된다. 실제로 걸리는 곳은 아래 몇 군데:
@@ -141,6 +148,7 @@
 <script src="js/craft.js"></script>
 <script src="js/audio.js"></script>
 <script src="js/mapgen.js"></script>
+<script src="js/contract.js"></script>
 <script src="js/monsters.js"></script>
 <script src="js/combat.js"></script>
 <script src="js/delve.js"></script>

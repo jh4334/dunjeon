@@ -65,7 +65,7 @@ function collectItemsNear() {
       const pmul = potionMult();                          // 포포(연금술사) = 2배
       party.forEach(m => {
         if (!m.down) {
-          m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * 0.25 * pmul);
+          m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * 0.25 * pmul * contractHealMul());
           addSparkle(m.px, m.py, '#ff9eae');
         }
       });
@@ -158,7 +158,7 @@ function onLeaderArrive() {
       wld.shrineUsed = true;
       party.forEach(m => {
         if (!m.down) {
-          m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * 0.4);
+          m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * 0.4 * contractHealMul());
           addSparkle(isoX(m.gx, m.gy), isoY(m.gx, m.gy), '#8dffb0');
         }
       });
@@ -282,6 +282,7 @@ function damageMonster(mon, dmg, color, opt) {
     }
     // M7c — 환영 보상 게이지 / 아주라이트 수정 파괴 / 우버 처치
     noteDeliriumKill(mon);
+    noteInvasionKill(mon);                            // M8b — 침공 처치 수 / 마일스톤
     if (mon.crystal) onUberCrystalBreak(mon);
     if (mon.uber) onUberDefeated(mon);
     else if (mon.boss) onBossDefeated(mon);
@@ -408,13 +409,13 @@ function updateArena(dt) {
   const wld = state.world;
   const ar = wld.arena;
   if (!ar || ar.done) return;
-  if (wld.monsters.some(m => m.hp > 0)) return;   // 웨이브 정리 전에는 대기
+  if (encounterAlive(wld)) return;                // 웨이브 정리 전에는 대기
   ar.t -= dt;
   if (ar.t > 0) return;
   if (ar.wave >= ar.total) { finishArena(); return; }
   ar.wave++;
   const n = 3 + ar.wave * 2;
-  const spawned = spawnAmbush(leader.gx, leader.gy, n, 3, 7);
+  const spawned = encounterWave(n, 3, 7);
   toast(`⚔️ 웨이브 ${ar.wave} / ${ar.total} — 적 ${spawned}마리!`);
   addFloater(leader.px, leader.py - 60, `WAVE ${ar.wave}`, '#ff9a5a', 17);
   ar.t = 1.2;
@@ -423,14 +424,12 @@ function updateArena(dt) {
 function finishArena() {
   const wld = state.world, ar = wld.arena;
   ar.done = true;
-  const c = ar.stair || wld.spawn;
-  wld.stairs = { x: c.x, y: c.y };
-  wld.props.push({ type: 'stairs', gx: c.x, gy: c.y, solid: false });
+  // M8b: 계단 개방은 침공과 공통 헬퍼(encounterOpenStairs)로 모았다
+  encounterOpenStairs(wld, ar.stair || wld.spawn);
   wld.items.push({ type: 'chest', gx: leader.gx, gy: leader.gy });
   toast('🏆 도전방 클리어! 계단이 나타났습니다');
   sayEvent('arena_clear', leader, { force: true });
   addSparkle(leader.px, leader.py, '#ffd75e');
-  updateHudMode();
   scheduleModal('relic', 600, () => openRelicChoice('⚔️ 도전방 보상 — 유물을 선택하세요'));
 }
 
@@ -1042,6 +1041,8 @@ function gemDamage(m, mon, dmg, color, mods, opt) {
   opt = opt || {};
   if (!mon || mon.hp <= 0) return 0;
   dmg *= passiveElemMult();                   // M7c 트리 '원소 피해 +%' / 키스톤 「원소 과부하」
+  // M8b 계약 '원소 갑주' — 갑주와 같은 계열의 젬 피해는 절반만 들어간다
+  dmg *= contractElemMul(opt.elem || gemElemOf(mods && mods.skill));
   const res = damageMonster(mon, dmg, color, { src: m }) || { dmg: 0, crit: false };
   if (res.crit) gemTrigger(m, mods);
   applyConvert(mon, mods, res.dmg);
@@ -1949,6 +1950,9 @@ function updateCombat(dt) {
   // M7c: 환영 안개 확산/스폰/피해 · 우버 아레나 타이머
   updateDelirium(dt);
   updateUberRun(dt);
+  // M8b: 계약 층 타이머(시간 압박) · 침공 인카운터
+  updateContract(dt);
+  updateInvasion(dt);
 
   // 파티 공격 — 캐릭터별 공격 형태(CHAR_ATTACK)로 분기한다
   updateShields(dt);

@@ -161,8 +161,10 @@ const RECORD_NUM_KEYS = ['veins', 'azurite', 'bestKills', 'kills', 'goldTotal',
   // M7c — 환영 모드 / 파편 누적
   'deliriumRuns', 'deliriumBest', 'fragTotal',
   // M8a — 제작 재화 사용 횟수 / 타락 횟수
-  'craftUses', 'corruptUses'];
-const EVT_KEYS = ['nohitBoss', 'dark8', 'noWipe10', 'delirium5'];
+  'craftUses', 'corruptUses',
+  // M8b — 침공 전적
+  'invasionRuns', 'invasionBest'];
+const EVT_KEYS = ['nohitBoss', 'dark8', 'noWipe10', 'delirium5', 'contract5', 'invasion45'];
 
 function ensureMeta() {
   if (!state.records || typeof state.records !== 'object') state.records = {};
@@ -179,6 +181,8 @@ function ensureMeta() {
   if (!r.uber || typeof r.uber !== 'object') r.uber = { kills: 0, tries: 0, types: {}, fastest: 0 };
   ['kills', 'tries', 'fastest'].forEach(k => { if (typeof r.uber[k] !== 'number' || !isFinite(r.uber[k])) r.uber[k] = 0; });
   if (!r.uber.types || typeof r.uber.types !== 'object') r.uber.types = {};
+  // M8b — 계약 밸런스 로그 (최근 50개 링버퍼)
+  if (!Array.isArray(r.contracts)) r.contracts = [];
   if (!state.achv || typeof state.achv !== 'object') state.achv = {};
   const c = state.codex && typeof state.codex === 'object' ? state.codex : (state.codex = {});
   if (!c.mons || typeof c.mons !== 'object') c.mons = {};
@@ -387,6 +391,11 @@ const ACHIEVEMENTS = [
     prog: () => R().craftUses },
   { id: 'corrupt10', cat: 'build', icon: '☠️', name: '타락에 손대다', desc: '타락의 오브를 10회 사용한다', goal: 10,
     prog: () => R().corruptUses },
+  /* ---- M8b 계약·침공 2종 ---- */
+  { id: 'contract5', cat: 'progress', icon: '📜', name: '위험한 계약', desc: '위험 5점 이상 계약을 클리어한다', goal: 1,
+    prog: () => R().evt.contract5 },
+  { id: 'invasion45', cat: 'combat', icon: '⚡', name: '침공 격퇴', desc: '침공에서 45킬을 달성한다', goal: 1,
+    prog: () => R().evt.invasion45 },
   { id: 'runes4', cat: 'build', icon: '🪬', name: '룬 세공사', desc: '룬 소켓 4개를 모두 채운다',
     goal: () => (typeof SOCKET_IDS !== 'undefined' ? SOCKET_IDS.length : 4),
     prog: () => (typeof SOCKET_IDS === 'undefined' ? 0 : SOCKET_IDS.filter(id => socketRuneOf(id)).length) },
@@ -621,6 +630,18 @@ function loadMetaSave(s) {
       /* M7c — 깊이 마일스톤 / 우버 전적 */
       if (Array.isArray(sr.depthMs)) {
         r.depthMs = sr.depthMs.filter(d => DEPTH_MILESTONES.indexOf(d) >= 0);
+      }
+      /* M8b — 계약 밸런스 로그 (링버퍼 · 최근 50개만 살린다) */
+      if (Array.isArray(sr.contracts)) {
+        r.contracts = sr.contracts
+          .filter(c => c && typeof c === 'object')
+          .slice(-CONTRACT_LOG_MAX)
+          .map(c => ({
+            d: clamp(Math.floor(c.d) || 0, 0, 99),
+            ok: c.ok ? 1 : 0,
+            sec: clamp(Math.floor(c.sec) || 0, 0, 9e6),
+            f: clamp(Math.floor(c.f) || 1, 1, 999),
+          }));
       }
       if (sr.uber && typeof sr.uber === 'object') {
         r.uber.kills = clamp(Math.floor(sr.uber.kills || 0), 0, 9e9);

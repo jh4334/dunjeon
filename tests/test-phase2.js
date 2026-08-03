@@ -163,18 +163,19 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   // 선택지 분포 (특수 층이 약 25% 확률로 등장)
   const pathDist = await page.evaluate(() => {
     const G = window.GAME;
-    const c = { safe: 0, risk: 0, treasure: 0, challenge: 0 };
+    const c = { safe: 0, risk: 0, treasure: 0, challenge: 0, invasion: 0 };
     const biomePairs = { same: 0, diff: 0 };
     for (let i = 0; i < 400; i++) {
       const o = G.rollPathOptions(4);
       o.forEach(x => c[x.kind]++);
       (o[0].biome === o[1].biome ? biomePairs.same++ : biomePairs.diff++);
     }
-    return { c, total: 800, special: (c.treasure + c.challenge) / 800, biomePairs };
+    return { c, total: 800, special: (c.treasure + c.challenge + c.invasion) / 800, biomePairs };
   });
-  check('특수 층 등장률 ~25% (보물방/도전방)',
+  check('특수 층 등장률 ~25% (보물방/도전방/침공)',
     pathDist.special > 0.16 && pathDist.special < 0.34 &&
-    pathDist.c.treasure > 0 && pathDist.c.challenge > 0 && pathDist.c.safe > 0 && pathDist.c.risk > 0,
+    pathDist.c.treasure > 0 && pathDist.c.challenge > 0 && pathDist.c.invasion > 0 &&
+    pathDist.c.safe > 0 && pathDist.c.risk > 0,
     JSON.stringify(pathDist));
   check('선택지 바이옴은 서로 다름', pathDist.biomePairs.same === 0, JSON.stringify(pathDist.biomePairs));
 
@@ -314,8 +315,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     };
     return { safe: roll('safe'), risk: roll('risk') };
   });
-  check('위험한 경로 riskMult = 1.4',
-    riskStat.risk.riskMult === 1.4 && riskStat.safe.riskMult === 1, JSON.stringify(riskStat));
+  // M8b: 보상 배율은 위험 점수 공식 하나로 통일됐다 — 위험한 경로 = 위험 2점 → 1 + 0.18×2 = 1.36
+  check('위험한 경로 riskMult = 1.36 (위험 2점)',
+    riskStat.risk.riskMult === 1.36 && riskStat.safe.riskMult === 1, JSON.stringify(riskStat));
   check('위험한 경로 팩 +1 · 엘리트 증가',
     Math.max(...riskStat.risk.packSizes) === Math.max(...riskStat.safe.packSizes) + 1 &&
     riskStat.risk.elites > riskStat.safe.elites, JSON.stringify(riskStat));
@@ -350,8 +352,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     return { safeMult: a, riskMult: b, safeXp: xpOf('safe'), riskXp: xpOf('risk') };
   });
   check('층 단위 보상 배율 wld.riskMult 노출',
-    riskReward.safeMult === 1 && riskReward.riskMult === 1.4 &&
-    riskReward.riskXp.riskMult === 1.4, JSON.stringify(riskReward));
+    riskReward.safeMult === 1 && riskReward.riskMult === 1.36 &&
+    riskReward.riskXp.riskMult === 1.36, JSON.stringify(riskReward));
 
   // 실제 골드 획득에 riskMult 가 반영되는지 (동일 시드 조건 비교)
   const goldGain = await page.evaluate(async () => {
@@ -390,8 +392,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       picked: [s.picked, r.picked],
     };
   });
-  check('위험한 경로 골드 ×1.4 (실제 획득)',
-    Math.abs(goldGain.multRatio - 1.4) < 1e-9 && goldGain.safeOk && goldGain.riskOk &&
+  check('위험한 경로 골드 ×1.36 (실제 획득)',
+    Math.abs(goldGain.multRatio - 1.36) < 1e-9 && goldGain.safeOk && goldGain.riskOk &&
     goldGain.risk > goldGain.safe, JSON.stringify(goldGain));
 
   /* =============== 5. 보물방 =============== */
@@ -638,8 +640,9 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       kinds: Object.keys(G.PATH_KINDS),
     };
   });
-  check('바이옴 5종(광산 포함) + 경로 성격 4종 노출',
-    themeCompat.names.length === 5 && themeCompat.kinds.length === 4 &&
+  check('바이옴 5종(광산 포함) + 경로 성격 5종 노출 (M8b 침공 추가)',
+    themeCompat.names.length === 5 && themeCompat.kinds.length === 5 &&
+    themeCompat.kinds.indexOf('invasion') >= 0 &&
     themeCompat.f1 === 'catacomb' && themeCompat.f4 === 'mine', JSON.stringify(themeCompat));
 
   check('콘솔 에러 0건', errors.length === 0, errors.slice(0, 6).join(' | '));
