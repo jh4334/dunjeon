@@ -515,11 +515,152 @@ function takeNode(id, free) {
   state.passiveNodes.push(id);
   bumpTree();
   if (!free) state.passivePts--;
+  pushTreeHistory(id);            // M8b: 세션 되돌리기 스택 (저장하지 않는다)
   // 체력이 늘어나는 노드는 현재 HP도 같이 올려준다
   party.forEach((m, i) => { if (!m.down) m.hp += Math.max(0, maxHp(m) - before[i]); });
   updatePartyBadge();
   saveDirty = true;
   return true;
+}
+
+/* =====================================================================
+ * M8b — 오클릭 되돌리기 / 최단 경로 자동 할당
+ *   · 회수(untakeNode)  : 빼도 나머지가 시작점과 이어져 있는 노드(비절단점)만 가능 · 포인트 환급
+ *   · 되돌리기 스택      : 이번 세션에 찍은 순서 (저장하지 않는다 — 재로드 후에는 회수 규칙만 남는다)
+ *   · 최단 경로(pathToNode): 지금 찍은 집합에서 목표 노드까지 BFS · 결정적 순회
+ * =================================================================== */
+/* 노드 순서 — BFS 이웃 순회를 결정적으로 만든다 (같은 트리 = 언제나 같은 경로) */
+let nodeOrderMap = null;
+function nodeOrder(id) {
+  if (!nodeOrderMap) {
+    nodeOrderMap = {};
+    PASSIVE_NODES.forEach((n, i) => { nodeOrderMap[n.id] = i; });
+  }
+  return nodeOrderMap[id] === undefined ? 1e9 : nodeOrderMap[id];
+}
+function adjSorted(id) {
+  return (PASSIVE_ADJ[id] || []).slice().sort((a, b) => nodeOrder(a) - nodeOrder(b));
+}
+/* 목록의 노드가 전부 시작점과 이어져 있는가 */
+function treeConnectedAll(list) {
+  const taken = {};
+  (list || []).forEach(n => { if (PASSIVE_BY_ID[n]) taken[n] = true; });
+  const seen = {};
+  const q = [];
+  (PASSIVE_ADJ[PASSIVE_ROOT] || []).forEach(n => { if (taken[n] && !seen[n]) { seen[n] = true; q.push(n); } });
+  let head = 0;
+  while (head < q.length) {
+    const cur = q[head++];
+    (PASSIVE_ADJ[cur] || []).forEach(n => { if (taken[n] && !seen[n]) { seen[n] = true; q.push(n); } });
+  }
+  return (list || []).every(n => seen[n]);
+}
+function nodeRemovable(id) {
+  if (!nodeTaken(id)) return false;
+  return treeConnectedAll((state.passiveNodes || []).filter(n => n !== id));
+}
+/* 회수할 수 없는 이유 (UI 가 그대로 보여 준다 — 빈 문자열이면 가능) */
+function untakeReason(id) {
+  if (!PASSIVE_BY_ID[id] || PASSIVE_BY_ID[id].kind === 'root') return '회수할 수 없는 노드입니다';
+  if (!nodeTaken(id)) return '아직 찍지 않은 노드입니다';
+  if (!nodeRemovable(id)) return '이 노드를 회수하면 뒤의 노드가 끊깁니다';
+  return '';
+}
+/* 노드 1개 회수 — 포인트 +1 환급 · 소켓이면 끼워 둔 룬도 돌려받는다 */
+function untakeNode(id) {
+  if (untakeReason(id)) return false;
+  const i = (state.passiveNodes || []).indexOf(id);
+  if (i < 0) return false;
+  state.passiveNodes.splice(i, 1);
+  state.passivePts = (state.passivePts || 0) + 1;
+  ensureRunes();
+  if (state.sockets[id]) state.sockets[id] = null;      // 룬 반환 (보유량은 그대로)
+  bumpTree();
+  popTreeHistory(id);
+  party.forEach(m => { m.hp = Math.min(m.hp, maxHp(m)); });
+  updatePartyBadge();
+  saveDirty = true;
+  return true;
+}
+/* ---- 세션 내 할당 이력 (런타임 전용 · 세이브에 넣지 않는다) ---- */
+let treeHistory = [];
+const TREE_HISTORY_MAX = 400;
+function treeHistoryList() { return treeHistory.slice(); }
+function clearTreeHistory() { treeHistory = []; }
+function pushTreeHistory(id) {
+  treeHistory.push(id);
+  while (treeHistory.length > TREE_HISTORY_MAX) treeHistory.shift();
+}
+function popTreeHistory(id) {
+  const i = treeHistory.lastIndexOf(id);
+  if (i >= 0) treeHistory.splice(i, 1);
+}
+/* 되돌릴 수 있는 마지막 노드 (이미 회수된 것은 건너뛴다) */
+function undoTarget() {
+  for (let i = treeHistory.length - 1; i >= 0; i--) {
+    const id = treeHistory[i];
+    if (nodeTaken(id)) return id;
+    treeHistory.splice(i, 1);
+  }
+  return null;
+}
+function canUndoTree() {
+  const id = undoTarget();
+  return !!(id && nodeRemovable(id));
+}
+function undoLastNode() {
+  const id = undoTarget();
+  if (!id || !nodeRemovable(id)) return null;
+  return untakeNode(id) ? id : null;
+}
+/* ---- 최단 경로 ----
+ * 찍은 노드 집합(+시작점)에서 목표까지 BFS. 반환값은 '앞에서부터 찍어야 하는 노드 목록'.
+ * 이미 찍은 노드면 빈 배열, 길이 없으면 null. */
+function pathToNode(id) {
+  const goal = PASSIVE_BY_ID[id];
+  if (!goal || goal.kind === 'root') return null;
+  if (nodeTaken(id)) return [];
+  const seen = {}, prev = {};
+  const q = [];
+  const seeds = [PASSIVE_ROOT].concat((state.passiveNodes || []).filter(n => PASSIVE_BY_ID[n]));
+  seeds.sort((a, b) => nodeOrder(a) - nodeOrder(b));
+  seeds.forEach(n => { if (!seen[n]) { seen[n] = true; prev[n] = null; q.push(n); } });
+  let head = 0;
+  while (head < q.length) {
+    const cur = q[head++];
+    if (cur === id) break;
+    const adj = adjSorted(cur);
+    for (let i = 0; i < adj.length; i++) {
+      const n = adj[i];
+      if (seen[n] || !PASSIVE_BY_ID[n] || PASSIVE_BY_ID[n].kind === 'root') continue;
+      seen[n] = true; prev[n] = cur; q.push(n);
+    }
+  }
+  if (!seen[id]) return null;
+  const out = [];
+  let cur = id;
+  while (cur && cur !== PASSIVE_ROOT && !nodeTaken(cur)) { out.unshift(cur); cur = prev[cur]; }
+  return out;
+}
+/* { ok, need, short, why, path } — 버튼 라벨/비활성 사유를 그대로 만든다 */
+function canTakePath(id) {
+  const p = pathToNode(id);
+  if (!p) return { ok: false, need: 0, short: 0, why: '이어지는 길이 없습니다', path: [] };
+  if (!p.length) return { ok: false, need: 0, short: 0, why: '이미 찍은 노드입니다', path: [] };
+  const have = state.passivePts || 0;
+  if (have < p.length) return { ok: false, need: p.length, short: p.length - have, why: `${p.length - have}포인트 부족`, path: p };
+  return { ok: true, need: p.length, short: 0, why: '', path: p };
+}
+/* 경로 전체를 순서대로 할당 (되돌리기 스택에도 순서대로 쌓인다) */
+function takePath(id) {
+  const c = canTakePath(id);
+  if (!c.ok) return { ok: false, why: c.why, taken: [], path: c.path };
+  const done = [];
+  for (let i = 0; i < c.path.length; i++) {
+    if (!takeNode(c.path[i])) break;
+    done.push(c.path[i]);
+  }
+  return { ok: done.length === c.path.length, why: '', taken: done, path: c.path };
 }
 /* 찍은 노드 중 시작점에서 끊긴 것을 정리 (마이그레이션/리스펙 안전망) */
 function pruneOrphans() {
@@ -534,6 +675,7 @@ function pruneOrphans() {
   const keep = state.passiveNodes.filter(id => seen[id]);
   const lost = state.passiveNodes.length - keep.length;
   if (lost > 0) {
+    state.passiveNodes.filter(id => !seen[id]).forEach(popTreeHistory);
     state.passiveNodes = keep;
     state.passivePts += lost;
     bumpTree();
@@ -554,6 +696,7 @@ function respecTree() {
   state.gold -= cost;
   state.passiveNodes = [];
   state.passivePts += n;
+  clearTreeHistory();                                        // M8b: 되돌리기 스택도 비운다
   ensureRunes();
   SOCKET_IDS.forEach(id => { state.sockets[id] = null; });   // 룬은 그대로 보관, 장착만 해제
   bumpTree();
@@ -827,14 +970,18 @@ function atkPow(m) {
 // m 을 주면 그 파티원의 '치유량 +%' 장비 접사를 반영한다 (기본: 치유 역할)
 function healPow(m) {
   const who = m || memberWithRole('healer') || party[2];
+  // M8b 계약 '회복 억제' — 치유량 -40%
   return (10 + 3 * (state.lv - 1)) * (1 + 0.10 * state.meta.heal) *
-    (1 + 0.20 * runBuff('heal')) * passiveHealMult() * equipHealMul(who);
+    (1 + 0.20 * runBuff('heal')) * passiveHealMult() * equipHealMul(who) * contractHealMul();
 }
 function memberWithRole(tag) { return party.find(m => !m.down && charHasRole(m.id, tag)) || party.find(m => charHasRole(m.id, tag)) || null; }
-// 층 단위 위험 보상 배율 (위험한 경로 / 도전방)
+/* 층 단위 위험 보상 배율 — M8b 스테이지 계약이 정한다.
+ *   riskMult = 1 + 0.18 × 위험 점수 (☠️ 타락은 ×1.5)
+ *   '시간 압박' 제한을 넘긴 층은 여기서 절반이 된다. */
 function floorRisk() {
   const w = state.world;
-  return (w && w.mode === 'dungeon' && w.riskMult) ? w.riskMult : 1;
+  if (!(w && w.mode === 'dungeon' && w.riskMult)) return 1;
+  return w.riskMult * (w.contractLate ? CONTRACT_LATE_MUL : 1);
 }
 // equipGoldMul() = 장비 '골드 획득 +%' × 「도박꾼의 동전」(획득마다 0.5~1.5배 랜덤)
 function goldMult() { return 1.3 * (1 + 0.10 * state.meta.gold) * (1 + 0.20 * runBuff('gold')) * (1 + 0.30 * relicCount('charm')) * rewardMult() * floorRisk() * passiveGoldMult() * equipGoldMul() * weeklyMods().goldMul; }

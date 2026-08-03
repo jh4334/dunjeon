@@ -798,9 +798,12 @@ function dropItemAt(item, gx, gy) {
   }
   return drop;
 }
+/* M8b: 층 보상 배율(계약 위험 점수)이 드랍 확률에도 실린다 — 과열을 막으려 2배로 자른다 */
+const CONTRACT_DROP_CAP = 2;
+function contractDropMul() { return Math.min(CONTRACT_DROP_CAP, floorRisk()); }
 function rollDrop(chance, ilvl, opt) {
   // M4 주간 '황금광' — 장비 드랍 확률 절반 (일반 런에서는 dropMul === 1)
-  if (!(Math.random() < chance * weeklyMods().dropMul)) return null;
+  if (!(Math.random() < chance * weeklyMods().dropMul * contractDropMul())) return null;
   return rollItem(ilvl, opt);
 }
 /* M7a: 드랍 아이템 레벨도 심층 지수 곡선을 따라간다 (깊이 10 이하는 floor 그대로) */

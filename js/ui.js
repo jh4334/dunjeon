@@ -216,41 +216,81 @@ function openRelicChoice(title) {
   }, { key: 'relic' });
 }
 
-/* ---- 갈림길 (다음 층 선택) ---- */
-// 선택지 2개: 서로 다른 바이옴 + 경로 성격. 각 25% 확률로 특수 층이 뜬다.
-function rollPathOptions(floor) {
-  const bk = shuffle(BIOME_KEYS.slice());
-  const kinds = shuffle(['safe', 'risk']);
-  return kinds.map((k, i) => {
-    let kind = k;
-    if (Math.random() < 0.25) kind = Math.random() < 0.5 ? 'treasure' : 'challenge';
-    return { biome: bk[i % bk.length], kind, floor };
-  });
+/* ---- 갈림길 = 스테이지 계약 (M8b) ----
+ * 후보 지역 2~3장의 계약 카드. 각 카드는 바이옴 + 경로 성격 + 위험 Modifier 를 갖고,
+ * 위험 점수 합이 그대로 보상 배율(1 + 0.18 × 점수)이 된다.
+ * 카드에는 M8a 제작 재화를 쓸 수 있다 — 🔨 재련 / ➕ 부여 / ☠️ 타락. */
+function rollPathOptions(floor, opt) { return rollContracts(floor, opt); }
+
+let pathCards = null;            // 지금 열려 있는 갈림길 카드 (층 전환용 · 저장하지 않는다)
+function contractModChip(m) {
+  const d = contractModDef(m.k);
+  if (!d) return '';
+  const el = d.elem ? contractElemDef(m.elem) : null;
+  const name = el ? `${d.name}(${el.name})` : d.name;
+  return `<span class="ctMod d${d.danger}" data-mod="${m.k}">${d.icon} ${name}<i>${d.danger}</i></span>`;
+}
+function contractCardHtml(c, i, next) {
+  const b = BIOMES[c.biome], k = PATH_KINDS[c.kind];
+  const danger = contractDanger(c);
+  const mods = (c.mods || []).map(contractModChip).join('');
+  const modBox = mods || '<span class="ctMod none">위험 없음</span>';
+  return `<button class="buffCard ctGo${c.kind === 'safe' ? '' : ' relic'}${c.corrupt ? ' corrupt' : ''}"` +
+    ` data-path="${i}" data-biome="${c.biome}" data-kind="${c.kind}"` +
+    ` data-danger="${danger}" data-reward="${contractRewardMult(c)}"` +
+    ` data-mods="${(c.mods || []).map(m => m.k).join(',')}" data-corrupt="${c.corrupt ? 1 : 0}">` +
+    `<span class="bIcon">${k.icon}</span><b>${k.name}${c.corrupt ? ' ☠️' : ''}</b>` +
+    `<small>${b.icon} ${b.name}${next >= ABYSS_FLOOR ? ABYSS_SUFFIX : ''}<br>${k.desc}</small>` +
+    `<div class="ctMods">${modBox}</div>` +
+    `<em>⚠️ 위험 ${danger}점 · 보상 ${contractRewardText(c)}</em></button>`;
+}
+function contractCraftHtml(c, i) {
+  return `<div class="ctCraft">` + CONTRACT_CRAFTS.map(cr => {
+    const chk = canCraftContract(c, cr.k);
+    const own = currencyOwned(cr.cur);
+    return `<button class="ctCraftBtn" data-craft="${cr.k}" data-card="${i}"` +
+      `${chk.ok ? '' : ' disabled'} title="${cr.name} — ${cr.desc}">` +
+      `<span class="ccIcon">${cr.icon}</span><span class="ccName">${cr.name}</span><i>${own}</i></button>`;
+  }).join('') + `</div>`;
 }
 function openPathChoice() {
   const next = state.world.floor + 1;
-  const opts = rollPathOptions(next);
+  pathCards = rollContracts(next);
   openModal(`🚪 깊이 ${next} — 갱도 분기`, body => {
-    const grid = document.createElement('div');
-    grid.className = 'buffGrid';
-    opts.forEach((o, i) => {
-      const b = BIOMES[o.biome], k = PATH_KINDS[o.kind];
-      const btn = document.createElement('button');
-      btn.className = 'buffCard' + (o.kind === 'safe' ? '' : ' relic');
-      btn.dataset.path = String(i);
-      btn.dataset.biome = o.biome;
-      btn.dataset.kind = o.kind;
-      btn.innerHTML = `<span class="bIcon">${k.icon}</span><b>${k.name}</b>` +
-        `<small>${b.icon} ${b.name}${next >= ABYSS_FLOOR ? ABYSS_SUFFIX : ''}<br>${k.desc}</small>` +
-        `<em>보상 ×${k.riskMult.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}</em>`;
-      btn.addEventListener('click', () => { closeModal(); descend(o); });
-      grid.appendChild(btn);
-    });
-    body.appendChild(grid);
-    const hint = document.createElement('p');
-    hint.className = 'sumHint';
-    hint.textContent = '갱도는 하나만 고를 수 있어요. 신중하게!';
-    body.appendChild(hint);
+    const render = () => {
+      body.innerHTML = '';
+      const grid = document.createElement('div');
+      grid.className = 'ctGrid';
+      grid.style.gridTemplateColumns = `repeat(${pathCards.length}, 1fr)`;
+      grid.innerHTML = pathCards.map((c, i) =>
+        `<div class="ctCard" data-card="${i}">${contractCardHtml(c, i, next)}${contractCraftHtml(c, i)}</div>`).join('');
+      body.appendChild(grid);
+      grid.querySelectorAll('[data-path]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const c = pathCards[Number(btn.dataset.path)];
+          pathCards = null;
+          closeModal();
+          descend(c);
+        });
+      });
+      grid.querySelectorAll('[data-craft]').forEach(btn => {
+        btn.addEventListener('click', ev => {
+          ev.stopPropagation();
+          const c = pathCards[Number(btn.dataset.card)];
+          const r = craftContract(c, btn.dataset.craft);
+          if (!r.ok) { toast('⚒️ ' + r.why); return; }
+          sfx(btn.dataset.craft === 'corrupt' ? 'warn' : 'lootMagic');
+          toast(`⚒️ 계약 ${CONTRACT_CRAFT_BY_KEY[btn.dataset.craft].name} — 위험 ${r.danger}점 · 보상 ×${r.reward.toFixed(2)}`);
+          render();
+        });
+      });
+      const hint = document.createElement('p');
+      hint.className = 'sumHint';
+      hint.id = 'ctHint';
+      hint.textContent = '위험이 클수록 보상 배율이 오릅니다. 재화로 계약을 다시 새길 수도 있어요.';
+      body.appendChild(hint);
+    };
+    render();
   }, { key: 'path' });
 }
 
@@ -346,7 +386,7 @@ function openMerchant(p) {
           } else {
             party.forEach(m => {
               if (m.down) return;
-              m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * 0.3);
+              m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * 0.3 * contractHealMul());
               addSparkle(m.px, m.py, '#ff9eae');
             });
             toast('🧪 회복 물약 — 파티 회복!');
@@ -1109,6 +1149,27 @@ function openParty(tab) {
         g.lineTo(treeX(nb), treeY(nb));
         g.stroke();
       });
+      /* M8b — 최단 경로 하이라이트 (선택한 잠긴 노드까지 점선) */
+      const pathIds = (nodePick && !nodeTaken(nodePick)) ? (pathToNode(nodePick) || []) : [];
+      const pathSet = {};
+      pathIds.forEach((id, i) => { pathSet[id] = i + 1; });
+      if (pathIds.length) {
+        g.save();
+        g.setLineDash([7, 5]);
+        g.strokeStyle = '#8fe0ff';
+        g.lineWidth = 3;
+        pathIds.forEach((id, i) => {
+          const nb = PASSIVE_BY_ID[id];
+          const from = i > 0 ? PASSIVE_BY_ID[pathIds[i - 1]]
+            : PASSIVE_BY_ID[(PASSIVE_ADJ[id] || []).find(n => n === PASSIVE_ROOT || nodeTaken(n))];
+          if (!nb || !from) return;
+          g.beginPath();
+          g.moveTo(treeX(from), treeY(from));
+          g.lineTo(treeX(nb), treeY(nb));
+          g.stroke();
+        });
+        g.restore();
+      }
 
       // 노드 — 문서 조각 하나에 모아 한 번만 붙인다 (290개 리플로 방지)
       const frag = document.createDocumentFragment();
@@ -1121,7 +1182,9 @@ function openParty(tab) {
         const isHit = hi && treeMatch(nd);
         if (isHit) matched++;
         b.className = `tNode k-${nd.kind} s-${st} br-${nd.br}` +
-          (nodePick === nd.id ? ' on' : '') + (isHit ? ' hit' : '') + (hi && !isHit ? ' dimmed' : '');
+          (nodePick === nd.id ? ' on' : '') + (isHit ? ' hit' : '') + (hi && !isHit ? ' dimmed' : '') +
+          (pathSet[nd.id] ? ' onpath' : '');
+        if (pathSet[nd.id]) b.dataset.pathIdx = String(pathSet[nd.id]);
         b.dataset.node = nd.id;
         b.dataset.kind = nd.kind;
         b.dataset.branch = nd.br;
@@ -1253,8 +1316,9 @@ function openParty(tab) {
         take.id = 'nodeTake';
         take.dataset.node = nd.id;
         take.disabled = !canTakeNode(nd.id);
+        // M8b: 잠긴 노드는 '인접한 노드를 먼저' 대신 아래의 최단 경로 버튼이 길을 열어 준다
         take.textContent = st === 'taken' ? '✔ 찍음'
-          : st === 'far' ? '🔒 인접한 노드를 먼저 찍으세요'
+          : st === 'far' ? '🔒 인접하지 않은 노드 — 아래 경로로 한 번에 찍을 수 있어요'
           : state.passivePts <= 0 ? '포인트가 없어요' : '🌳 찍기 (1 포인트)';
         take.addEventListener('click', () => {
           if (takeNode(nd.id)) {
@@ -1266,6 +1330,49 @@ function openParty(tab) {
           }
         });
         det.appendChild(take);
+        /* M8b — 잠긴 노드: 최단 경로 일괄 할당 */
+        if (st === 'far') {
+          const pc = canTakePath(nd.id);
+          const pb = document.createElement('button');
+          pb.className = 'modalBtn pathBtn';
+          pb.id = 'nodePath';
+          pb.dataset.node = nd.id;
+          pb.dataset.need = String(pc.need);
+          pb.dataset.path = pc.path.join(',');
+          pb.disabled = !pc.ok;
+          pb.textContent = pc.need
+            ? (pc.ok ? `🎯 ${pc.need}포인트로 여기까지 찍기` : `🎯 ${pc.need}포인트 필요 — ${pc.why}`)
+            : `🎯 ${pc.why}`;
+          pb.addEventListener('click', () => {
+            const r = takePath(nd.id);
+            if (!r.ok && !r.taken.length) { toast('🎯 ' + r.why); return; }
+            addSparkle(leader.px, leader.py, '#8fe0ff');
+            sfx('levelup');
+            toast(`🎯 최단 경로 ${r.taken.length}노드 할당 — ${nd.name}까지!`);
+            treeFocus = nd.id;
+            render();
+          });
+          det.appendChild(pb);
+        }
+        /* M8b — 찍은 노드: 회수(오클릭 되돌리기) */
+        if (st === 'taken') {
+          const why = untakeReason(nd.id);
+          const ub = document.createElement('button');
+          ub.className = 'modalBtn undoBtn';
+          ub.id = 'nodeUntake';
+          ub.dataset.node = nd.id;
+          ub.disabled = !!why;
+          ub.textContent = why ? `↩️ 회수 불가 — ${why}` : '↩️ 회수 (1 포인트 환급)';
+          ub.addEventListener('click', () => {
+            if (untakeNode(nd.id)) {
+              toast(`↩️ ${nd.name} 회수 — 포인트를 돌려받았어요`);
+              sfx('ui');
+              treeFocus = nd.id;
+              render();
+            }
+          });
+          det.appendChild(ub);
+        }
         // 소켓 노드 — 보유한 룬을 끼우고 뺀다
         if (nd.kind === 'socket' && nodeTaken(nd.id)) {
           const cur = socketRuneOf(nd.id);
@@ -1297,10 +1404,33 @@ function openParty(tab) {
           }
         }
       } else {
-        det.innerHTML = `<p class="sumHint">노드를 눌러 효과를 확인하고 찍으세요. 인접한 노드만 찍을 수 있어요.` +
+        det.innerHTML = `<p class="sumHint">노드를 눌러 효과를 확인하고 찍으세요. 먼 노드는 최단 경로로 한 번에 찍을 수 있어요.` +
           (treeHighlighting() ? ` <b id="treeHitCount">${matched}개 일치</b>` : '') + `</p>`;
       }
       body.appendChild(det);
+
+      /* M8b — 마지막 할당 되돌리기 (세션 스택 · 연속 undo) */
+      const undo = document.createElement('button');
+      undo.className = 'modalBtn undoBtn';
+      undo.id = 'treeUndo';
+      const utgt = treeHistoryList().filter(nodeTaken);
+      const last = utgt.length ? utgt[utgt.length - 1] : null;
+      undo.dataset.left = String(utgt.length);
+      undo.disabled = !canUndoTree();
+      undo.textContent = last
+        ? (canUndoTree() ? `↩️ 마지막 되돌리기 — ${PASSIVE_BY_ID[last].name} (${utgt.length})`
+                         : '↩️ 되돌릴 수 없어요 — 뒤의 노드가 끊깁니다')
+        : '↩️ 되돌릴 이력이 없어요';
+      undo.addEventListener('click', () => {
+        const id = undoLastNode();
+        if (!id) return;
+        toast(`↩️ ${PASSIVE_BY_ID[id].name} 되돌림 — 포인트 환급`);
+        sfx('ui');
+        nodePick = id;
+        treeFocus = id;
+        render();
+      });
+      body.appendChild(undo);
 
       // 리스펙
       const res = document.createElement('button');
@@ -1385,13 +1515,27 @@ function openRunInfo(tab) {
       const pk = PATH_KINDS[wld.kind] || PATH_KINDS.safe;
       rows.push(['현재 깊이', `깊이 ${wld.floor}${wld.kind && wld.kind !== 'safe' ? ` ${pk.icon} ${pk.name}` : ''}`]);
       rows.push(['바이옴', floorBiomeLine()]);
+      // M8b: 이 층의 계약 (위험 Modifier + 보상 배율)
+      const ct = wld.contract;
+      if (ct) {
+        const modTxt = (ct.mods || []).map(m => {
+          const d = contractModDef(m.k);
+          return d ? `${d.icon} ${d.name}` : '';
+        }).filter(Boolean).join(' · ') || '위험 없음';
+        rows.push(['계약', `⚠️ ${contractDanger(ct)}점 · 보상 ${contractRewardText(ct)}${wld.contractLate ? ' (⏳ 초과 · 절반)' : ''}`, 'riContract']);
+        rows.push(['위험 Modifier', modTxt, 'riContractMods']);
+        const left = contractTimeLeft();
+        if (left !== null) rows.push(['남은 제한 시간', `⏳ ${fmtDur(left)}`]);
+      }
       rows.push(['처치한 몬스터', String(run.kills || 0)]);
       rows.push(['획득 골드', `+${fmt(run.goldGained || 0)}`]);
       rows.push(['획득 아주라이트', `+${fmt(run.azuriteGained || 0)} ◆`]);
       if (darkActive()) rows.push(['어둠 / 플레어', `👁 ${(state.darkStack || 0).toFixed(1)} · 🔥 ${state.flares}`]);
       rows.push(['최고 기록', `깊이 ${state.best}`]);
+      rows.push(['계약 기록', contractStatLine(), 'riContracts']);   // M8b 밸런스 로그 한 줄
     } else {
       rows.push(['최고 기록', `깊이 ${state.best}`]);
+      rows.push(['계약 기록', contractStatLine(), 'riContracts']);   // M8b 밸런스 로그 한 줄
       rows.push(['레벨', `Lv.${state.lv}`]);
       rows.push(['보유 골드', fmt(state.gold)]);
       rows.push(['보유 아주라이트', `${fmt(state.azurite)} ◆`]);
@@ -1400,7 +1544,7 @@ function openRunInfo(tab) {
     }
     const wrap = document.createElement('div');
     wrap.id = 'runInfoBody';
-    wrap.innerHTML = rows.map(([k, v]) => `<div class="sumRow"><span>${k}</span><b>${v}</b></div>`).join('');
+    wrap.innerHTML = rows.map(([k, v, id]) => `<div class="sumRow"${id ? ` id="${id}"` : ''}><span>${k}</span><b>${v}</b></div>`).join('');
     body.appendChild(wrap);
 
     const chipList = (title, id, items) => {
@@ -1847,6 +1991,10 @@ function floorTitle() {
   let s = `깊이 ${w.floor}`;
   if (w.kind !== 'safe') s += ` ${k.icon}`;      // 성격은 아이콘만 (진입 토스트/갱도 분기 카드에 이름 표기)
   if (w.arena && !w.arena.done) s += ` · 웨이브 ${w.arena.wave}/${w.arena.total}`;
+  // M8b: 침공은 남은 시간, 계약 위험은 점수만 짧게 (자세한 내용은 ❗ 런 정보)
+  if (w.invasion && !w.invasion.done) s += ` · ${Math.ceil(w.invasion.t)}s`;
+  const dg = w.contract ? contractDanger(w.contract) : 0;
+  if (dg > 0 && w.kind === 'safe') s += ` ⚠️${dg}`;
   return `${s} · ${diff().name}`;
 }
 // 탐험 패널 2행(작은 글씨): 바이옴 아이콘 + 이름 (9층+는 ' · 심연' 포함)
@@ -1959,6 +2107,7 @@ function updateHud() {
   updateBuffBar();
   updateBossBar();
   updateDeliriumHud();        // M7c 환영 안개 게이지
+  updateInvasionHud();        // M8b 침공 타이머 / 킬 카운트
   syncTopHud();               // 좁은 폭에서 좌상단 줄 아래 요소들을 밀어 준다
   updatePartyBadge();
   checkGoldHint();
@@ -2005,6 +2154,27 @@ function updateDeliriumHud() {
   el('delGauge').style.width = pct + '%';
   // 안개가 짙어질수록 화면 오버레이도 진해진다
   fog.style.opacity = String(clamp(0.35 + (info.dps / DELIRIUM_DPS_CAP) * 0.5, 0.3, 0.9));
+}
+/* ---- M8b 침공 HUD ----
+ * 남은 시간 · 처치 수 · 다음 마일스톤까지의 게이지. 정산이 끝나면 사라진다. */
+function updateInvasionHud() {
+  const panel = el('invasionPanel');
+  if (!panel) return;
+  const info = (typeof invasionInfo === 'function') ? invasionInfo() : null;
+  const on = !!(info && info.active);
+  panel.classList.toggle('hidden', !on);
+  if (!on) return;
+  const t = Math.ceil(info.t);
+  el('invTime').textContent = info.boss ? 'BOSS' : `${t}s`;
+  el('invKills').textContent = `☠ ${info.kills}`;
+  panel.classList.toggle('danger', !info.boss && t <= 15);
+  const cur = info.tier > 0 ? INVASION_MILESTONES[info.tier - 1].n : 0;
+  const nx = info.next;
+  const pct = nx ? clamp((info.kills - cur) / Math.max(1, nx - cur) * 100, 0, 100) : 100;
+  el('invGauge').style.width = pct + '%';
+  el('invNext').textContent = info.boss ? '⚡ 침공 지휘관을 처치하세요!'
+    : nx ? `${info.tier}/${INVASION_TIER_MAX}단계 · 다음 보상 ${nx}킬`
+    : `${INVASION_TIER_MAX}/${INVASION_TIER_MAX}단계 — 최고 보상!`;
 }
 
 /* ---- 좁은 폭 HUD 재배치 ----
