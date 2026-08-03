@@ -223,6 +223,8 @@ function onStairsStep() {
 function descend(choice) {
   const next = state.world.floor + 1;
   const ch = choice || defaultChoice(next);
+  // M8b: 계단으로 내려간다 = 지금 층의 계약을 클리어한 것 (밸런스 로그)
+  noteContractEnd(true);
   sfx('stairs');
   transition(() => {
     if (state.run) { state.run.floor = next; teleFloor(next); }
@@ -236,7 +238,14 @@ function descend(choice) {
     if (newBest) addFloater(leader.px, leader.py - 60, '🏆 최고 기록!', '#ffe88a', 15);
     const w = state.world;
     const pk = PATH_KINDS[w.kind] || PATH_KINDS.safe;
-    toast(`⬇️ 깊이 ${next} — ${pk.icon} ${w.theme.name}`);
+    // M8b: 계약에 새겨진 위험 Modifier 를 진입 토스트에 함께 알린다
+    const cm = ((w.contract && w.contract.mods) || []).map(m => {
+      const d = contractModDef(m.k);
+      return d ? `${d.icon} ${d.name}` : '';
+    }).filter(Boolean);
+    toast(`⬇️ 깊이 ${next} — ${pk.icon} ${w.theme.name}` +
+      (cm.length ? ` · ⚠️${contractDanger(w.contract)}점 ${cm.join(' ')}` : ''));
+    if (w.kind === 'invasion') sayEvent('path_challenge', null, { force: true });
     if (w.stairsPending) sayEvent('path_boss', null, { force: true });
     else if (w.kind === 'challenge') sayEvent('path_challenge', null, { force: true });
     else if (w.kind === 'treasure') sayEvent('path_treasure', null, { force: true });
@@ -297,6 +306,8 @@ function teleSectionHtml(t) {
 }
 
 function showRunSummary(escaped) {
+  // M8b: 런이 여기서 끊기므로 지금 층의 계약은 '미클리어'로 남는다
+  if (state.world && state.world.mode === 'dungeon') noteContractEnd(false);
   const run = state.run || { floor: state.world.floor || 1, kills: 0, goldGained: 0, azuriteGained: 0 };
   if (state.records && run.kills > (state.records.bestKills || 0)) state.records.bestKills = run.kills;
   // M4: 주간 런이면 정산 표를 주간 기록 기준으로 바꾼다 (state.run 을 지우기 전에 읽는다)

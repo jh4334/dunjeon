@@ -224,6 +224,11 @@ window.GAME = {
   PASSIVE_CLUSTERS, PASSIVE_CLUSTER_BY_KEY, CLUSTER_SPECS, SOCKET_IDS, MOD_INFO, modsDesc,
   passiveReachable, treeStats, hasKeystone, keystonesTaken,
   nodeTaken, nodeReachable, canTakeNode, takeNode, pruneOrphans,
+  /* ---- M8b: 노드 회수(오클릭 되돌리기) · 최단 경로 자동 할당 ---- */
+  nodeRemovable, untakeReason, untakeNode, treeConnectedAll,
+  treeHistory: () => treeHistoryList(), clearTreeHistory, canUndoTree, undoLastNode, undoTarget,
+  pathToNode, canTakePath, takePath, nodeOrder, adjSorted,
+  TREE_HISTORY_MAX,
   respecTree, respec: respecTree, respecCost, RESPEC_COST_PER, bumpTree,
   takenNodes: () => (state.passiveNodes || []).slice(),
   passiveAzMult, passiveTakenMult, passiveCdMult, passiveGemCdMult, passiveHealMult,
@@ -283,6 +288,44 @@ window.GAME = {
   destroyItem, deliriumCurrency,
   // 스탯 브레이크다운
   STAT_DEFS, STAT_KEYS, statBreakdown, statBreakdownAll,
+
+  /* ==== M8b: 스테이지 계약 · 침공 인카운터 ==== */
+  // 위험 Modifier / 공식
+  CONTRACT_MODS, CONTRACT_MOD_BY_KEY, CONTRACT_MOD_KEYS, CONTRACT_CONFLICTS,
+  CONTRACT_ELEMS, CONTRACT_ELEM_KEYS, CONTRACT_ELEM_RES,
+  CONTRACT_MOD_MAX, CONTRACT_MOD_CAP, CONTRACT_REWARD_PER, CONTRACT_CORRUPT_MUL,
+  CONTRACT_SPECIAL_P, CONTRACT_SPECIAL_KINDS, CONTRACT_LOG_MAX, CONTRACT_LATE_MUL,
+  CONTRACT_MON_HP, CONTRACT_MON_SPEED, CONTRACT_PACK_BONUS, CONTRACT_ELITE_MUL,
+  CONTRACT_HEAL_CUT, CONTRACT_MON_REGEN, CONTRACT_DARK_MUL, CONTRACT_MON_CRIT,
+  CONTRACT_TRAP_MUL, CONTRACT_TIME_LIMIT, CONTRACT_DROP_CAP,
+  contractModDef, contractElemDef, contractSpecialKind, contractConflicts,
+  contractDanger, contractRewardMult, contractRewardText, pathDanger,
+  contractModCount, contractCardCount, rollContractMods, growContractMods,
+  makeContract, sanitizeContractMods, normalizeContract, rollContracts, contractRng,
+  // 계약 제작
+  CONTRACT_CRAFTS, CONTRACT_CRAFT_BY_KEY, CONTRACT_CRAFT_KEYS,
+  canCraftContract, craftContract,
+  // 적용 / 층 상태
+  beginContractGen, endContractGen, activeContract, contractHas, contractModOf,
+  contractHasIn, contractModIn, applyContractToMonster, gemElemOf,
+  contractMonHpMul, contractMonStepMul, contractPackBonus, contractEliteMul,
+  contractHealMul, contractMonRegen, contractDarkMul, contractTrapMul,
+  contractBlast, contractMonCritMul, contractElemMul, contractDropMul,
+  contractTimeLeft, contractLate, updateContract, floorRisk,
+  contract: () => (state.world && state.world.contract) || null,
+  pathCards: () => (pathCards ? pathCards.slice() : null),
+  // 밸런스 로그
+  noteContractEnd, contractLog, contractStats, contractStatLine,
+  // 인카운터 공통 헬퍼
+  encounterAlive: w => encounterAlive(w), encounterOpenStairs, encounterWave,
+  // 침공
+  INVASION_TIME, INVASION_TIME_MAX, INVASION_ELITE_BONUS, INVASION_ALIVE_MAX,
+  INVASION_SPAWN_CD, INVASION_BOSS_AT, INVASION_MILESTONES, INVASION_TIER_MAX,
+  startInvasion, updateInvasion, noteInvasionKill, finishInvasion,
+  spawnInvasionBoss, grantInvasionReward, invasionInfo, invasionActive,
+  invasionSpawnCd, invasionWaveSize,
+  invasion: () => (state.world && state.world.invasion) || null,
+  updateInvasionHud,
   // 대사
   CHAR_LINES, PERSONA_DIALOGUE, charLineCount,
   // 리뷰 3차 수정 훅 (텔레그래프 상한 / 기사 스플래시)
@@ -533,9 +576,9 @@ window.GAME = {
   // 도감/과제
   achvGoal,
 
-  // 바이옴/특수 층을 강제로 불러온다 (테스트용)
-  loadFloor: (biome, kind, floor) => {
-    state.world = genFloor(biome, kind, floor || state.world.floor || 1);
+  // 바이옴/특수 층을 강제로 불러온다 (테스트용 · M8b 계약을 4번째 인자로 준다)
+  loadFloor: (biome, kind, floor, contract) => {
+    state.world = genFloor(biome, kind, floor || state.world.floor || 1, contract);
     placeParty(state.world, state.world.spawn.x, state.world.spawn.y);
     updateHudMode();
     return state.world;

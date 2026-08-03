@@ -1064,7 +1064,7 @@ async function freshPage(browser, errors, opt) {
       };
     });
     check('도전 과제 — 제작 관련 3종이 추가된다 (첫 제작 / 장인의 손 / 타락에 손대다)',
-      achv.ids.length === 3 && achv.n === 39, JSON.stringify(achv.ids));
+      achv.ids.length === 3 && achv.n === 41, JSON.stringify(achv.ids));
 
     const achv2 = await page.evaluate(() => {
       const G = window.GAME;

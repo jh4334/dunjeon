@@ -76,7 +76,7 @@ function finishVein(p) {
   if (Math.random() < VEIN_POTION_P) {
     party.forEach(m => {
       if (m.down) return;
-      m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * 0.25);
+      m.hp = Math.min(maxHp(m), m.hp + maxHp(m) * 0.25 * contractHealMul());
       addSparkle(m.px, m.py, '#ff9eae');
     });
     addFloater(wx, wy - 70, '💗 회복!', '#ff9eae', 13);
@@ -218,7 +218,9 @@ function darkDps(stack, floor) {
   const s = (stack === undefined || stack === null) ? state.darkStack : stack;
   const f = (floor === undefined || floor === null) ? ((w && w.floor) || 1) : floor;
   const casual = state.difficulty === 'casual' ? 0.5 : 1;
-  return Math.max(0, s) * DARK_DMG_PER_STACK * (1 + DARK_DEPTH_MUL * (f - 1)) * casual * darkProfile().dmgMul;
+  // M8b 계약 '어둠 심화' — 어둠 계수 +50%
+  return Math.max(0, s) * DARK_DMG_PER_STACK * (1 + DARK_DEPTH_MUL * (f - 1)) * casual *
+    darkProfile().dmgMul * contractDarkMul();
 }
 function darkRecoverMul() { return anyUnique('lantern') ? UNIQ_DARK_RECOVER_MUL : 1; }
 function resetDarkness() {
@@ -264,7 +266,8 @@ function updateDarkness(dt) {
     state.darkAway += dt;
     if (state.darkAway >= prof.grace) {
       // 장비 '어둠 저항 %' — 스택이 차오르는 속도를 늦춘다
-      state.darkStack = Math.min(prof.max, state.darkStack + DARK_RATE * (1 - equipDarkRes()) * (1 - passiveDarkRes()) * dt);
+      state.darkStack = Math.min(prof.max,
+        state.darkStack + DARK_RATE * contractDarkMul() * (1 - equipDarkRes()) * (1 - passiveDarkRes()) * dt);
       // 스택 피해는 1초 간격으로 묶어서 (플로터 도배 방지)
       state.darkTick += dt;
       while (state.darkTick >= 1) { state.darkTick -= 1; applyDarkDamage(darkDps()); }

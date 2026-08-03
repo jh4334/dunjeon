@@ -318,13 +318,15 @@ function makeMonster(type, floor, x, y) {
   // M7a: 심층 지수 스케일 (깊이 10 이하는 1 → 얕은 깊이 스탯 불변)
   const ds = depthScale(floor);
   // 키스톤 「부의 화신」 — 보상이 늘어나는 대신 몬스터가 단단해진다
-  const mhp = Math.max(1, Math.floor(d.hp * ds * passiveMonHpMult()));
+  // M8b 계약 '강인함' — 층 전체 몬스터 최대 체력 +30%
+  const mhp = Math.max(1, Math.floor(d.hp * ds * passiveMonHpMult() * contractMonHpMul()));
   const mon = {
     type, gx: x, gy: y, px: isoX(x, y), py: isoY(x, y),
     fromX: x, fromY: y, moveT: 1, moving: false,
     hp: mhp, maxHp: mhp, atk: d.atk * ds, xp: d.xp * ds,
     boss: !!d.boss, scale: d.scale || 1,
-    stepInt: d.step, stepT: rand(0, d.step), atkCd: rand(0, .9), face: 1,
+    // M8b 계약 '신속' — 이동 간격이 짧아진다(이속 +25%)
+    stepInt: d.step * contractMonStepMul(), stepT: rand(0, d.step), atkCd: rand(0, .9), face: 1,
     packId: null, aggro: false, affixes: null, rewardMult: 1,
     // Phase 3: 상태이상 (빙결 슬로우 / 스턴 / 도트)
     slowT: 0, stunT: 0, dots: [], dotAcc: 0, dotT: 0,
@@ -334,6 +336,7 @@ function makeMonster(type, floor, x, y) {
   };
   if (mon.boss) mon.castT = rand(4, 8);   // 보스는 텔레그래프 강공격 사용
   initMonsterKit(mon, floor);             // M3: 타입별 고유 장비(기믹) 세팅
+  applyContractToMonster(mon);            // M8b: 계약 '재생' / '폭발적 죽음'
   return mon;
 }
 
@@ -427,7 +430,8 @@ function enrageCheck(mon) {
   return true;
 }
 // 주술사 오라를 반영한 실제 공격력
-function monAtk(mon) { return mon.atk * (mon.buffT > 0 ? 1 + SHAMAN_BUFF : 1); }
+/* 몬스터 공격력 — 주술사 버프 + M8b 계약 '처형자'(15% 확률로 피해 2배) */
+function monAtk(mon) { return mon.atk * (mon.buffT > 0 ? 1 + SHAMAN_BUFF : 1) * contractMonCritMul(); }
 function monsterAt(wld, x, y) { return wld.monsters.find(m => m.gx === x && m.gy === y && m.hp > 0); }
 
 /* ---- 엘리트 어픽스 (PoE 스타일) ---- */
